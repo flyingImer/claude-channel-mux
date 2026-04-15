@@ -441,10 +441,12 @@ cleanExitedTabs()
 // Session lifecycle
 // ---------------------------------------------------------------------------
 
-// Plugin directory for --plugin-dir. When installed via marketplace, CC finds
-// the plugin automatically and this is unnecessary. For dev/testing, set
+// Plugin directory for --plugin-dir (dev mode). When installed via marketplace,
+// CC finds the plugin automatically. For dev/testing, set
 // CLAUDE_CHANNEL_MUX_PLUGIN_DIR to the plugin directory.
 const PLUGIN_DIR = process.env.CLAUDE_CHANNEL_MUX_PLUGIN_DIR ?? ''
+// Marketplace name for installed plugins. Defaults to self-hosted marketplace.
+const MARKETPLACE = process.env.CLAUDE_CHANNEL_MUX_MARKETPLACE ?? 'claude-channel-mux'
 
 // Spawn mode: 'same-dir' (default) or 'worktree' (git worktree isolation per session)
 const SPAWN_MODE = (process.env.CHANNEL_DAEMON_SPAWN_MODE ?? 'same-dir') as 'same-dir' | 'worktree'
@@ -498,9 +500,12 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
   }
 
   const pluginArgs = PLUGIN_DIR ? ['--plugin-dir', PLUGIN_DIR] : []
-  // plugin:name@inline for --plugin-dir loaded plugins; plugin:name@marketplace for installed
-  const channelTag = PLUGIN_DIR ? 'plugin:claude-channel-mux@inline' : 'plugin:claude-channel-mux@claude-plugins-official'
-  const channelArgs = ['--dangerously-load-development-channels', channelTag]
+  const channelTag = PLUGIN_DIR
+    ? 'plugin:claude-channel-mux@inline'
+    : `plugin:claude-channel-mux@${MARKETPLACE}`
+  const channelArgs = PLUGIN_DIR
+    ? ['--dangerously-load-development-channels', channelTag]
+    : ['--channels', channelTag]
   const modeArgs = ['--dangerously-skip-permissions']
   // Disable other channel plugins to prevent tool name collisions (#38098)
   // Write to temp file because JSON in shell args gets mangled by bash -c quoting
