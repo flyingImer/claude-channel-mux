@@ -1,0 +1,20 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-channel-mux",
+  "description": "Multi-channel session multiplexer for Claude Code",
+  "owner": {
+    "name": "flyingImer",
+    "email": "flyingImer@users.noreply.github.com"
+  },
+  "plugins": [
+    {
+      "name": "claude-channel-mux",
+      "description": "Routes Slack and Telegram conversations to independent CC sessions via MCP",
+      "category": "channels",
+      "source": {
+        "source": "self"
+      },
+      "homepage": "https://github.com/flyingImer/claude-channel-mux"
+    }
+  ]
+}
