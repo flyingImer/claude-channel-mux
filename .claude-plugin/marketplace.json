@@ -12,7 +12,8 @@
       "description": "Routes Slack and Telegram conversations to independent CC sessions via MCP",
       "category": "channels",
       "source": {
-        "source": "self"
+        "source": "url",
+        "url": "https://github.com/flyingImer/claude-channel-mux.git"
       },
       "homepage": "https://github.com/flyingImer/claude-channel-mux"
     }
