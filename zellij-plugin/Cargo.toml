@@ -1,0 +1,11 @@
+[package]
+name = "ccm-pane-watcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+zellij-tile = "0.44.0"
+
+[[bin]]
+name = "ccm-pane-watcher"
+path = "src/lib.rs"

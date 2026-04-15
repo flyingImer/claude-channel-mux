@@ -1,0 +1,23 @@
+[Unit]
+Description=claude-channel-mux daemon — Slack/Telegram session orchestrator
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/bun run /path/to/claude-channel-mux/daemon.ts
+WorkingDirectory=%h
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectHome=read-only
+ReadWritePaths=%h/.config/claude-channel-mux
+
+# Environment (override with Environment= or EnvironmentFile=)
+# EnvironmentFile=%h/.config/claude-channel-mux/.env
+
+[Install]
+WantedBy=default.target

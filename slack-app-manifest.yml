@@ -1,0 +1,50 @@
+display_information:
+  name: Claude Channel Mux
+  description: Routes Slack conversations to Claude Code sessions via claude-channel-mux
+  background_color: "#1a1a2e"
+
+features:
+  bot_user:
+    display_name: Claude Mux
+    always_online: true
+  slash_commands:
+    - command: /ccm
+      description: Claude Channel Mux — new session, resume, stop, help
+      usage_hint: "[resume | stop | help | find <query>]"
+      should_escape: false
+    - command: /cc
+      description: Send a Claude Code slash command to the active session
+      usage_hint: "<command> (e.g. compact, model, exit, cost)"
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - channels:history
+      - channels:read
+      - chat:write
+      - commands
+      - reactions:write
+      - files:read
+      - files:write
+      - users:read
+      - im:history
+      - im:read
+      - im:write
+      - groups:history
+      - groups:read
+      - mpim:history
+      - mpim:read
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

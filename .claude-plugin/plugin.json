@@ -1,0 +1,6 @@
+{
+  "name": "claude-channel-mux",
+  "description": "Multi-channel session multiplexer for Claude Code — routes Slack/Telegram conversations to independent CC sessions. Supports dynamic session creation, cross-channel relay, and zellij pane integration.",
+  "version": "0.3.0",
+  "keywords": ["slack", "telegram", "channel", "mcp", "multiplexer"]
+}

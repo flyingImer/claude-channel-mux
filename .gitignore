@@ -1,0 +1,9 @@
+node_modules/
+bun.lock
+.env
+*.rollback
+zellij-plugin/target/
+!zellij-plugin/dist/
+/tmp/
+*.screen
+*.log
