@@ -1628,6 +1628,8 @@ const ipc: NetServer = createServer((conn: Socket) => {
           for (const ch of channelsForUuid(uuid)) {
             const a = adapterFor(ch)
             if (a) a.sendMessage(localId(ch), `✅ Session \`${uuid.slice(0, 8)}\` reconnected.`).catch(() => {})
+            // Start screen watcher for recovered/reconnected sessions
+            if (!screenWatchers.has(uuid)) void startScreenWatch(ch, uuid)
           }
         }
       } else if (msg.type === 'tool_call') {
