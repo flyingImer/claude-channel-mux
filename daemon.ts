@@ -503,9 +503,9 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
   const channelTag = PLUGIN_DIR
     ? 'plugin:claude-channel-mux@inline'
     : `plugin:claude-channel-mux@${MARKETPLACE}`
-  const channelArgs = PLUGIN_DIR
-    ? ['--dangerously-load-development-channels', channelTag]
-    : ['--channels', channelTag]
+  // --dangerously-load-development-channels required for non-official-allowlist plugins.
+  // --channels only works for plugins on CC's hardcoded approved allowlist.
+  const channelArgs = ['--dangerously-load-development-channels', channelTag]
   const modeArgs = ['--dangerously-skip-permissions']
   // Disable other channel plugins to prevent tool name collisions (#38098)
   // Write to temp file because JSON in shell args gets mangled by bash -c quoting
