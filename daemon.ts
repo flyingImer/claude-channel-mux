@@ -766,7 +766,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     entry.lastContent = content
 
     const lines = content.split('\n')
-    const isDialog = lines.some(l => l.includes('Esc to cancel'))
+    const isDialog = lines.some(l => l.includes('Esc to cancel') || l.includes('Esc to exit') || l.includes('Enter to confirm') || l.includes('Enter to select'))
 
     if (isDialog) {
       // Dialog mode: send full screen + nav buttons
