@@ -517,6 +517,7 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
       'imessage@claude-plugins-official': false,
       'slack@claude-plugins-official': false,
     },
+    prefersReducedMotion: true,
   }))
   const settingsArgs = ['--settings', settingsFile]
   // Allow all ccm MCP tools without permission prompts
@@ -537,8 +538,11 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
     ...process.env,
     CC_CHANNEL_SESSION_UUID: uuid,
     CC_CHANNEL_DAEMON_SOCK: SOCK_PATH,
-    CLAUBBIT: '1',                // skip workspace trust dialog
-    DISABLE_AUTOUPDATER: '1',     // skip auto-update check
+    CLAUBBIT: '1',                          // skip workspace trust dialog
+    DISABLE_AUTOUPDATER: '1',               // skip auto-update check
+    CLAUDE_CODE_NO_FLICKER: '1',            // fullscreen mode: stable rendering area
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', // no telemetry/prefetch noise
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',      // no survey dialogs
   }
   const tabName = `ccm:${uuid.slice(0, 8)}`
 
@@ -703,15 +707,27 @@ function unwatchPane(paneId: number): void {
 const screenWatchers = new Map<string, {
   watcher: ReturnType<typeof fsWatch> | null
   lastContent: string
-  lastMsgId?: string
+  lastDialogMsgId?: string
+  lastThinkingMsgId?: string
   channelKey: string
   paneId: number
+  lastUpdateTime: number
+  isDialog: boolean
 }>()
 
+const SCREEN_THROTTLE_MS = 3000
+const THINKING_DOT = process.platform === 'darwin' ? '⏺' : '●'
+const TOOL_CALL_RE = /^[⏺●]\s+[A-Z][a-zA-Z]*\(/
+
 /**
- * Start watching a CC session's screen for interactive dialogs.
- * Uses the zellij WASM plugin for real-time updates via file system.
- * Sends screen content + nav buttons to channel when changes detected.
+ * Start watching a CC session's screen. Runs for the full session lifetime.
+ *
+ * Two modes based on screen content:
+ * - Dialog detected ("Esc to cancel"): send screen + nav buttons
+ * - Thinking text detected (● prefix, not tool call): push to channel
+ *
+ * Uses WASM plugin PaneRenderReport → fs.watch for event-driven triggers.
+ * prefersReducedMotion + CLAUDE_CODE_NO_FLICKER=1 minimize screen noise.
  */
 async function startScreenWatch(ck: string, uuid: string): Promise<void> {
   const adapter = adapterFor(ck)
@@ -732,60 +748,95 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
   await watchPane(paneId)
 
   const screenFile = join(SCREEN_DIR, `pane-${paneId}.screen`)
+  const id = localId(ck)
 
   const handleScreenChange = async () => {
-    // Check if IPC connected — if so, stop watching
-    const l = live.get(uuid)
-    if (l?.ipcConn) {
-      stopScreenWatch(uuid)
-      return
-    }
+    const entry = screenWatchers.get(uuid)
+    if (!entry) return
 
-    // Always read fresh from zellij — not the file (avoids stale/timing issues)
+    // Throttle
+    const now = Date.now()
+    if (now - entry.lastUpdateTime < SCREEN_THROTTLE_MS) return
+    entry.lastUpdateTime = now
+
+    // Read fresh screen
     let content: string
     try { content = await dumpScreenAsync(paneId) } catch { return }
-
-    const entry = screenWatchers.get(uuid)
-    if (!entry || !content || content === entry.lastContent) return
+    if (!content || content === entry.lastContent) return
     entry.lastContent = content
 
-    // Clean: remove empty lines, trim
-    const clean = content.split('\n').filter(l => l.trim()).join('\n').trim()
-    if (!clean) return
+    const lines = content.split('\n')
+    const isDialog = lines.some(l => l.includes('Esc to cancel'))
 
-    // Parse for interactive UI: detect selection options
-    const options: string[] = []
-    for (const line of clean.split('\n')) {
-      const optMatch = line.match(/^\s*[❯›▸►]?\s*(\d+)\.\s+(.+)/)
-      if (optMatch) options.push(optMatch[2].trim())
-    }
+    if (isDialog) {
+      // Dialog mode: send full screen + nav buttons
+      const clean = lines.filter(l => l.trim()).join('\n').trim()
 
-    // Build message + buttons
-    const msg = `🔧 \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``
-    const buttons: Array<{ text: string; data: string }> = []
+      // Extract selection options for labeled buttons
+      const options: string[] = []
+      for (const line of lines) {
+        const optMatch = line.match(/^\s*[❯›▸►]?\s*(\d+)\.\s+(.+)/)
+        if (optMatch) options.push(optMatch[2].trim())
+      }
 
-    if (options.length > 0) {
-      options.forEach((opt, i) => {
-        buttons.push({ text: `${i + 1}. ${opt.slice(0, 30)}`, data: `nav:${u}:select:${i}` })
-      })
-    }
-    buttons.push({ text: '↑', data: `nav:${u}:Up` })
-    buttons.push({ text: '↓', data: `nav:${u}:Down` })
-    buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
-    buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
+      const msg = `🔧 \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``
+      const buttons: Array<{ text: string; data: string }> = []
+      if (options.length > 0) {
+        options.forEach((opt, i) => {
+          buttons.push({ text: `${i + 1}. ${opt.slice(0, 30)}`, data: `nav:${u}:select:${i}` })
+        })
+      }
+      buttons.push({ text: '↑', data: `nav:${u}:Up` })
+      buttons.push({ text: '↓', data: `nav:${u}:Down` })
+      buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
+      buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
 
-    const id = localId(ck)
-    if (entry.lastMsgId) {
-      // Edit existing message
-      try { await adapter.editMessage(id, entry.lastMsgId, msg) } catch {}
+      if (entry.lastDialogMsgId) {
+        try { await adapter.editMessage(id, entry.lastDialogMsgId, msg) } catch {}
+      } else {
+        entry.lastDialogMsgId = await sendWithButtonsReturn(ck, msg, buttons)
+      }
+      entry.isDialog = true
     } else {
-      entry.lastMsgId = await sendWithButtonsReturn(ck, msg, buttons)
+      // Thinking mode: extract ● completed text, skip tool calls and results
+      if (entry.isDialog) {
+        // Transitioned out of dialog — clear dialog message
+        entry.lastDialogMsgId = undefined
+        entry.isDialog = false
+      }
+
+      const thinkingLines: string[] = []
+      for (const line of lines) {
+        const trimmed = line.trimStart()
+        // Skip tool calls: ● ToolName(
+        if (TOOL_CALL_RE.test(trimmed)) continue
+        // Skip tool results: ⎿
+        if (trimmed.startsWith('⎿')) continue
+        // Skip status bar lines
+        if (trimmed.startsWith('⏵') || trimmed.startsWith('──')) continue
+        // Skip prompt line
+        if (trimmed.startsWith('❯')) continue
+        // Capture thinking text: ● or ✻ prefix, or continuation text
+        if (trimmed.startsWith(THINKING_DOT) || trimmed.startsWith('✻') || trimmed.startsWith('✶')) {
+          thinkingLines.push(trimmed)
+        }
+      }
+
+      if (thinkingLines.length > 0) {
+        // Show last few lines of thinking (most recent context)
+        const recent = thinkingLines.slice(-8).join('\n')
+        const msg = `💭 \`${u}\`:\n${recent}`
+        if (entry.lastThinkingMsgId) {
+          try { await adapter.editMessage(id, entry.lastThinkingMsgId, msg) } catch {}
+        } else {
+          entry.lastThinkingMsgId = await adapter.sendMessage(id, msg)
+        }
+      }
     }
   }
 
   // Event-based: fs.watch on screen file triggers handleScreenChange.
-  // handleScreenChange reads fresh from dumpScreen (not the file), so no stale data.
-  // Pre-create the file so fs.watch can start immediately — no polling needed.
+  // Pre-create the file so fs.watch can start immediately.
   let watcher: ReturnType<typeof fsWatch> | null = null
   try {
     try { mkdirSync(SCREEN_DIR, { recursive: true }) } catch {}
@@ -793,9 +844,12 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     watcher = fsWatch(screenFile, { persistent: false }, () => void handleScreenChange())
   } catch {}
 
-  screenWatchers.set(uuid, { watcher, lastContent: '', channelKey: ck, paneId })
+  screenWatchers.set(uuid, {
+    watcher, lastContent: '', channelKey: ck, paneId,
+    lastUpdateTime: 0, isDialog: false,
+  })
 
-  // One initial check — catches content if plugin wrote before fs.watch was ready
+  // Initial check after CC has had time to render
   await new Promise(r => setTimeout(r, 1000))
   await handleScreenChange()
 }
@@ -856,12 +910,12 @@ async function waitForChange(paneId: number, before: string, timeoutMs = 2000): 
 // ---------------------------------------------------------------------------
 
 function killSession(uuid: string): void {
+  stopScreenWatch(uuid)
   const l = live.get(uuid)
   if (!l) return
   if (l.child) {
     l.child.kill('SIGTERM')
   } else if (zellijAvailable) {
-    // Zellij mode: close the tab which kills the process inside it
     try {
       closeTab(`ccm:${uuid.slice(0, 8)}`)
       l.ipcConn?.destroy()
@@ -894,6 +948,8 @@ type Cmd =
   | { t: 'stop_id'; uuid: string }
   | { t: 'help' }
   | { t: 'find'; query: string }
+  | { t: 'screen' }
+  | { t: 'nav' }
   | { t: 'slash'; command: string }
   | { t: 'msg'; text: string }
 
@@ -912,6 +968,8 @@ function parseCmd(text: string): Cmd {
     const stopIdM = args.match(/^stop\s+([0-9a-f-]{8,36})$/i)
     if (stopIdM) return { t: 'stop_id', uuid: stopIdM[1] }
     if (/^stop$/i.test(args)) return { t: 'stop' }
+    if (/^(screen|ss)$/i.test(args)) return { t: 'screen' }
+    if (/^nav$/i.test(args)) return { t: 'nav' }
     const resumeIdM = args.match(/^resume\s+([0-9a-f-]{8,36})$/i)
     if (resumeIdM) return { t: 'resume_id', uuid: resumeIdM[1] }
     if (/^resume$/i.test(args)) return { t: 'resume_pick' }
@@ -1311,6 +1369,47 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       await resumeAndBind(ck, uuid)
       return
     }
+    case 'screen': {
+      const b = loadBindings()
+      const uuid = b[ck]
+      if (!uuid) {
+        await adapter?.sendMessage(id, 'No session bound to this channel.')
+        return
+      }
+      const paneId = resolvePaneId(uuid.slice(0, 8))
+      if (paneId === null) {
+        await adapter?.sendMessage(id, `Session \`${uuid.slice(0, 8)}\` has no active pane.`)
+        return
+      }
+      const screen = await dumpScreenAsync(paneId)
+      const msg = `📺 \`${uuid.slice(0, 8)}\`:\n\`\`\`\n${screen}\n\`\`\``
+      await adapter?.sendMessage(id, msg)
+      return
+    }
+    case 'nav': {
+      const b = loadBindings()
+      const uuid = b[ck]
+      if (!uuid) {
+        await adapter?.sendMessage(id, 'No session bound to this channel.')
+        return
+      }
+      const u = uuid.slice(0, 8)
+      const paneId = resolvePaneId(u)
+      if (paneId === null) {
+        await adapter?.sendMessage(id, `Session \`${u}\` has no active pane.`)
+        return
+      }
+      const screen = await dumpScreenAsync(paneId)
+      const clean = screen.split('\n').filter(l => l.trim()).join('\n').trim()
+      const msg = `🎮 \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``
+      const buttons: Array<{ text: string; data: string }> = []
+      buttons.push({ text: '↑', data: `nav:${u}:Up` })
+      buttons.push({ text: '↓', data: `nav:${u}:Down` })
+      buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
+      buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
+      await sendWithButtonsReturn(ck, msg, buttons)
+      return
+    }
     case 'stop': {
       const b = loadBindings()
       const uuid = b[ck]
@@ -1526,7 +1625,6 @@ const ipc: NetServer = createServer((conn: Socket) => {
           socketToUuid.set(conn, uuid)
           sendToLive(uuid, { type: 'registered', uuid, channels: channelsForUuid(uuid) })
           process.stderr.write(`daemon: IPC registered ${uuid.slice(0, 8)}\n`)
-          stopScreenWatch(uuid)
           for (const ch of channelsForUuid(uuid)) {
             const a = adapterFor(ch)
             if (a) a.sendMessage(localId(ch), `✅ Session \`${uuid.slice(0, 8)}\` reconnected.`).catch(() => {})
