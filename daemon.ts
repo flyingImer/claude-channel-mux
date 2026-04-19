@@ -23,7 +23,7 @@
 
 import {
   readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync,
-  readdirSync, statSync, chmodSync,
+  readdirSync, statSync, chmodSync, openSync, readSync, closeSync,
 } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
@@ -343,9 +343,205 @@ cleanStaleBindings()
 // Live sessions
 // ---------------------------------------------------------------------------
 
-type Live = { ipcConn: Socket | null; child: ChildProcess | null }
+type Live = { ipcConn: Socket | null; child: ChildProcess | null; primaryPid?: number }
 const live = new Map<string, Live>()
 const socketToUuid = new Map<Socket, string>()
+// Tracks UUIDs we've already announced as "reconnected" this daemon lifetime.
+// Prevents spamming the channel when CC subagents (which inherit the session
+// UUID via env) each spawn their own server.ts and register independently.
+const announcedReconnect = new Set<string>()
+
+// Test if a pid is alive (no signal delivered). Throws ESRCH if dead,
+// EPERM if alive-but-not-signalable (still alive).
+function isProcessAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true }
+  catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM' }
+}
+
+// ---------------------------------------------------------------------------
+// Transcript polling: forward CC's `{type:"text"}` assistant blocks to channel
+// ---------------------------------------------------------------------------
+//
+// Design (see feedback_ccm_live_streaming.md):
+//   CC writes assistant text blocks to ~/.claude/projects/.../{uuid}.jsonl
+//   during a turn. Some CC turns write text without calling the `reply` tool,
+//   leaving the user blind to what CC said. The Stop hook enforcement approach
+//   was abandoned because CC's hook API exposes no per-text-block content and
+//   transcript-reading in the hook had a 26ms race on the final entry.
+//
+//   ccgram production-proved a simpler path: daemon polls the transcript at
+//   ~2s interval, byte-offset tracking for incrementals, forwards any new
+//   `{type:"text"}` blocks to the bound channel. We keep the filter tighter
+//   than ccgram — text blocks only, no thinking/tool_use/tool_result noise.
+//
+//   Dedup with `reply` tool calls: when CC calls reply AND also writes the
+//   same text as an assistant content block, we forward once. recentReplies
+//   holds text fingerprints; poll skips blocks whose fingerprint matches.
+//   recentReplies is also used to suppress CC retry-storms (same reply called
+//   repeatedly after a 60s tool-call timeout).
+
+const POLL_INTERVAL_MS = 2000
+const FINGERPRINT_CHARS = 50
+const REPLY_DEDUP_WINDOW_MS = 30_000  // short window for retry-storm suppression
+const REPLY_TEXT_KEEP_MS = 120_000    // how long to keep for poll-dedup after send
+
+type TextMemo = { fp: string; text: string; ts: number }
+const recentReplies = new Map<string, TextMemo[]>()  // uuid → last N sent reply texts
+const pollState = new Map<string, { offset: number; timer: NodeJS.Timeout }>()
+
+// UUIDs with a permission request in flight. The MCP `permission_request`
+// handler already sends a "🔐 Allow/Deny" message — the screen watcher
+// would otherwise ALSO detect CC's permission dialog on the terminal
+// ("Esc to cancel" / "Enter to confirm" pattern) and send a duplicate
+// "🔧 nav" message. Flag this to suppress the screen-side duplicate.
+const pendingPermission = new Set<string>()
+
+// Most recent inbound per uuid, used to thread CC's outbound messages
+// under the user's message. Without this:
+//   - poll-path mid-turn text goes to main channel regardless of where the
+//     user typed
+//   - CC can pass stale reply_to in tool calls (remembered from an earlier
+//     turn), so replies hang on old threads
+// With this, every outbound (poll + reply tool) is anchored to the same
+// user-message thread, giving one coherent place to read the exchange.
+type InboundCtx = { channelKey: string; messageId: string; threadTs?: string }
+const currentInbound = new Map<string, InboundCtx>()
+
+/** Thread_ts to use for outbound messages on behalf of this uuid. */
+function outboundThreadTs(uuid: string, ck: string): string | undefined {
+  const ctx = currentInbound.get(uuid)
+  if (!ctx || ctx.channelKey !== ck) return undefined
+  return ctx.threadTs ?? ctx.messageId
+}
+
+function textFingerprint(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, FINGERPRINT_CHARS)
+}
+
+function pruneRecentReplies(uuid: string): void {
+  const list = recentReplies.get(uuid)
+  if (!list) return
+  const cutoff = Date.now() - REPLY_TEXT_KEEP_MS
+  while (list.length > 0 && list[0].ts < cutoff) list.shift()
+}
+
+function isCoveredByReply(uuid: string, text: string): boolean {
+  pruneRecentReplies(uuid)
+  const list = recentReplies.get(uuid)
+  if (!list || list.length === 0) return false
+  const fp = textFingerprint(text)
+  return list.some(m => m.fp === fp || m.text.includes(fp) || fp.includes(m.fp.slice(0, 20)))
+}
+
+function rememberReply(uuid: string, text: string): void {
+  let list = recentReplies.get(uuid)
+  if (!list) { list = []; recentReplies.set(uuid, list) }
+  list.push({ fp: textFingerprint(text), text: text.replace(/\s+/g, ' ').trim().toLowerCase(), ts: Date.now() })
+  pruneRecentReplies(uuid)
+}
+
+/** True if this reply was already dispatched within REPLY_DEDUP_WINDOW_MS (CC retry). */
+function isRecentDuplicateReply(uuid: string, text: string): boolean {
+  const list = recentReplies.get(uuid)
+  if (!list) return false
+  const fp = textFingerprint(text)
+  const cutoff = Date.now() - REPLY_DEDUP_WINDOW_MS
+  return list.some(m => m.ts >= cutoff && m.fp === fp)
+}
+
+function startTranscriptPoll(uuid: string): void {
+  if (pollState.has(uuid)) return
+  const state = { offset: 0, timer: null as unknown as NodeJS.Timeout }
+  const tick = async () => {
+    try {
+      const t = findTranscript(uuid)
+      if (!t) return
+      const path = join(CC_PROJECTS_DIR, t.projectDir, `${uuid}.jsonl`)
+      // Initialize offset on first successful stat — skip everything already on
+      // disk so we don't re-forward old messages at daemon start.
+      if (state.offset === 0 && t.size > 0) { state.offset = t.size; return }
+      if (t.size <= state.offset) return
+      const fh = openSync(path, 'r')
+      try {
+        const len = t.size - state.offset
+        const buf = Buffer.alloc(len)
+        readSync(fh, buf, 0, len, state.offset)
+        state.offset = t.size
+        const chunk = buf.toString('utf8')
+        for (const line of chunk.split('\n')) {
+          if (!line.trim()) continue
+          await processTranscriptLine(uuid, line)
+        }
+      } finally {
+        closeSync(fh)
+      }
+    } catch (err) {
+      process.stderr.write(`daemon: poll error for ${uuid.slice(0, 8)}: ${err}\n`)
+    }
+  }
+  state.timer = setInterval(() => void tick(), POLL_INTERVAL_MS)
+  pollState.set(uuid, state)
+  process.stderr.write(`daemon: transcript poll started for ${uuid.slice(0, 8)}\n`)
+}
+
+function stopTranscriptPoll(uuid: string): void {
+  const s = pollState.get(uuid)
+  if (!s) return
+  clearInterval(s.timer)
+  pollState.delete(uuid)
+  process.stderr.write(`daemon: transcript poll stopped for ${uuid.slice(0, 8)}\n`)
+}
+
+async function processTranscriptLine(uuid: string, line: string): Promise<void> {
+  let entry: Record<string, unknown>
+  try { entry = JSON.parse(line) } catch { return }
+
+  if (entry.type !== 'assistant') return
+  if (entry.isSidechain === true) return  // subagent internal output, not user-facing
+
+  const msg = entry.message as { content?: unknown; stop_reason?: string } | undefined
+  const content = msg?.content
+  if (!Array.isArray(content)) return
+
+  // Mid-turn vs end-of-turn: CC sets stop_reason==="end_turn" on the final
+  // assistant message of a turn, "tool_use" when it's pausing for a tool
+  // result and will continue. Use this to prefix forwarded text with an
+  // emoji so the user can tell progress-updates apart from conclusions.
+  const isEndOfTurn = msg?.stop_reason === 'end_turn'
+  const prefix = isEndOfTurn ? '📬' : '💬'
+
+  for (const c of content) {
+    if (typeof c !== 'object' || !c) continue
+    const block = c as { type?: string; text?: string }
+    if (block.type !== 'text' || typeof block.text !== 'string') continue
+    const text = block.text.trim()
+    if (!text) continue
+    // Dedup: CC already sent this via the `reply` tool → daemon already
+    // dispatched to Slack in handleTool. Skip to avoid double-delivery.
+    if (isCoveredByReply(uuid, text)) continue
+    const display = `${prefix} ${text}`
+    // Forward to every channel bound to this session, threaded under the
+    // latest user message from that channel (falls back to no thread if
+    // the user hasn't sent anything on this channel yet).
+    for (const ck of channelsForUuid(uuid)) {
+      const adapter = adapterFor(ck)
+      if (!adapter) continue
+      const threadTs = outboundThreadTs(uuid, ck)
+      try {
+        await adapter.sendMessage(
+          localId(ck),
+          display,
+          threadTs ? { replyTo: threadTs, broadcast: true } : undefined,
+        )
+      } catch (err) {
+        process.stderr.write(`daemon: poll send to ${ck} failed: ${err}\n`)
+      }
+    }
+    // Remember so CC's follow-up reply tool call with the same text doesn't
+    // double-send (rememberReply is also called on the reply path).
+    rememberReply(uuid, text)
+  }
+}
 // Track last inbound message per channel for ack reaction cleanup
 const lastInboundMsg = new Map<string, string>()  // channel_key → message_id
 
@@ -510,6 +706,9 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
   // Disable other channel plugins to prevent tool name collisions (#38098)
   // Write to temp file because JSON in shell args gets mangled by bash -c quoting
   const settingsFile = join(STATE_DIR, `settings-${uuid.slice(0, 8)}.json`)
+  // No Stop hook — the completed-text visibility problem is solved by the
+  // daemon's transcript poll loop (forwards {type:"text"} assistant blocks
+  // directly to the channel). CC doesn't need to be forced to call `reply`.
   writeFileSync(settingsFile, JSON.stringify({
     enabledPlugins: {
       'telegram@claude-plugins-official': false,
@@ -743,11 +942,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
   }
   if (paneId === null) return
 
-  // Ensure plugin + start watching (async — don't block event loop)
-  await ensureWatcherPlugin()
-  await watchPane(paneId)
-
-  const screenFile = join(SCREEN_DIR, `pane-${paneId}.screen`)
+  // No WASM plugin needed — periodic dumpScreenAsync replaces it
   const id = localId(ck)
 
   const handleScreenChange = async () => {
@@ -766,7 +961,12 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     entry.lastContent = content
 
     const lines = content.split('\n')
-    const isDialog = lines.some(l => l.includes('Esc to cancel') || l.includes('Esc to exit') || l.includes('Enter to confirm') || l.includes('Enter to select'))
+    // Suppress dialog-branch when a permission request is in flight — the
+    // MCP `permission_request` path already sent a 🔐 Allow/Deny message,
+    // and CC's permission TUI matches our dialog markers. Without this we
+    // send two duplicate prompts per permission event.
+    const permissionInFlight = pendingPermission.has(uuid)
+    const isDialog = !permissionInFlight && lines.some(l => l.includes('Esc to cancel') || l.includes('Esc to exit') || l.includes('Enter to confirm') || l.includes('Enter to select'))
 
     if (isDialog) {
       // Dialog mode: send full screen + nav buttons
@@ -798,59 +998,33 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
       }
       entry.isDialog = true
     } else {
-      // Thinking mode: extract ● completed text, skip tool calls and results
+      // Non-dialog: no screen streaming. Mid-turn text visibility is handled
+      // via JSONL tail instead (forwards CC's {type:"text"} assistant content
+      // blocks as they land). Screen watcher stays dialog-only here.
       if (entry.isDialog) {
-        // Transitioned out of dialog — clear dialog message
         entry.lastDialogMsgId = undefined
         entry.isDialog = false
-      }
-
-      const thinkingLines: string[] = []
-      for (const line of lines) {
-        const trimmed = line.trimStart()
-        // Skip tool calls: ● ToolName(
-        if (TOOL_CALL_RE.test(trimmed)) continue
-        // Skip tool results: ⎿
-        if (trimmed.startsWith('⎿')) continue
-        // Skip status bar lines
-        if (trimmed.startsWith('⏵') || trimmed.startsWith('──')) continue
-        // Skip prompt line
-        if (trimmed.startsWith('❯')) continue
-        // Capture thinking text: ● or ✻ prefix, or continuation text
-        if (trimmed.startsWith(THINKING_DOT) || trimmed.startsWith('✻') || trimmed.startsWith('✶')) {
-          thinkingLines.push(trimmed)
-        }
-      }
-
-      if (thinkingLines.length > 0) {
-        // Show last few lines of thinking (most recent context)
-        const recent = thinkingLines.slice(-8).join('\n')
-        const msg = `💭 \`${u}\`:\n${recent}`
-        if (entry.lastThinkingMsgId) {
-          try { await adapter.editMessage(id, entry.lastThinkingMsgId, msg) } catch {}
-        } else {
-          entry.lastThinkingMsgId = await adapter.sendMessage(id, msg)
-        }
       }
     }
   }
 
-  // Event-based: fs.watch on screen file triggers handleScreenChange.
-  // Pre-create the file so fs.watch can start immediately.
-  let watcher: ReturnType<typeof fsWatch> | null = null
-  try {
-    try { mkdirSync(SCREEN_DIR, { recursive: true }) } catch {}
-    try { writeFileSync(screenFile, '') } catch {}
-    watcher = fsWatch(screenFile, { persistent: false }, () => void handleScreenChange())
-  } catch {}
+  // Periodic screen check — simpler and more reliable than WASM plugin + fs.watch.
+  // WASM plugin has zellij permission issues across installations. A 3-second
+  // interval with dumpScreenAsync is negligible overhead and works everywhere.
+  const interval = setInterval(() => {
+    handleScreenChange().catch(err => {
+      process.stderr.write(`daemon: screen watcher error on ${uuid.slice(0, 8)}: ${err}\n`)
+    })
+  }, SCREEN_THROTTLE_MS)
 
   screenWatchers.set(uuid, {
-    watcher, lastContent: '', channelKey: ck, paneId,
+    watcher: { close: () => clearInterval(interval) } as any,
+    lastContent: '', channelKey: ck, paneId,
     lastUpdateTime: 0, isDialog: false,
   })
 
   // Initial check after CC has had time to render
-  await new Promise(r => setTimeout(r, 1000))
+  await new Promise(r => setTimeout(r, 2000))
   await handleScreenChange()
 }
 
@@ -1487,6 +1661,25 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       adapter?.showTyping?.(id).catch(() => {})
       lastInboundMsg.set(ck, msg.messageId)
 
+      // Record the current inbound so every outbound on this uuid's behalf
+      // threads under the user's message. threadTs (replyToId) is set if
+      // the user was already in a thread; otherwise messageId starts a new
+      // thread under the user's top-level message.
+      currentInbound.set(uuid, {
+        channelKey: ck,
+        messageId: msg.messageId,
+        threadTs: msg.replyToId,
+      })
+
+      // Reset thinking-message anchor so the next 💭 starts a fresh message
+      // for this turn (don't edit an old turn's 💭).
+      const sw = screenWatchers.get(uuid)
+      if (sw) sw.lastThinkingMsgId = undefined
+
+      // Turn boundary — clear the reply-dedup memory so a new turn's text
+      // blocks aren't filtered against the previous turn's replies.
+      recentReplies.delete(uuid)
+
       sendToLive(uuid, {
         type: 'inbound',
         channelKey: ck,
@@ -1519,8 +1712,28 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
 
     switch (msg.tool) {
       case 'reply': {
-        const ts = await adapter.sendMessage(id, msg.args.text as string, {
-          replyTo: msg.args.reply_to as string | undefined,
+        const text = msg.args.text as string
+        // Retry-storm dedup: CC's tool-call has a 60s client-side timeout
+        // (server.ts). If Slack is slow, CC sees timeout and retries the
+        // same reply. Without dedup the user sees duplicates. If we already
+        // dispatched this exact text within the window, swallow silently and
+        // return success so CC stops retrying.
+        if (isRecentDuplicateReply(uuid, text)) {
+          process.stderr.write(`daemon: dedup retry reply for ${uuid.slice(0, 8)} (text: ${textFingerprint(text)}...)\n`)
+          result = 'sent (dedup: recent duplicate)'
+          break
+        }
+        // Remember BEFORE dispatch — prevents the transcript poll loop from
+        // also forwarding this text if CC wrote it as a text block too.
+        rememberReply(uuid, text)
+        // Daemon-authoritative threading: override CC's reply_to (which often
+        // carries a stale thread_ts from an earlier turn) with the current
+        // inbound's thread. Guarantees mid-turn poll text and CC's reply end
+        // up in the same place.
+        const threadOverride = outboundThreadTs(uuid, ck)
+        const replyTo = threadOverride ?? (msg.args.reply_to as string | undefined)
+        const ts = await adapter.sendMessage(id, text, {
+          replyTo,
           broadcast: true,  // Slack: also send to channel when replying in thread
         })
         for (const f of (msg.args.files as string[] ?? []))
@@ -1568,6 +1781,11 @@ async function handlePermissionRequest(
 ): Promise<void> {
   const { request_id, tool_name, description, input_preview } = msg
   const channels = msg.channels ?? channelsForUuid(uuid)
+
+  // Suppress the screen-watcher's dialog-branch duplicate while this
+  // permission request is live. Cleared when daemon forwards the
+  // allow/deny response back to CC.
+  pendingPermission.add(uuid)
 
   const preview = tool_name === 'Bash' ? `\n\`\`\`\n${input_preview.slice(0, 200)}\n\`\`\`\n` : ''
   const text = `🔐 *${tool_name}*: ${description}${preview}`
@@ -1621,16 +1839,53 @@ const ipc: NetServer = createServer((conn: Socket) => {
         }
 
         if (l) {
+          // Subagents spawned by the main CC inherit CC_CHANNEL_SESSION_UUID via
+          // env and each load ccm as an MCP server, so each subagent's server.ts
+          // tries to register with the parent's UUID. From a product standpoint
+          // subagents are invisible implementation detail — only the main CC
+          // should own the channel. Enforce "one primary per UUID" via
+          // connection identity: if a live conn is already registered for this
+          // UUID and it's not the same socket, the new one is a secondary.
+          //
+          // Using socket state (not pid) avoids a subtle bug: if the first
+          // register lacks a pid (older server.ts build), primaryPid stays
+          // undefined and a pid-based check would let the next register
+          // overwrite the primary — breaking tool routing for the original.
+          const peerPid = typeof msg.pid === 'number' ? msg.pid : undefined
+          if (l.ipcConn && l.ipcConn !== conn && !l.ipcConn.destroyed) {
+            try {
+              conn.write(
+                JSON.stringify({
+                  type: 'duplicate',
+                  reason: `UUID ${uuid.slice(0, 8)} already owned by pid ${l.primaryPid ?? '?'}; this register (pid ${peerPid ?? '?'}) is a secondary (subagent). Primary-only policy: secondaries should not connect.`,
+                }) + '\n',
+              )
+            } catch {}
+            try { conn.end() } catch {}
+            process.stderr.write(
+              `daemon: rejected secondary register for ${uuid.slice(0, 8)} (pid ${peerPid ?? '?'}, primary ${l.primaryPid ?? '?'} still connected)\n`,
+            )
+            return
+          }
+
+          const firstEver = !announcedReconnect.has(uuid)
+          announcedReconnect.add(uuid)
+
           l.ipcConn = conn
+          l.primaryPid = peerPid
           socketToUuid.set(conn, uuid)
           sendToLive(uuid, { type: 'registered', uuid, channels: channelsForUuid(uuid) })
-          process.stderr.write(`daemon: IPC registered ${uuid.slice(0, 8)}\n`)
+          process.stderr.write(
+            `daemon: IPC registered ${uuid.slice(0, 8)}${peerPid ? ` (pid ${peerPid})` : ''}\n`,
+          )
           for (const ch of channelsForUuid(uuid)) {
-            const a = adapterFor(ch)
-            if (a) a.sendMessage(localId(ch), `✅ Session \`${uuid.slice(0, 8)}\` reconnected.`).catch(() => {})
-            // Start screen watcher for recovered/reconnected sessions
+            if (firstEver) {
+              const a = adapterFor(ch)
+              if (a) a.sendMessage(localId(ch), `✅ Session \`${uuid.slice(0, 8)}\` reconnected.`).catch(() => {})
+            }
             if (!screenWatchers.has(uuid)) void startScreenWatch(ch, uuid)
           }
+          startTranscriptPoll(uuid)
         }
       } else if (msg.type === 'tool_call') {
         const uuid = socketToUuid.get(conn)
@@ -1648,15 +1903,30 @@ const ipc: NetServer = createServer((conn: Socket) => {
     if (uuid) {
       const l = live.get(uuid)
       if (l) {
+        // Only clear state if this closing conn was the primary. Secondary
+        // (subagent) connections that got rejected above also hit this handler,
+        // but they were never recorded in l.ipcConn — skip them.
+        if (l.ipcConn !== conn) {
+          socketToUuid.delete(conn)
+          return
+        }
         l.ipcConn = null
+        l.primaryPid = undefined
         if (zellijAvailable) {
           // Zellij mode: session lives in a tab, not as a child process.
           // IPC disconnect just means server.ts disconnected — session may still be alive.
-          // Keep the live entry so it can reconnect. Only remove if pane is actually dead.
+          // Keep the live entry so it can reconnect. Only remove if the pane is
+          // CONFIRMED exited (pane.exited === true). A null return from
+          // findPaneByTabName can come from a transient listPanes() failure
+          // (zellij CLI busy / timeout) — treating that as "dead" causes the
+          // live entry to get deleted and then re-auto-recovered in a loop,
+          // each cycle triggering user-visible noise. Be lenient: only delete
+          // on definite exit.
           const pane = findPaneByTabName(`ccm:${uuid.slice(0, 8)}`)
-          if (!pane || pane.exited) {
+          if (pane && pane.exited) {
             live.delete(uuid)
-            process.stderr.write(`daemon: session ${uuid.slice(0, 8)} pane dead, removed from live\n`)
+            stopTranscriptPoll(uuid)
+            process.stderr.write(`daemon: session ${uuid.slice(0, 8)} pane exited, removed from live\n`)
           } else {
             process.stderr.write(`daemon: session ${uuid.slice(0, 8)} IPC closed, pane still alive\n`)
           }
@@ -1743,6 +2013,7 @@ for (const adapter of activeAdapters) {
         const requestId = parts[2]
         const behavior = parts[3] as 'allow' | 'deny'
         sendToLive(uuid, { type: 'permission_response', request_id: requestId, behavior })
+        pendingPermission.delete(uuid)
       }
     } else if (data.startsWith('dir:start:')) {
       const dir = data.slice(10)

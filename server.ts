@@ -33,8 +33,15 @@ const DAEMON_SOCK = process.env.CC_CHANNEL_DAEMON_SOCK
   ?? join(homedir(), '.config', 'claude-channel-mux', 'daemon.sock')
 
 if (!SESSION_UUID) {
-  // Not spawned by daemon — run as empty MCP server (CC auto-loaded the plugin)
+  // Not spawned by daemon — run as empty MCP server (CC auto-loaded the plugin).
+  // Must exit when parent CC dies; otherwise bun tight-loops on the closed
+  // stdio socket and orphans accumulate as CPU-burning zombies.
   process.stderr.write('claude-channel-mux: no CC_CHANNEL_SESSION_UUID, idling\n')
+  const exit = () => process.exit(0)
+  process.stdin.on('close', exit)
+  process.stdin.on('end', exit)
+  process.on('SIGTERM', exit)
+  process.on('SIGHUP', exit)
   const idle = new Server(
     { name: 'claude-channel-mux', version: '1.0.0' },
     { capabilities: { tools: {} } },
@@ -76,7 +83,10 @@ function connectToDaemon(): Promise<void> {
       connected = true
       reconnectAttempt = 0
       ipcBuffer = ''
-      conn.write(JSON.stringify({ type: 'register', uuid: SESSION_UUID }) + '\n')
+      // Send our pid so the daemon can enforce "one primary per UUID" and
+      // reject subagent duplicates (subagents inherit CC_CHANNEL_SESSION_UUID
+      // from the main CC's env, but should not own the channel).
+      conn.write(JSON.stringify({ type: 'register', uuid: SESSION_UUID, pid: process.pid }) + '\n')
       resolve()
     })
 
@@ -129,6 +139,22 @@ function handleDaemonMessage(data: string): void {
     case 'registered': {
       registeredChannels = (msg.channels as string[]) ?? []
       process.stderr.write(`claude-channel-mux: registered, channels: ${registeredChannels.join(', ')}\n`)
+      break
+    }
+
+    case 'duplicate': {
+      // Daemon rejected this register: the primary server.ts for this UUID is
+      // already connected. We're a secondary — almost always a CC subagent
+      // that inherited CC_CHANNEL_SESSION_UUID from the parent's env. Subagents
+      // should not own the channel (product decision: one session = one voice),
+      // so detach from the daemon and go idle. Stay as an empty MCP server
+      // for the subagent's own use — reply/react/etc. will just return errors
+      // from the local pending-call map when not connected, which is fine.
+      process.stderr.write(`claude-channel-mux: secondary session rejected by daemon (${msg.reason ?? 'duplicate'}), going idle\n`)
+      shuttingDown = true  // stop reconnect backoff
+      try { daemonConn?.end() } catch {}
+      daemonConn = null
+      connected = false
       break
     }
 
@@ -227,6 +253,7 @@ const mcp = new Server(
     },
     instructions: [
       'Messages arrive from Slack or Telegram as <channel source="claude-channel-mux" chat_id="slack:C123" ...> or <channel source="claude-channel-mux" chat_id="telegram:456" ...>.',
+      '',
       'The chat_id prefix tells you the platform. Reply with the reply tool, passing chat_id back exactly.',
       '',
       'reply accepts file paths (files: ["/abs/path"]) for attachments. Images are shown inline, other files as downloads.',

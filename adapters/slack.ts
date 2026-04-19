@@ -171,15 +171,17 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   async sendMessage(channelId: string, text: string, opts?: SendOptions): Promise<string | undefined> {
-    // When blocks are present, Slack ignores `text` (uses it as fallback for notifications).
-    // Prepend a text section block so the message text is always visible.
+    // Slack section block text has a 3000-char hard limit. Truncate so the
+    // postMessage call doesn't reject with invalid_blocks — that rejection
+    // used to cascade into unhandled rejections and fake "reconnected" loops.
+    const sectionText = text.length > 2900 ? text.slice(0, 2897) + '...' : text
     let blocks = opts?.inlineKeyboard as any[] | undefined
-    if (blocks && text) {
-      blocks = [{ type: 'section', text: { type: 'mrkdwn', text } }, ...blocks]
+    if (blocks && sectionText) {
+      blocks = [{ type: 'section', text: { type: 'mrkdwn', text: sectionText } }, ...blocks]
     }
     const res = await this.web!.chat.postMessage({
       channel: channelId,
-      text,
+      text,  // `text` is the notification fallback; Slack accepts longer here
       ...(opts?.replyTo ? { thread_ts: opts.replyTo, reply_broadcast: opts.broadcast ?? true } : {}),
       ...(blocks ? { blocks } : {}),
     })
