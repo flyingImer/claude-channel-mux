@@ -211,8 +211,21 @@ export class SlackAdapter implements ChannelAdapter {
   // Slack has no typing indicator for bots — no-op
   async showTyping(_channelId: string): Promise<void> {}
 
-  async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
-    await this.web!.chat.update({ channel: channelId, ts: messageId, text })
+  async editMessage(channelId: string, messageId: string, text: string, opts?: SendOptions): Promise<void> {
+    // Slack chat.update REPLACES the message: if blocks are omitted, any
+    // existing blocks (including button rows) are dropped. When the caller
+    // wants to preserve buttons on edit, they must pass inlineKeyboard here.
+    const sectionText = text.length > 2900 ? text.slice(0, 2897) + '...' : text
+    let blocks = opts?.inlineKeyboard as any[] | undefined
+    if (blocks && sectionText) {
+      blocks = [{ type: 'section', text: { type: 'mrkdwn', text: sectionText } }, ...blocks]
+    }
+    await this.web!.chat.update({
+      channel: channelId,
+      ts: messageId,
+      text,
+      ...(blocks ? { blocks } : {}),
+    })
   }
 
   async downloadFile(fileId: string): Promise<string> {

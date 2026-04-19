@@ -71,8 +71,14 @@ export interface ChannelAdapter {
    */
   removeReaction?(channelId: string, messageId: string, emoji: string): Promise<void>
 
-  /** Edit a previously sent message. */
-  editMessage(channelId: string, messageId: string, text: string): Promise<void>
+  /**
+   * Edit a previously sent message.
+   * If `opts.inlineKeyboard` is provided, the edit preserves/replaces buttons.
+   * Without it, callers risk buttons being stripped (Slack chat.update drops
+   * blocks when blocks omitted). Always pass opts when editing a message that
+   * originally had inline buttons.
+   */
+  editMessage(channelId: string, messageId: string, text: string, opts?: SendOptions): Promise<void>
 
   /**
    * Show typing/processing indicator.

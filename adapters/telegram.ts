@@ -176,11 +176,16 @@ export class TelegramAdapter implements ChannelAdapter {
     await this.api('sendChatAction', { chat_id: channelId, action: 'typing' }).catch(() => {})
   }
 
-  async editMessage(channelId: string, messageId: string, text: string): Promise<void> {
+  async editMessage(channelId: string, messageId: string, text: string, opts?: SendOptions): Promise<void> {
+    // Telegram editMessageText omits reply_markup from the edit by default —
+    // the INLINE KEYBOARD is preserved across edits unless you pass a new
+    // reply_markup. Pass it explicitly when the caller wants to update buttons.
+    const replyMarkup = opts?.inlineKeyboard
     await this.api('editMessageText', {
       chat_id: channelId,
       message_id: parseInt(messageId),
       text,
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
     })
   }
 

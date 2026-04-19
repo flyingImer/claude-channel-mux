@@ -394,7 +394,23 @@ const pollState = new Map<string, { offset: number; timer: NodeJS.Timeout }>()
 // would otherwise ALSO detect CC's permission dialog on the terminal
 // ("Esc to cancel" / "Enter to confirm" pattern) and send a duplicate
 // "🔧 nav" message. Flag this to suppress the screen-side duplicate.
-const pendingPermission = new Set<string>()
+//
+// Stored as {uuid → setAt timestamp} instead of a plain Set so we can expire
+// stale flags — a permission_request that never gets a permission_response
+// (user dismissed on CC side, IPC blip, etc.) would otherwise suppress all
+// dialogs for that uuid forever.
+const PERMISSION_SUPPRESS_TTL_MS = 5 * 60 * 1000
+const pendingPermission = new Map<string, number>()
+
+function isPermissionInFlight(uuid: string): boolean {
+  const setAt = pendingPermission.get(uuid)
+  if (setAt === undefined) return false
+  if (Date.now() - setAt > PERMISSION_SUPPRESS_TTL_MS) {
+    pendingPermission.delete(uuid)
+    return false
+  }
+  return true
+}
 
 // Most recent inbound per uuid, used to thread CC's outbound messages
 // under the user's message. Without this:
@@ -912,11 +928,31 @@ const screenWatchers = new Map<string, {
   paneId: number
   lastUpdateTime: number
   isDialog: boolean
+  nonDialogStreak?: number  // consecutive non-dialog samples since entering dialog mode
 }>()
 
 const SCREEN_THROTTLE_MS = 3000
+const DIALOG_OFF_STREAK = 2  // Require N consecutive non-dialog samples before clearing
 const THINKING_DOT = process.platform === 'darwin' ? '⏺' : '●'
 const TOOL_CALL_RE = /^[⏺●]\s+[A-Z][a-zA-Z]*\(/
+
+// Matches CC's interactive prompt hints. Covers the key vocabulary seen in
+// src/components/**/*.tsx and src/commands/**/*.tsx:
+//   Esc to {cancel|exit|skip|continue|dismiss|close|stop|go back|always exit}
+//   Enter to {confirm|select|continue|submit|retry|apply|auth|copy link|view|...}
+//   Tab / Space to {toggle|select}
+//   Ctrl+<KEY> to <word>
+//   ↑/↓ to select
+// Intentionally permissive — matches any verb after "<key> to". CC rewording
+// "Esc to dismiss" as "Esc to ignore" would still hit. When CC invents a
+// totally new prompt shape (e.g. "Tab: switch") the MAYBE_PROMPT_HINT_RE
+// below will log it so we know to update.
+const PROMPT_HINT_RE = /(?:Esc|Enter|Tab|Space|Ctrl\+[A-Z]|↑\/↓) to [a-z]/
+// Broader hint that catches "looks like a prompt" even outside our vocabulary.
+// If this matches and PROMPT_HINT_RE doesn't, we log a warning so we can see
+// new CC UI shapes we haven't adapted to. Case-sensitive on the key name so
+// we don't flag the status bar (e.g. "shift+tab to cycle" — lowercase).
+const MAYBE_PROMPT_HINT_RE = /\b(Esc|Enter|Tab|Space|Ctrl\+|Alt\+|Shift\+|Press)\b.*\bto\b/
 
 /**
  * Start watching a CC session's screen. Runs for the full session lifetime.
@@ -965,10 +1001,19 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     // MCP `permission_request` path already sent a 🔐 Allow/Deny message,
     // and CC's permission TUI matches our dialog markers. Without this we
     // send two duplicate prompts per permission event.
-    const permissionInFlight = pendingPermission.has(uuid)
-    const isDialog = !permissionInFlight && lines.some(l => l.includes('Esc to cancel') || l.includes('Esc to exit') || l.includes('Enter to confirm') || l.includes('Enter to select'))
+    const permissionInFlight = isPermissionInFlight(uuid)
+
+    // Broader prompt detector. Old string-allowlist missed most of CC's
+    // prompt surfaces (Esc to skip/continue/dismiss, Enter to continue/submit/…,
+    // ↑/↓ to select, Tab/Space to toggle). A regex across the known key
+    // vocabulary catches the structural pattern without maintaining a
+    // manual list. Still string-matching terminal text — CC doesn't expose
+    // a hook for its built-in TUI dialogs (see feedback_ccm_dialog_gaps.md),
+    // so this is the best we have until CC changes its UI wording again.
+    const isDialog = !permissionInFlight && PROMPT_HINT_RE.test(content)
 
     if (isDialog) {
+      entry.nonDialogStreak = 0
       // Dialog mode: send full screen + nav buttons
       const clean = lines.filter(l => l.trim()).join('\n').trim()
 
@@ -991,19 +1036,41 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
       buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
       buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
 
+      // Both send and edit paths preserve buttons. editMessage needs the
+      // inline keyboard explicitly — otherwise Slack chat.update drops
+      // blocks and the user sees a button-less stub.
+      const opts = adapter.renderButtons(buttons) as { inlineKeyboard?: unknown; replyTo?: string }
+      const threadTs = outboundThreadTs(uuid, ck)
+      if (threadTs) {
+        opts.replyTo = threadTs
+      }
       if (entry.lastDialogMsgId) {
-        try { await adapter.editMessage(id, entry.lastDialogMsgId, msg) } catch {}
+        try { await adapter.editMessage(id, entry.lastDialogMsgId, msg, opts) } catch {}
       } else {
-        entry.lastDialogMsgId = await sendWithButtonsReturn(ck, msg, buttons)
+        entry.lastDialogMsgId = await adapter.sendMessage(id, msg, opts)
       }
       entry.isDialog = true
     } else {
-      // Non-dialog: no screen streaming. Mid-turn text visibility is handled
-      // via JSONL tail instead (forwards CC's {type:"text"} assistant content
-      // blocks as they land). Screen watcher stays dialog-only here.
+      // Non-dialog: mid-turn text forwarding happens via the JSONL poll
+      // loop, not this path. Clear dialog state only after N consecutive
+      // non-dialog samples — a single flicker (e.g., cursor blink between
+      // two dialog screens) would otherwise churn lastDialogMsgId and
+      // produce duplicate nav messages with the old one stuck without
+      // buttons.
       if (entry.isDialog) {
-        entry.lastDialogMsgId = undefined
-        entry.isDialog = false
+        entry.nonDialogStreak = (entry.nonDialogStreak ?? 0) + 1
+        if (entry.nonDialogStreak >= DIALOG_OFF_STREAK) {
+          entry.lastDialogMsgId = undefined
+          entry.isDialog = false
+          entry.nonDialogStreak = 0
+        }
+      }
+      // Observability: flag screens that look prompt-like (contain "to " with
+      // a known key word) but our detector said no. Signals CC added a new
+      // prompt shape we should adapt to.
+      if (!permissionInFlight && MAYBE_PROMPT_HINT_RE.test(content) && !PROMPT_HINT_RE.test(content)) {
+        const hintLine = lines.filter(l => MAYBE_PROMPT_HINT_RE.test(l)).pop()?.trim().slice(0, 120) ?? ''
+        process.stderr.write(`daemon: possible new dialog pattern on ${u} — not caught by detector: ${hintLine}\n`)
       }
     }
   }
@@ -1020,7 +1087,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
   screenWatchers.set(uuid, {
     watcher: { close: () => clearInterval(interval) } as any,
     lastContent: '', channelKey: ck, paneId,
-    lastUpdateTime: 0, isDialog: false,
+    lastUpdateTime: 0, isDialog: false, nonDialogStreak: 0,
   })
 
   // Initial check after CC has had time to render
@@ -1784,8 +1851,9 @@ async function handlePermissionRequest(
 
   // Suppress the screen-watcher's dialog-branch duplicate while this
   // permission request is live. Cleared when daemon forwards the
-  // allow/deny response back to CC.
-  pendingPermission.add(uuid)
+  // allow/deny response back to CC, or when PERMISSION_SUPPRESS_TTL_MS
+  // expires (stale flag from a dropped permission flow).
+  pendingPermission.set(uuid, Date.now())
 
   const preview = tool_name === 'Bash' ? `\n\`\`\`\n${input_preview.slice(0, 200)}\n\`\`\`\n` : ''
   const text = `🔐 *${tool_name}*: ${description}${preview}`
