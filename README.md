@@ -92,13 +92,35 @@ CC commands (forwarded to session terminal):
 
 ### 1. Install the plugin
 
-```bash
-# From marketplace (when published):
-claude plugin add claude-channel-mux
+This repo is a Claude Code plugin marketplace with one plugin in it
+(`.claude-plugin/marketplace.json` + `.claude-plugin/plugin.json`). Install
+with the two-step `marketplace add` + `plugin install` flow. Anthropic's
+official channels don't accept third-party submissions, so GitHub is the
+distribution path.
 
-# From local directory (development):
-claude plugin add /path/to/claude-channel-mux
+From GitHub (recommended):
+
+```bash
+claude plugin marketplace add flyingImer/claude-channel-mux
+claude plugin install claude-channel-mux@claude-channel-mux
 ```
+
+From a local clone (development):
+
+```bash
+git clone https://github.com/flyingImer/claude-channel-mux.git ~/src/ccm
+claude plugin marketplace add ~/src/ccm
+claude plugin install claude-channel-mux@claude-channel-mux
+```
+
+`plugin install claude-channel-mux@claude-channel-mux` is
+`<plugin-name>@<marketplace-name>`. Both happen to be the same string here
+(the marketplace holds one plugin).
+
+Installing the plugin registers the per-session MCP bridge (`server.ts`) and
+adds `/claude-channel-mux:access` + `/claude-channel-mux:configure` skills.
+The daemon (`daemon.ts`) is a separate long-running process you start in
+step 4 below.
 
 ### 2. Configure tokens
 
@@ -221,7 +243,7 @@ cargo build --release --target wasm32-wasip1
 
 ## Known limitations
 
-- The `--dangerously-load-development-channels` dialog requires confirmation when running as a dev plugin. Published marketplace plugins skip this.
+- Daemon-spawned CC sub-sessions load the plugin via `--dangerously-load-development-channels` (because third-party plugins aren't on Claude Code's built-in `--channels` allowlist). CC prompts once per session to confirm the dev channel load; `bypass permissions` skips it. Regular installs into your personal CC session via `plugin install` don't hit this — the flag only applies to the sub-sessions the daemon spawns.
 - Telegram Bot API has no message history/search. Use `fetch_thread` (Slack only) for context recovery after compaction.
 - Telegram file downloads are capped at 20MB by the Bot API.
 
