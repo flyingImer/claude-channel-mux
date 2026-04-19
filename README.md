@@ -244,6 +244,8 @@ cargo build --release --target wasm32-wasip1
 ## Known limitations
 
 - Daemon-spawned CC sub-sessions load the plugin via `--dangerously-load-development-channels` (because third-party plugins aren't on Claude Code's built-in `--channels` allowlist). CC prompts once per session to confirm the dev channel load; `bypass permissions` skips it. Regular installs into your personal CC session via `plugin install` don't hit this — the flag only applies to the sub-sessions the daemon spawns.
+- Threading is owned by CC's context management via the `reply` tool's `reply_to` arg. The daemon forwards CC's choice verbatim and does not override. When you have multiple Slack threads open in parallel, CC has to correctly attribute each reply to the right inbound — if CC drifts (reuses a stale `reply_to` from an earlier turn), the reply lands in the wrong thread. Tell CC to correct `reply_to` and it will; the plugin contract doesn't give the daemon a way to disambiguate parallel threads on its own.
+- Mid-turn text forwarded via the transcript poll loop (💬 / 📬 prefix) goes to the main channel, not any thread. The poll path reads CC's JSONL without a threading signal, so the daemon doesn't guess. If you want CC's mid-turn updates inside a thread, have CC call `reply` with `reply_to` instead of only writing text.
 - Telegram Bot API has no message history/search. Use `fetch_thread` (Slack only) for context recovery after compaction.
 - Telegram file downloads are capped at 20MB by the Bot API.
 

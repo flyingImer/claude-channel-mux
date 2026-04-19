@@ -414,21 +414,17 @@ function isPermissionInFlight(uuid: string): boolean {
 
 // Most recent inbound per uuid, used to thread CC's outbound messages
 // under the user's message. Without this:
-//   - poll-path mid-turn text goes to main channel regardless of where the
-//     user typed
-//   - CC can pass stale reply_to in tool calls (remembered from an earlier
-//     turn), so replies hang on old threads
-// With this, every outbound (poll + reply tool) is anchored to the same
-// user-message thread, giving one coherent place to read the exchange.
-type InboundCtx = { channelKey: string; messageId: string; threadTs?: string }
-const currentInbound = new Map<string, InboundCtx>()
-
-/** Thread_ts to use for outbound messages on behalf of this uuid. */
-function outboundThreadTs(uuid: string, ck: string): string | undefined {
-  const ctx = currentInbound.get(uuid)
-  if (!ctx || ctx.channelKey !== ck) return undefined
-  return ctx.threadTs ?? ctx.messageId
-}
+// NOTE: previous versions of this file tracked currentInbound[uuid] = latest
+// inbound and used it to override CC's reply_to in tool calls, and to thread
+// poll-path mid-turn text. That design was a mistake — see
+// feedback_ccm_threading.md. The daemon owns the Slack API, but it doesn't
+// own the semantic decision of "which question is this answering"; only CC
+// does. Using "latest inbound" as an override replaces one soft signal with
+// a weaker one, and breaks when the user has two parallel threads open.
+//
+// Current design: CC decides threading via the reply tool's `reply_to` arg.
+// Daemon forwards that decision verbatim. The poll path for mid-turn text
+// has no CC-provided signal, so it sends to main channel (no thread).
 
 function textFingerprint(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, FINGERPRINT_CHARS)
@@ -536,19 +532,14 @@ async function processTranscriptLine(uuid: string, line: string): Promise<void> 
     // dispatched to Slack in handleTool. Skip to avoid double-delivery.
     if (isCoveredByReply(uuid, text)) continue
     const display = `${prefix} ${text}`
-    // Forward to every channel bound to this session, threaded under the
-    // latest user message from that channel (falls back to no thread if
-    // the user hasn't sent anything on this channel yet).
+    // Poll path has no CC-provided threading signal — CC never tells daemon
+    // which inbound a mid-turn text block is for, and daemon won't guess.
+    // Always send to the main channel. See feedback_ccm_threading.md.
     for (const ck of channelsForUuid(uuid)) {
       const adapter = adapterFor(ck)
       if (!adapter) continue
-      const threadTs = outboundThreadTs(uuid, ck)
       try {
-        await adapter.sendMessage(
-          localId(ck),
-          display,
-          threadTs ? { replyTo: threadTs, broadcast: true } : undefined,
-        )
+        await adapter.sendMessage(localId(ck), display)
       } catch (err) {
         process.stderr.write(`daemon: poll send to ${ck} failed: ${err}\n`)
       }
@@ -1039,11 +1030,9 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
       // Both send and edit paths preserve buttons. editMessage needs the
       // inline keyboard explicitly — otherwise Slack chat.update drops
       // blocks and the user sees a button-less stub.
-      const opts = adapter.renderButtons(buttons) as { inlineKeyboard?: unknown; replyTo?: string }
-      const threadTs = outboundThreadTs(uuid, ck)
-      if (threadTs) {
-        opts.replyTo = threadTs
-      }
+      // Nav is a daemon-originated dialog, not a CC reply — no threading;
+      // send to main channel so the user sees it regardless of thread context.
+      const opts = adapter.renderButtons(buttons) as { inlineKeyboard?: unknown }
       if (entry.lastDialogMsgId) {
         try { await adapter.editMessage(id, entry.lastDialogMsgId, msg, opts) } catch {}
       } else {
@@ -1728,16 +1717,6 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       adapter?.showTyping?.(id).catch(() => {})
       lastInboundMsg.set(ck, msg.messageId)
 
-      // Record the current inbound so every outbound on this uuid's behalf
-      // threads under the user's message. threadTs (replyToId) is set if
-      // the user was already in a thread; otherwise messageId starts a new
-      // thread under the user's top-level message.
-      currentInbound.set(uuid, {
-        channelKey: ck,
-        messageId: msg.messageId,
-        threadTs: msg.replyToId,
-      })
-
       // Reset thinking-message anchor so the next 💭 starts a fresh message
       // for this turn (don't edit an old turn's 💭).
       const sw = screenWatchers.get(uuid)
@@ -1793,12 +1772,11 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         // Remember BEFORE dispatch — prevents the transcript poll loop from
         // also forwarding this text if CC wrote it as a text block too.
         rememberReply(uuid, text)
-        // Daemon-authoritative threading: override CC's reply_to (which often
-        // carries a stale thread_ts from an earlier turn) with the current
-        // inbound's thread. Guarantees mid-turn poll text and CC's reply end
-        // up in the same place.
-        const threadOverride = outboundThreadTs(uuid, ck)
-        const replyTo = threadOverride ?? (msg.args.reply_to as string | undefined)
+        // CC owns threading. Forward CC's reply_to verbatim — no daemon
+        // override. Previous versions overrode with "latest inbound" which
+        // was a weaker signal than CC's context and broke parallel-thread
+        // usage. See feedback_ccm_threading.md.
+        const replyTo = msg.args.reply_to as string | undefined
         const ts = await adapter.sendMessage(id, text, {
           replyTo,
           broadcast: true,  // Slack: also send to channel when replying in thread
