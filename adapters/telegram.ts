@@ -17,6 +17,10 @@ export class TelegramAdapter implements ChannelAdapter {
   private messageCb: ((msg: InboundMessage) => void | Promise<void>) | null = null
   private interactionCb: ((i: InteractionCallback) => void | Promise<void>) | null = null
   private searchCb: ((channelId: string, query: string) => void) | null = null
+  // Telegram's setMessageReaction is REPLACE-ALL — to implement add-semantics
+  // we track reactions we've set per message and resend the union. Key is
+  // `${chat_id}:${message_id}`. Bot API caps at 3 reactions; oldest drops.
+  private reactionCache = new Map<string, string[]>()
   private static SEARCH_PROMPT = '🔍 Search:'
 
   constructor(opts: { token?: string; inboxDir: string }) {
@@ -156,20 +160,39 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
-    await this.api('setMessageReaction', {
-      chat_id: channelId,
-      message_id: parseInt(messageId),
-      reaction: [{ type: 'emoji', emoji }],
-    })
+    // Telegram setMessageReaction REPLACES the whole reaction set. To give
+    // callers add-semantics, track what we've added per message and resend
+    // the union. Cap at 3 (Bot API max for non-premium bots); oldest drops.
+    const key = `${channelId}:${messageId}`
+    const current = this.reactionCache.get(key) ?? []
+    if (current.includes(emoji)) return  // already there
+    const next = [...current, emoji].slice(-3)
+    try {
+      await this.api('setMessageReaction', {
+        chat_id: channelId,
+        message_id: parseInt(messageId),
+        reaction: next.map(e => ({ type: 'emoji', emoji: e })),
+      })
+      this.reactionCache.set(key, next)
+    } catch (err) {
+      process.stderr.write(`telegram: addReaction(${emoji}) on ${channelId}/${messageId} failed: ${err}\n`)
+      throw err
+    }
   }
 
-  async removeReaction(channelId: string, messageId: string, _emoji: string): Promise<void> {
-    // Telegram: set empty reaction array to clear
+  async removeReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
+    // Drop `emoji` from our tracked set, resend the union. If `emoji` is
+    // empty or we have no state, clear all (matches old behavior).
+    const key = `${channelId}:${messageId}`
+    const current = this.reactionCache.get(key) ?? []
+    const next = emoji ? current.filter(e => e !== emoji) : []
     await this.api('setMessageReaction', {
       chat_id: channelId,
       message_id: parseInt(messageId),
-      reaction: [],
+      reaction: next.map(e => ({ type: 'emoji', emoji: e })),
     }).catch(() => {})
+    if (next.length === 0) this.reactionCache.delete(key)
+    else this.reactionCache.set(key, next)
   }
 
   async showTyping(channelId: string): Promise<void> {

@@ -197,7 +197,19 @@ export class SlackAdapter implements ChannelAdapter {
 
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     const name = SlackAdapter.EMOJI_MAP[emoji] ?? emoji.replace(/:/g, '')
-    await this.web!.reactions.add({ channel: channelId, timestamp: messageId, name })
+    try {
+      await this.web!.reactions.add({ channel: channelId, timestamp: messageId, name })
+    } catch (err: any) {
+      // `already_reacted` is expected when the same bot reacts twice with the
+      // same emoji — not a bug, stay quiet. Everything else (missing scope,
+      // invalid channel, rate limit) is worth surfacing so we can tell why
+      // the 👀 ack didn't appear.
+      const code = err?.data?.error ?? err?.code ?? 'unknown'
+      if (code !== 'already_reacted') {
+        process.stderr.write(`slack: addReaction(${emoji}→${name}) on ${channelId}/${messageId} failed: ${code}\n`)
+      }
+      throw err
+    }
   }
 
   async removeReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
