@@ -1797,21 +1797,28 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         // also forwarding this text if CC wrote it as a text block too.
         rememberReply(uuid, text)
         // CC owns threading. Forward CC's reply_to verbatim — no daemon
-        // override. Previous versions overrode with "latest inbound" which
-        // was a weaker signal than CC's context and broke parallel-thread
-        // usage. See feedback_ccm_threading.md.
-        const replyTo = msg.args.reply_to as string | undefined
+        // override for semantic choice. See feedback_ccm_threading.md.
+        //
+        // HARD REQUIREMENT: no reply is ever dropped. A reply_to value that
+        // doesn't match any observed anchor is presumed drifted (wrong
+        // digit / hallucinated / stale). Slack would route it to the wrong
+        // thread or silently fail. Fall back to main-channel delivery so
+        // the message is guaranteed visible; wrong-thread is worse than
+        // main-channel for user comprehension.
+        //
+        // The daemon only falls back when we have POSITIVE evidence the
+        // value is bogus (set is non-empty and the value isn't in it). On
+        // a fresh daemon restart the set is empty, we can't distinguish
+        // drift from valid-but-pre-restart, so we forward verbatim and
+        // trust CC (no false-positive fallback).
+        let replyTo = msg.args.reply_to as string | undefined
         if (replyTo) {
-          // Only warn when we have observed anchors — otherwise a fresh daemon
-          // restart would spam warnings until the first inbound lands. CC
-          // might also legitimately reply to an anchor from before the
-          // daemon came up (session resume) — once that anchor appears in a
-          // new inbound it'll self-correct.
           const known = knownThreadAnchors.get(uuid)
           if (known && known.size > 0 && !known.has(replyTo)) {
             process.stderr.write(
-              `daemon: ${uuid.slice(0, 8)} reply_to=${replyTo} not in observed anchors (${known.size} tracked) — CC may have drifted (wrong digit, hallucinated, or prior-turn value)\n`,
+              `daemon: ${uuid.slice(0, 8)} reply_to=${replyTo} not in observed anchors (${known.size} tracked) — falling back to main channel so the reply isn't lost\n`,
             )
+            replyTo = undefined
           }
         }
         const ts = await adapter.sendMessage(id, text, {
