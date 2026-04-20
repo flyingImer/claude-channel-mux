@@ -425,6 +425,24 @@ function isPermissionInFlight(uuid: string): boolean {
 // Current design: CC decides threading via the reply tool's `reply_to` arg.
 // Daemon forwards that decision verbatim. The poll path for mid-turn text
 // has no CC-provided signal, so it sends to main channel (no thread).
+//
+// Observability only: track message_ids and reply_to_ids we've seen in
+// inbounds so we can warn when CC passes a reply_to that doesn't match
+// any known anchor (drift / hallucination — e.g. one digit off). Not a
+// correction; just visibility.
+const knownThreadAnchors = new Map<string, Set<string>>()  // uuid → {messageId | reply_to_id}
+
+function rememberThreadAnchor(uuid: string, id: string | undefined): void {
+  if (!id) return
+  let set = knownThreadAnchors.get(uuid)
+  if (!set) { set = new Set(); knownThreadAnchors.set(uuid, set) }
+  set.add(id)
+  // Cap memory — keep at most 200 anchors per uuid; drop oldest-insertion-order.
+  if (set.size > 200) {
+    const first = set.values().next().value
+    if (first) set.delete(first)
+  }
+}
 
 function textFingerprint(text: string): string {
   return text.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, FINGERPRINT_CHARS)
@@ -1717,6 +1735,12 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       adapter?.showTyping?.(id).catch(() => {})
       lastInboundMsg.set(ck, msg.messageId)
 
+      // Remember valid thread anchors for this uuid (observability only —
+      // used to flag CC replies with reply_to that doesn't match any seen
+      // inbound's message_id or reply_to_id, i.e. drift / hallucination).
+      rememberThreadAnchor(uuid, msg.messageId)
+      rememberThreadAnchor(uuid, msg.replyToId)
+
       // Reset thinking-message anchor so the next 💭 starts a fresh message
       // for this turn (don't edit an old turn's 💭).
       const sw = screenWatchers.get(uuid)
@@ -1777,6 +1801,19 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         // was a weaker signal than CC's context and broke parallel-thread
         // usage. See feedback_ccm_threading.md.
         const replyTo = msg.args.reply_to as string | undefined
+        if (replyTo) {
+          // Only warn when we have observed anchors — otherwise a fresh daemon
+          // restart would spam warnings until the first inbound lands. CC
+          // might also legitimately reply to an anchor from before the
+          // daemon came up (session resume) — once that anchor appears in a
+          // new inbound it'll self-correct.
+          const known = knownThreadAnchors.get(uuid)
+          if (known && known.size > 0 && !known.has(replyTo)) {
+            process.stderr.write(
+              `daemon: ${uuid.slice(0, 8)} reply_to=${replyTo} not in observed anchors (${known.size} tracked) — CC may have drifted (wrong digit, hallucinated, or prior-turn value)\n`,
+            )
+          }
+        }
         const ts = await adapter.sendMessage(id, text, {
           replyTo,
           broadcast: true,  // Slack: also send to channel when replying in thread
