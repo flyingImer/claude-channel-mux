@@ -1159,6 +1159,7 @@ async function waitForChange(paneId: number, before: string, timeoutMs = 2000): 
 
 function killSession(uuid: string): void {
   stopScreenWatch(uuid)
+  stopTranscriptPoll(uuid)
   const l = live.get(uuid)
   if (!l) return
   if (l.child) {
@@ -1171,6 +1172,15 @@ function killSession(uuid: string): void {
   }
   live.delete(uuid)
   socketToUuid.forEach((u, s) => { if (u === uuid) socketToUuid.delete(s) })
+  // The session is gone — next time a server.ts for this uuid registers,
+  // treat it as a first-ever reconnect so the "✅ Session reconnected"
+  // confirmation fires again. Without this, user does `ccm stop` and then
+  // resumes, and the resume looks silent (no confirmation message in the
+  // channel). Per-session state that scopes to "this uuid is dead now":
+  announcedReconnect.delete(uuid)
+  knownThreadAnchors.delete(uuid)
+  recentReplies.delete(uuid)
+  pendingPermission.delete(uuid)
 }
 
 function unbind(ck: string): { uuid: string; remaining: number } | null {
