@@ -3,6 +3,11 @@ import { basename } from 'path'
 import { pipeline } from 'stream/promises'
 import { Readable } from 'stream'
 import type { ChannelAdapter, InboundMessage, InteractionCallback, SendOptions } from './types.js'
+import { renderForTelegram, splitForLimit } from './markdown.js'
+
+// Telegram Bot API caps messages at 4096 chars. Leave headroom for MV2
+// escape expansion (each `_*[]()~>#+-=|{}.!` gets a backslash added).
+const MESSAGE_LIMIT = 3800
 
 export class TelegramAdapter implements ChannelAdapter {
   readonly platform = 'telegram'
@@ -152,11 +157,30 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async sendMessage(channelId: string, text: string, opts?: SendOptions): Promise<string | undefined> {
-    const body: Record<string, unknown> = { chat_id: channelId, text }
-    if (opts?.replyTo) body.reply_to_message_id = parseInt(opts.replyTo)
-    if (opts?.inlineKeyboard) body.reply_markup = { inline_keyboard: opts.inlineKeyboard }
-    const r = await this.api('sendMessage', body)
-    return String(r.message_id)
+    // Convert CC's GFM markdown to Telegram MarkdownV2 (handles the ugly
+    // `_*[]()~>#+-=|{}.!` escape rules). Auto-fence ASCII art before
+    // conversion so the remark AST doesn't mangle it as a table.
+    const rendered = renderForTelegram(text)
+    // Chunk at ~3800 chars so a single long CC reply becomes multiple
+    // Telegram messages instead of being truncated. Only the first chunk
+    // carries reply_to (threading anchor); only the last carries the
+    // inline keyboard so buttons attach to the final visible message.
+    const chunks = splitForLimit(rendered, MESSAGE_LIMIT)
+    let firstId: string | undefined
+    for (let i = 0; i < chunks.length; i++) {
+      const isFirst = i === 0
+      const isLast = i === chunks.length - 1
+      const body: Record<string, unknown> = {
+        chat_id: channelId,
+        text: chunks[i],
+        parse_mode: 'MarkdownV2',
+      }
+      if (isFirst && opts?.replyTo) body.reply_to_message_id = parseInt(opts.replyTo)
+      if (isLast && opts?.inlineKeyboard) body.reply_markup = { inline_keyboard: opts.inlineKeyboard }
+      const r = await this.api('sendMessage', body)
+      if (isFirst) firstId = String(r.message_id)
+    }
+    return firstId
   }
 
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
@@ -200,16 +224,19 @@ export class TelegramAdapter implements ChannelAdapter {
   }
 
   async editMessage(channelId: string, messageId: string, text: string, opts?: SendOptions): Promise<void> {
-    // Telegram editMessageText omits reply_markup from the edit by default —
-    // the INLINE KEYBOARD is preserved across edits unless you pass a new
-    // reply_markup. Pass it explicitly when the caller wants to update buttons.
-    const replyMarkup = opts?.inlineKeyboard
-    await this.api('editMessageText', {
+    // editMessageText has the same 4096 char cap but can't be split (it
+    // edits one message). If the rendered text exceeds the limit, truncate
+    // so the edit actually goes through rather than Slack-style rejecting.
+    // Telegram preserves the existing inline_keyboard unless we pass one.
+    const rendered = renderForTelegram(text)
+    const body: Record<string, unknown> = {
       chat_id: channelId,
       message_id: parseInt(messageId),
-      text,
-      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
-    })
+      text: rendered.length > MESSAGE_LIMIT ? rendered.slice(0, MESSAGE_LIMIT - 3) + '...' : rendered,
+      parse_mode: 'MarkdownV2',
+    }
+    if (opts?.inlineKeyboard) body.reply_markup = { inline_keyboard: opts.inlineKeyboard }
+    await this.api('editMessageText', body)
   }
 
   async downloadFile(fileId: string): Promise<string> {

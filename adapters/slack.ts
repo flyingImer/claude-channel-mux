@@ -3,6 +3,11 @@ import { SocketModeClient } from '@slack/socket-mode'
 import { readFileSync } from 'fs'
 import { basename } from 'path'
 import type { ChannelAdapter, InboundMessage, InteractionCallback, SendOptions } from './types.js'
+import { renderForSlack, splitForLimit } from './markdown.js'
+
+// Slack section block text hard limit per the API. Each section holds up
+// to 3000 chars; a single chat.postMessage can carry up to 50 blocks.
+const SECTION_LIMIT = 2900
 
 export class SlackAdapter implements ChannelAdapter {
   readonly platform = 'slack'
@@ -171,19 +176,24 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   async sendMessage(channelId: string, text: string, opts?: SendOptions): Promise<string | undefined> {
-    // Slack section block text has a 3000-char hard limit. Truncate so the
-    // postMessage call doesn't reject with invalid_blocks — that rejection
-    // used to cascade into unhandled rejections and fake "reconnected" loops.
-    const sectionText = text.length > 2900 ? text.slice(0, 2897) + '...' : text
-    let blocks = opts?.inlineKeyboard as any[] | undefined
-    if (blocks && sectionText) {
-      blocks = [{ type: 'section', text: { type: 'mrkdwn', text: sectionText } }, ...blocks]
-    }
+    // Convert CC's GFM markdown into Slack's mrkdwn (bold/italic/links/etc).
+    // ASCII-art-ish lines get auto-fenced so remark doesn't mangle them.
+    const rendered = renderForSlack(text)
+    // Split long text into multiple section blocks rather than truncating.
+    // Each section caps at 3000 chars; one message can carry up to 50
+    // sections, plus whatever inline keyboard buttons we're attaching.
+    const sections = splitForLimit(rendered, SECTION_LIMIT).slice(0, 45)
+    const textBlocks = sections.map(s => ({
+      type: 'section',
+      text: { type: 'mrkdwn', text: s },
+    }))
+    const keyboard = opts?.inlineKeyboard as any[] | undefined
+    const blocks = keyboard ? [...textBlocks, ...keyboard] : textBlocks
     const res = await this.web!.chat.postMessage({
       channel: channelId,
-      text,  // `text` is the notification fallback; Slack accepts longer here
+      text,  // notification fallback; Slack accepts up to 40k here
       ...(opts?.replyTo ? { thread_ts: opts.replyTo, reply_broadcast: opts.broadcast ?? true } : {}),
-      ...(blocks ? { blocks } : {}),
+      ...(blocks.length > 0 ? { blocks } : {}),
     })
     return res.ts as string | undefined
   }
@@ -225,18 +235,22 @@ export class SlackAdapter implements ChannelAdapter {
 
   async editMessage(channelId: string, messageId: string, text: string, opts?: SendOptions): Promise<void> {
     // Slack chat.update REPLACES the message: if blocks are omitted, any
-    // existing blocks (including button rows) are dropped. When the caller
-    // wants to preserve buttons on edit, they must pass inlineKeyboard here.
-    const sectionText = text.length > 2900 ? text.slice(0, 2897) + '...' : text
-    let blocks = opts?.inlineKeyboard as any[] | undefined
-    if (blocks && sectionText) {
-      blocks = [{ type: 'section', text: { type: 'mrkdwn', text: sectionText } }, ...blocks]
-    }
+    // existing blocks (including button rows) are dropped. Mirror sendMessage:
+    // mrkdwn conversion + multi-section split, and forward the inline keyboard
+    // explicitly when the caller passes it.
+    const rendered = renderForSlack(text)
+    const sections = splitForLimit(rendered, SECTION_LIMIT).slice(0, 45)
+    const textBlocks = sections.map(s => ({
+      type: 'section',
+      text: { type: 'mrkdwn', text: s },
+    }))
+    const keyboard = opts?.inlineKeyboard as any[] | undefined
+    const blocks = keyboard ? [...textBlocks, ...keyboard] : textBlocks
     await this.web!.chat.update({
       channel: channelId,
       ts: messageId,
       text,
-      ...(blocks ? { blocks } : {}),
+      ...(blocks.length > 0 ? { blocks } : {}),
     })
   }
 
