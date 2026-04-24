@@ -230,8 +230,19 @@ export class SlackAdapter implements ChannelAdapter {
     }).catch(() => {})  // ignore if not found
   }
 
-  // Slack has no typing indicator for bots — no-op
-  async showTyping(_channelId: string): Promise<void> {}
+  async showTyping(channelId: string, threadTs?: string): Promise<void> {
+    if (!threadTs) return
+    try {
+      await this.web!.assistant.threads.setStatus({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        status: 'is thinking...',
+      })
+    } catch (err: any) {
+      const code = err?.data?.error ?? err?.code ?? 'unknown'
+      process.stderr.write(`slack: assistant.threads.setStatus failed: ${code}\n`)
+    }
+  }
 
   async editMessage(channelId: string, messageId: string, text: string, opts?: SendOptions): Promise<void> {
     // Slack chat.update REPLACES the message: if blocks are omitted, any

@@ -83,9 +83,9 @@ export interface ChannelAdapter {
   /**
    * Show typing/processing indicator.
    * Telegram: sendChatAction('typing') — auto-expires after 5s
-   * Slack: no native typing for bots — this is a no-op
+   * Slack: assistant.threads.setStatus — auto-expires after 2min
    */
-  showTyping?(channelId: string): Promise<void>
+  showTyping?(channelId: string, threadTs?: string): Promise<void>
 
   /** Download a file to the inbox dir. Returns local file path. */
   downloadFile(fileId: string): Promise<string>

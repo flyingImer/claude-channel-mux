@@ -1763,7 +1763,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
 
       // Ack: react to the message + show typing
       adapter?.addReaction(id, msg.messageId, '👀').catch(() => {})
-      adapter?.showTyping?.(id).catch(() => {})
+      adapter?.showTyping?.(id, msg.replyToId ?? msg.messageId).catch(() => {})
       lastInboundMsg.set(ck, msg.messageId)
 
       // Remember valid thread anchors for this uuid (observability only —
