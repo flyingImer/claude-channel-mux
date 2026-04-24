@@ -18,6 +18,7 @@ export class SlackAdapter implements ChannelAdapter {
   private web: WebClient | null = null
   private socket: SocketModeClient | null = null
   private botUserId = ''
+  private botId = ''
   private botToken: string
   private appToken: string
   private inboxDir: string
@@ -43,14 +44,15 @@ export class SlackAdapter implements ChannelAdapter {
     try {
       const auth = await this.web.auth.test()
       this.botUserId = (auth.user_id as string) ?? ''
-      process.stderr.write(`slack: bot user ${this.botUserId}\n`)
+      this.botId = (auth.bot_id as string) ?? ''
+      process.stderr.write(`slack: bot user ${this.botUserId} bot_id ${this.botId}\n`)
     } catch (err) {
       process.stderr.write(`slack: auth.test failed: ${err}\n`)
     }
 
     this.socket.on('message', async ({ event, ack }) => {
       await ack()
-      if (event.user === this.botUserId) return
+      if (event.user === this.botUserId || event.bot_id === this.botId) return
       if (event.subtype && event.subtype !== 'file_share') return
 
       const userName = await this.resolveUserName(event.user)
