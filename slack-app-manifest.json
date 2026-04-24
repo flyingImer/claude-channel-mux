@@ -9,6 +9,9 @@
       "display_name": "Claude Mux",
       "always_online": true
     },
+    "assistant_view": {
+      "assistant_description": "Routes messages to Claude Code sessions"
+    },
     "slash_commands": [
       {
         "command": "/ccm",
