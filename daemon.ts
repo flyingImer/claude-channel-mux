@@ -481,7 +481,7 @@ function isRecentDuplicateReply(uuid: string, text: string): boolean {
 
 function startTranscriptPoll(uuid: string): void {
   if (pollState.has(uuid)) return
-  const state = { offset: 0, timer: null as unknown as NodeJS.Timeout }
+  const state = { offset: 0, timer: null as unknown as NodeJS.Timeout, currentReplyTo: null as string | null }
   const tick = async () => {
     try {
       const t = findTranscript(uuid)
@@ -500,7 +500,7 @@ function startTranscriptPoll(uuid: string): void {
         const chunk = buf.toString('utf8')
         for (const line of chunk.split('\n')) {
           if (!line.trim()) continue
-          await processTranscriptLine(uuid, line)
+          await processTranscriptLine(uuid, line, state)
         }
       } finally {
         closeSync(fh)
@@ -522,21 +522,43 @@ function stopTranscriptPoll(uuid: string): void {
   process.stderr.write(`daemon: transcript poll stopped for ${uuid.slice(0, 8)}\n`)
 }
 
-async function processTranscriptLine(uuid: string, line: string): Promise<void> {
+const CHANNEL_TAG_MESSAGE_ID_RE = /<channel[^>]*\bmessage_id="([^"]+)"[^>]*>/
+
+async function processTranscriptLine(uuid: string, line: string, pollState_: { currentReplyTo: string | null }): Promise<void> {
   let entry: Record<string, unknown>
   try { entry = JSON.parse(line) } catch { return }
 
+  if (entry.isSidechain === true) return
+
+  // User entries: extract threading signal from <channel message_id="..."> tag.
+  // CC processes queue serially — the latest user entry's message_id is the
+  // thread all subsequent assistant text belongs to.
+  if (entry.type === 'user') {
+    const msg = entry.message as { content?: unknown } | undefined
+    const content = msg?.content
+    if (typeof content === 'string') {
+      const m = content.match(CHANNEL_TAG_MESSAGE_ID_RE)
+      if (m) pollState_.currentReplyTo = m[1]
+    } else if (Array.isArray(content)) {
+      for (const c of content) {
+        if (typeof c === 'string') {
+          const m = c.match(CHANNEL_TAG_MESSAGE_ID_RE)
+          if (m) { pollState_.currentReplyTo = m[1]; break }
+        } else if (typeof c === 'object' && c && (c as any).type === 'text') {
+          const m = ((c as any).text as string)?.match(CHANNEL_TAG_MESSAGE_ID_RE)
+          if (m) { pollState_.currentReplyTo = m[1]; break }
+        }
+      }
+    }
+    return
+  }
+
   if (entry.type !== 'assistant') return
-  if (entry.isSidechain === true) return  // subagent internal output, not user-facing
 
   const msg = entry.message as { content?: unknown; stop_reason?: string } | undefined
   const content = msg?.content
   if (!Array.isArray(content)) return
 
-  // Mid-turn vs end-of-turn: CC sets stop_reason==="end_turn" on the final
-  // assistant message of a turn, "tool_use" when it's pausing for a tool
-  // result and will continue. Use this to prefix forwarded text with an
-  // emoji so the user can tell progress-updates apart from conclusions.
   const isEndOfTurn = msg?.stop_reason === 'end_turn'
   const prefix = isEndOfTurn ? '📬' : '💬'
 
@@ -546,24 +568,17 @@ async function processTranscriptLine(uuid: string, line: string): Promise<void> 
     if (block.type !== 'text' || typeof block.text !== 'string') continue
     const text = block.text.trim()
     if (!text) continue
-    // Dedup: CC already sent this via the `reply` tool → daemon already
-    // dispatched to Slack in handleTool. Skip to avoid double-delivery.
     if (isCoveredByReply(uuid, text)) continue
     const display = `${prefix} ${text}`
-    // Poll path has no CC-provided threading signal — CC never tells daemon
-    // which inbound a mid-turn text block is for, and daemon won't guess.
-    // Always send to the main channel. See feedback_ccm_threading.md.
     for (const ck of channelsForUuid(uuid)) {
       const adapter = adapterFor(ck)
       if (!adapter) continue
       try {
-        await adapter.sendMessage(localId(ck), display)
+        await adapter.sendMessage(localId(ck), display, pollState_.currentReplyTo ? { replyTo: pollState_.currentReplyTo } : undefined)
       } catch (err) {
         process.stderr.write(`daemon: poll send to ${ck} failed: ${err}\n`)
       }
     }
-    // Remember so CC's follow-up reply tool call with the same text doesn't
-    // double-send (rememberReply is also called on the reply path).
     rememberReply(uuid, text)
   }
 }
