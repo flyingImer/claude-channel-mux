@@ -62,9 +62,12 @@ export async function dumpScreenAsync(paneId: number): Promise<string> {
   } catch { return '' }
 }
 
+const ZELLIJ_KEY_ALIASES: Record<string, string> = { Escape: 'Esc' }
+
 export function sendKeys(paneId: number, ...keys: string[]): void {
   try {
-    zj(`send-keys --pane-id ${paneId} ${keys.join(' ')}`)
+    const normalized = keys.map(k => ZELLIJ_KEY_ALIASES[k] ?? k)
+    zj(`send-keys --pane-id ${paneId} ${normalized.join(' ')}`)
   } catch {}
 }
 
