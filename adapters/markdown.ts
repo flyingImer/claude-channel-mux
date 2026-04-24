@@ -19,6 +19,84 @@ import { slackifyMarkdown } from 'slackify-markdown'
 // @ts-ignore — telegramify-markdown is CommonJS with type definitions
 import telegramify from 'telegramify-markdown'
 
+/**
+ * Strip an outer ```lang ... ``` wrapper when the ENTIRE text is a single
+ * fenced block. CC does this when asked to "generate a markdown code block"
+ * — the intent is structured markdown, not a literal code block.
+ */
+function unwrapOuterFence(text: string): string {
+  const m = text.match(/^```\w*\n([\s\S]*)\n```\s*$/)
+  return m ? m[1] : text
+}
+
+// GFM table row: `| ... |` (ASCII pipe).
+const TABLE_ROW_RE = /^\s*\|.+\|\s*$/
+// GFM separator row: `|---|---|` with optional `:` alignment markers.
+const TABLE_SEP_RE = /^\s*\|[\s\-:|]+\|\s*$/
+
+/**
+ * Convert GFM tables to code-block format for Slack readability.
+ * Slack has no native table support and uses proportional fonts, so
+ * pipe-delimited text loses column alignment. A code block (monospace)
+ * is the only way to preserve cross-row comparison on Slack.
+ *
+ * Cleans up the table: removes the `|---|---|` separator row and pads
+ * columns for consistent alignment within the code block.
+ */
+function gfmTableToCodeBlock(text: string): string {
+  const lines = text.split('\n')
+  const out: string[] = []
+  let tableLines: string[] = []
+
+  const flushTable = () => {
+    if (tableLines.length < 2) {
+      out.push(...tableLines)
+      tableLines = []
+      return
+    }
+    // Parse rows, skip separator
+    const rows = tableLines
+      .filter(l => !TABLE_SEP_RE.test(l))
+      .map(l => l.split('|').slice(1, -1).map(c => c.trim()))
+
+    if (rows.length === 0) { out.push(...tableLines); tableLines = []; return }
+
+    // Compute column widths
+    const colCount = Math.max(...rows.map(r => r.length))
+    const widths: number[] = Array(colCount).fill(0)
+    for (const row of rows) {
+      for (let i = 0; i < colCount; i++) {
+        widths[i] = Math.max(widths[i], (row[i] ?? '').length)
+      }
+    }
+
+    // Render as code block with padded columns
+    out.push('```')
+    for (let r = 0; r < rows.length; r++) {
+      const cells = rows[r]
+      const padded = widths.map((w, i) => (cells[i] ?? '').padEnd(w))
+      out.push('| ' + padded.join(' | ') + ' |')
+      // Underline after header row
+      if (r === 0) {
+        out.push('|' + widths.map(w => '-'.repeat(w + 2)).join('|') + '|')
+      }
+    }
+    out.push('```')
+    tableLines = []
+  }
+
+  for (const line of lines) {
+    if (TABLE_ROW_RE.test(line)) {
+      tableLines.push(line)
+    } else {
+      flushTable()
+      out.push(line)
+    }
+  }
+  flushTable()
+  return out.join('\n')
+}
+
 // Unicode box-drawing block (U+2500–257F). These are used almost
 // exclusively for tables / diagrams — a single occurrence is a strong
 // signal that the line is part of ASCII art. Prose rarely contains them.
@@ -26,8 +104,6 @@ const BOX_DRAWING_RE = /[\u2500-\u257F]/
 // ASCII fallback for lines made purely of `+` / `-` / `|` / `=` etc.
 // (common for CC-drawn boxes without box-drawing Unicode).
 const ASCII_STRUCT_LINE_RE = /^\s*[+\-|=_*#<>/\\]+\s*$/
-// Markdown GFM table row: `| ... |` (ASCII pipe).
-const TABLE_ROW_RE = /^\s*\|.*\|\s*$/
 
 function looksArty(line: string): boolean {
   const trimmed = line.trim()
@@ -86,8 +162,11 @@ export function autoFenceAsciiArt(text: string): string {
       out.push(line)
       continue
     }
-    // Outside any fence — classify line
-    if (looksArty(line) || TABLE_ROW_RE.test(line)) {
+    // Outside any fence — classify line.
+    // Only fence true ASCII art (box-drawing, structural lines). GFM tables
+    // (pipe-delimited) are left for slackifyMarkdown/telegramify which handle
+    // them natively as readable aligned text.
+    if (looksArty(line)) {
       pending.push(line)
     } else {
       flushPending()
@@ -104,7 +183,7 @@ export function autoFenceAsciiArt(text: string): string {
 export function renderForSlack(text: string): string {
   if (!text) return text
   try {
-    return slackifyMarkdown(autoFenceAsciiArt(text))
+    return slackifyMarkdown(autoFenceAsciiArt(gfmTableToCodeBlock(unwrapOuterFence(text))))
   } catch (err) {
     process.stderr.write(`slack: markdown render failed: ${err}\n`)
     return text
@@ -115,7 +194,7 @@ export function renderForSlack(text: string): string {
 export function renderForTelegram(text: string): string {
   if (!text) return text
   try {
-    return telegramify(autoFenceAsciiArt(text), 'escape')
+    return telegramify(autoFenceAsciiArt(unwrapOuterFence(text)), 'escape')
   } catch (err) {
     process.stderr.write(`telegram: markdown render failed: ${err}\n`)
     return text
@@ -125,8 +204,9 @@ export function renderForTelegram(text: string): string {
 /**
  * Split `text` into chunks no larger than `limit`, prefering paragraph
  * boundaries (`\n\n`), then single newline, then whitespace as fallback.
- * Each chunk has complete markdown structure where possible. Never
- * truncates; pure chunking.
+ * Respects code fence boundaries: if a cut would land inside a fenced
+ * block, the chunk gets a closing fence appended and the next chunk gets
+ * a re-opening fence prepended so each chunk is self-contained.
  */
 export function splitForLimit(text: string, limit: number): string[] {
   if (text.length <= limit) return [text]
@@ -136,9 +216,16 @@ export function splitForLimit(text: string, limit: number): string[] {
     let cut = remaining.lastIndexOf('\n\n', limit)
     if (cut < limit * 0.5) cut = remaining.lastIndexOf('\n', limit)
     if (cut < limit * 0.5) cut = remaining.lastIndexOf(' ', limit)
-    if (cut <= 0) cut = limit  // hard break — give up on finding a boundary
-    chunks.push(remaining.slice(0, cut).trimEnd())
+    if (cut <= 0) cut = limit
+    let chunk = remaining.slice(0, cut).trimEnd()
     remaining = remaining.slice(cut).trimStart()
+    // Check if cut lands inside a code fence — odd number of ``` means open
+    const fenceCount = (chunk.match(/^```/gm) || []).length
+    if (fenceCount % 2 !== 0) {
+      chunk += '\n```'
+      remaining = '```\n' + remaining
+    }
+    chunks.push(chunk)
   }
   if (remaining) chunks.push(remaining)
   return chunks
