@@ -9,9 +9,6 @@
       "display_name": "Claude Mux",
       "always_online": true
     },
-    "assistant_view": {
-      "assistant_description": "Routes messages to Claude Code sessions"
-    },
     "slash_commands": [
       {
         "command": "/ccm",
@@ -44,15 +41,13 @@
         "groups:history",
         "groups:read",
         "mpim:history",
-        "mpim:read",
-        "assistant:write"
+        "mpim:read"
       ]
     }
   },
   "settings": {
     "event_subscriptions": {
       "bot_events": [
-        "assistant_thread_started",
         "message.channels",
         "message.groups",
         "message.im",
