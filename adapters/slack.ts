@@ -50,7 +50,7 @@ export class SlackAdapter implements ChannelAdapter {
 
     this.socket.on('message', async ({ event, ack }) => {
       await ack()
-      if (event.bot_id || event.user === this.botUserId) return
+      if (event.user === this.botUserId) return
       if (event.subtype && event.subtype !== 'file_share') return
 
       const userName = await this.resolveUserName(event.user)
