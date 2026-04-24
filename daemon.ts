@@ -790,12 +790,13 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
       // Ensure ccmux session exists (may have been killed/exited)
       await ensureZellijSession()
 
-      // Don't create duplicate tabs — reuse existing if alive
+      // Kill stale tab if it exists — its CC holds a dead IPC socket
+      // from a previous daemon lifetime and won't reconnect.
       const existingPane = findPaneByTabName(tabName)
       if (existingPane && !existingPane.exited) {
-        process.stderr.write(`daemon: tab "${tabName}" already exists (pane ${existingPane.paneId}), reusing\n`)
-        live.set(uuid, { ipcConn: null, child: null })
-        return true
+        process.stderr.write(`daemon: tab "${tabName}" exists (pane ${existingPane.paneId}), killing stale session\n`)
+        closeTab(tabName)
+        await new Promise(r => setTimeout(r, 500))
       }
 
       const { exec: execCb } = require('child_process') as typeof import('child_process')
