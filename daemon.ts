@@ -938,6 +938,7 @@ const screenWatchers = new Map<string, {
   lastUpdateTime: number
   isDialog: boolean
   nonDialogStreak?: number  // consecutive non-dialog samples since entering dialog mode
+  lastMaybeHint?: string    // dedup for MAYBE_PROMPT_HINT_RE warnings
 }>()
 
 const SCREEN_THROTTLE_MS = 3000
@@ -956,7 +957,7 @@ const TOOL_CALL_RE = /^[⏺●]\s+[A-Z][a-zA-Z]*\(/
 // "Esc to dismiss" as "Esc to ignore" would still hit. When CC invents a
 // totally new prompt shape (e.g. "Tab: switch") the MAYBE_PROMPT_HINT_RE
 // below will log it so we know to update.
-const PROMPT_HINT_RE = /(?:Esc|Enter|Tab|Space|Ctrl\+[A-Z]|↑\/↓) to [a-z]/
+const PROMPT_HINT_RE = /(?<![+\w])(?:Esc|Enter|Tab|Space|Ctrl\+[A-Z]|↑\/↓) to [a-z]/
 // Broader hint that catches "looks like a prompt" even outside our vocabulary.
 // If this matches and PROMPT_HINT_RE doesn't, we log a warning so we can see
 // new CC UI shapes we haven't adapted to. Case-sensitive on the key name so
@@ -1074,10 +1075,13 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
       }
       // Observability: flag screens that look prompt-like (contain "to " with
       // a known key word) but our detector said no. Signals CC added a new
-      // prompt shape we should adapt to.
+      // prompt shape we should adapt to. Deduped per hint text to avoid log spam.
       if (!permissionInFlight && MAYBE_PROMPT_HINT_RE.test(content) && !PROMPT_HINT_RE.test(content)) {
         const hintLine = lines.filter(l => MAYBE_PROMPT_HINT_RE.test(l)).pop()?.trim().slice(0, 120) ?? ''
-        process.stderr.write(`daemon: possible new dialog pattern on ${u} — not caught by detector: ${hintLine}\n`)
+        if (hintLine && !entry.lastMaybeHint?.startsWith(hintLine)) {
+          entry.lastMaybeHint = hintLine
+          process.stderr.write(`daemon: possible new dialog pattern on ${u} — not caught by detector: ${hintLine}\n`)
+        }
       }
     }
   }
