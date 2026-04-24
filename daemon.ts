@@ -560,7 +560,7 @@ async function processTranscriptLine(uuid: string, line: string, pollState_: { c
   if (!Array.isArray(content)) return
 
   const isEndOfTurn = msg?.stop_reason === 'end_turn'
-  const prefix = isEndOfTurn ? '📬' : '💬'
+  const prefix = isEndOfTurn ? '💡' : '💭'
 
   for (const c of content) {
     if (typeof c !== 'object' || !c) continue
