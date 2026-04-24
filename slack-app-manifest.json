@@ -52,6 +52,7 @@
   "settings": {
     "event_subscriptions": {
       "bot_events": [
+        "assistant_thread_started",
         "message.channels",
         "message.groups",
         "message.im",
