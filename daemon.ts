@@ -873,13 +873,15 @@ async function resumeAndBind(ck: string, uuid: string): Promise<void> {
 
   if (!live.has(uuid)) {
     const t = findTranscript(uuid)
+    const hasTranscript = !!t
     const cwd = t ? '/' + unsanitizePath(t.projectDir) : DEFAULT_CWD
-    const ok = await spawnCC(uuid, cwd, true)
+    const ok = await spawnCC(uuid, cwd, hasTranscript)
     if (!ok) {
       await adapterFor(ck)?.sendMessage(localId(ck), `❌ Failed to resume session.`)
       return
     }
-    await adapterFor(ck)?.sendMessage(localId(ck), `▶️ Resuming \`${uuid.slice(0, 8)}\`...`)
+    await adapterFor(ck)?.sendMessage(localId(ck),
+      hasTranscript ? `▶️ Resuming \`${uuid.slice(0, 8)}\`...` : `🚀 Session \`${uuid.slice(0, 8)}\` starting (no prior transcript)...`)
     void startScreenWatch(ck, uuid)
   } else {
     await adapterFor(ck)?.sendMessage(localId(ck), `✅ Bound to \`${uuid.slice(0, 8)}\``)
