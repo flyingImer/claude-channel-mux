@@ -27,21 +27,22 @@
   "oauth_config": {
     "scopes": {
       "bot": [
+        "assistant:write",
         "channels:history",
         "channels:read",
         "chat:write",
         "commands",
-        "reactions:write",
         "files:read",
         "files:write",
-        "users:read",
+        "groups:history",
+        "groups:read",
         "im:history",
         "im:read",
         "im:write",
-        "groups:history",
-        "groups:read",
         "mpim:history",
-        "mpim:read"
+        "mpim:read",
+        "reactions:write",
+        "users:read"
       ]
     }
   },
