@@ -1020,7 +1020,12 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
 
     // Read fresh screen
     let content: string
-    try { content = await dumpScreenAsync(paneId) } catch { return }
+    try {
+      content = await dumpScreenAsync(paneId)
+    } catch (err) {
+      process.stderr.write(`daemon: dumpScreenAsync failed for ${u}: ${err}\n`)
+      return
+    }
     if (!content || content === entry.lastContent) return
     entry.lastContent = content
 
@@ -1042,39 +1047,8 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
 
     if (isDialog) {
       entry.nonDialogStreak = 0
-      // Dialog mode: send full screen + nav buttons
-      const clean = lines.filter(l => l.trim()).join('\n').trim()
-
-      // Extract selection options for labeled buttons
-      const options: string[] = []
-      for (const line of lines) {
-        const optMatch = line.match(/^\s*[❯›▸►]?\s*(\d+)\.\s+(.+)/)
-        if (optMatch) options.push(optMatch[2].trim())
-      }
-
-      const msg = `🔧 \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``
-      const buttons: Array<{ text: string; data: string }> = []
-      if (options.length > 0) {
-        options.forEach((opt, i) => {
-          buttons.push({ text: `${i + 1}. ${opt.slice(0, 30)}`, data: `nav:${u}:select:${i}` })
-        })
-      }
-      buttons.push({ text: '↑', data: `nav:${u}:Up` })
-      buttons.push({ text: '↓', data: `nav:${u}:Down` })
-      buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
-      buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
-
-      // Both send and edit paths preserve buttons. editMessage needs the
-      // inline keyboard explicitly — otherwise Slack chat.update drops
-      // blocks and the user sees a button-less stub.
-      // Nav is a daemon-originated dialog, not a CC reply — no threading;
-      // send to main channel so the user sees it regardless of thread context.
-      const opts = adapter.renderButtons(buttons) as { inlineKeyboard?: unknown }
-      if (entry.lastDialogMsgId) {
-        try { await adapter.editMessage(id, entry.lastDialogMsgId, msg, opts) } catch {}
-      } else {
-        entry.lastDialogMsgId = await adapter.sendMessage(id, msg, opts)
-      }
+      const msgId = await sendDialogButtons(ck, u, content, entry.lastDialogMsgId)
+      if (msgId) entry.lastDialogMsgId = msgId
       entry.isDialog = true
     } else {
       // Non-dialog: mid-turn text forwarding happens via the JSONL poll
@@ -1173,6 +1147,48 @@ async function waitForChange(paneId: number, before: string, timeoutMs = 2000): 
     if (dumpScreen(paneId) !== before) return true
   }
   return false
+}
+
+async function sendDialogButtons(
+  ck: string,
+  u: string,
+  screen: string,
+  existingMsgId?: string,
+): Promise<string | undefined> {
+  const adapter = adapterFor(ck)
+  if (!adapter) return undefined
+  const id = localId(ck)
+  const lines = screen.split('\n')
+  const clean = lines.filter(l => l.trim()).join('\n').trim()
+
+  const options: string[] = []
+  for (const line of lines) {
+    const optMatch = line.match(/^\s*[❯›▸►]?\s*(\d+)\.\s+(.+)/)
+    if (optMatch) options.push(optMatch[2].trim())
+  }
+
+  const msg = `🔧 \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``
+  const buttons: Array<{ text: string; data: string }> = []
+  if (options.length > 0) {
+    options.forEach((opt, i) => {
+      buttons.push({ text: `${i + 1}. ${opt.slice(0, 30)}`, data: `nav:${u}:select:${i}` })
+    })
+  }
+  buttons.push({ text: '↑', data: `nav:${u}:Up` })
+  buttons.push({ text: '↓', data: `nav:${u}:Down` })
+  buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
+  buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
+
+  const opts = adapter.renderButtons(buttons) as { inlineKeyboard?: unknown }
+  if (existingMsgId) {
+    try {
+      await adapter.editMessage(id, existingMsgId, msg, opts)
+    } catch (err) {
+      process.stderr.write(`daemon: editMessage failed for ${u}: ${err}\n`)
+    }
+    return existingMsgId
+  }
+  return await adapter.sendMessage(id, msg, opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -1606,11 +1622,29 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         ])
         return
       }
-      // Import writeChars from escort
+      const before = dumpScreen(paneId)
       const { writeChars } = await import('./escort.js')
       writeChars(paneId, cmd.command)
       sendKeys(paneId, 'Enter')
       await adapter?.sendMessage(id, `⚡ Sent \`${cmd.command}\` to session.`)
+      // Detect interactive output (scroll views, confirms) immediately instead
+      // of waiting for the 3s screen watcher poll. Without this, commands like
+      // /btw leave the session stuck with no nav buttons in the channel.
+      const changed = await waitForChange(paneId, before)
+      if (changed) {
+        const screen = dumpScreen(paneId)
+        if (PROMPT_HINT_RE.test(screen)) {
+          const u = uuid.slice(0, 8)
+          const msgId = await sendDialogButtons(ck, u, screen)
+          const entry = screenWatchers.get(uuid)
+          if (entry) {
+            entry.lastDialogMsgId = msgId
+            entry.isDialog = true
+            entry.lastContent = screen
+            entry.nonDialogStreak = 0
+          }
+        }
+      }
       return
     }
     case 'new': {
