@@ -971,11 +971,12 @@ const TOOL_CALL_RE = /^[⏺●]\s+[A-Z][a-zA-Z]*\(/
 //   Tab / Space to {toggle|select}
 //   Ctrl+<KEY> to <word>
 //   ↑/↓ to select
+//   ←/→ to adjust (effort level slider, etc.)
 // Intentionally permissive — matches any verb after "<key> to". CC rewording
 // "Esc to dismiss" as "Esc to ignore" would still hit. When CC invents a
 // totally new prompt shape (e.g. "Tab: switch") the MAYBE_PROMPT_HINT_RE
 // below will log it so we know to update.
-const PROMPT_HINT_RE = /(?<![+\w])(?:Esc|Enter|Tab|Space|Ctrl\+[A-Z]|↑\/↓) to [a-z]/
+const PROMPT_HINT_RE = /(?<![+\w])(?:Esc|Enter|Tab|Space|Ctrl\+[A-Z]|[↑↓←→]+\/[↑↓←→]+) to [a-z]/
 // Broader hint that catches "looks like a prompt" even outside our vocabulary.
 // If this matches and PROMPT_HINT_RE doesn't, we log a warning so we can see
 // new CC UI shapes we haven't adapted to. Case-sensitive on the key name so
@@ -1174,8 +1175,10 @@ async function sendDialogButtons(
       buttons.push({ text: `${i + 1}. ${opt.slice(0, 30)}`, data: `nav:${u}:select:${i}` })
     })
   }
+  buttons.push({ text: '←', data: `nav:${u}:Left` })
   buttons.push({ text: '↑', data: `nav:${u}:Up` })
   buttons.push({ text: '↓', data: `nav:${u}:Down` })
+  buttons.push({ text: '→', data: `nav:${u}:Right` })
   buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
   buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
 
@@ -1717,8 +1720,10 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       const clean = screen.split('\n').filter(l => l.trim()).join('\n').trim()
       const msg = `🎮 \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``
       const buttons: Array<{ text: string; data: string }> = []
+      buttons.push({ text: '←', data: `nav:${u}:Left` })
       buttons.push({ text: '↑', data: `nav:${u}:Up` })
       buttons.push({ text: '↓', data: `nav:${u}:Down` })
+      buttons.push({ text: '→', data: `nav:${u}:Right` })
       buttons.push({ text: '✓ Enter', data: `nav:${u}:Enter` })
       buttons.push({ text: '✕ Esc', data: `nav:${u}:Escape` })
       await sendWithButtonsReturn(ck, msg, buttons)
