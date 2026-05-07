@@ -169,6 +169,16 @@ function unsanitizePath(sanitized: string): string {
           found = true
           break
         }
+        // CC's sanitizer collapses both `/` and `.` to `-`. If the candidate
+        // doesn't match a plain dir, also try `.candidate` (hidden dir).
+        // Without this, paths through `.claude/worktrees/...` can't be
+        // reconstructed on resume.
+        if (entries.includes('.' + candidate)) {
+          current = join(current, '.' + candidate)
+          i += len
+          found = true
+          break
+        }
       }
     } catch {}
     if (!found) {
@@ -553,6 +563,31 @@ async function processTranscriptLine(uuid: string, line: string, pollState_: { c
     return
   }
 
+  // Forward compaction events so the channel user knows context was compressed
+  if (entry.type === 'attachment') {
+    const att = entry.attachment as { type?: string } | undefined
+    if (att?.type === 'compact_file_reference') {
+      // Post-hoc signal: compaction has COMPLETED (these entries are written
+      // after the fact). The PreCompact hook sends the "starting" message;
+      // this one is the "done" bookend so the user knows CC is ready again.
+      if (!(pollState_ as any)._compactSent) {
+        (pollState_ as any)._compactSent = true
+        const display = '✅ Context compacted, ready to continue.'
+        const chans = channelsForUuid(uuid)
+        process.stderr.write(`daemon: compaction complete for ${uuid.slice(0, 8)}, channels=[${chans.join(',')}]\n`)
+        for (const ck of chans) {
+          const adapter = adapterFor(ck)
+          if (!adapter) continue
+          try { await adapter.sendMessage(localId(ck), display) }
+          catch (err) { process.stderr.write(`daemon: compaction-done msg FAILED for ${ck}: ${err}\n`) }
+        }
+      }
+    } else if ((pollState_ as any)._compactSent) {
+      (pollState_ as any)._compactSent = false
+    }
+    return
+  }
+
   if (entry.type !== 'assistant') return
 
   const msg = entry.message as { content?: unknown; stop_reason?: string } | undefined
@@ -749,6 +784,11 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
   // No Stop hook — the completed-text visibility problem is solved by the
   // daemon's transcript poll loop (forwards {type:"text"} assistant blocks
   // directly to the channel). CC doesn't need to be forced to call `reply`.
+  //
+  // PreCompact hook fires before CC compacts the conversation; it pings the
+  // daemon so the channel user sees 🗜️ BEFORE the work (post-hoc JSONL
+  // detection runs AFTER compaction finishes, which has no UX value).
+  const preCompactScript = join(__dirname, 'hooks', 'pre-compact.ts')
   writeFileSync(settingsFile, JSON.stringify({
     enabledPlugins: {
       'telegram@claude-plugins-official': false,
@@ -757,6 +797,11 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
       'slack@claude-plugins-official': false,
     },
     prefersReducedMotion: true,
+    hooks: {
+      PreCompact: [
+        { hooks: [{ type: 'command', command: `bun ${preCompactScript}` }] },
+      ],
+    },
   }))
   const settingsArgs = ['--settings', settingsFile]
   // Allow all ccm MCP tools without permission prompts
@@ -803,7 +848,20 @@ async function spawnCC(uuid: string, cwd: string, resumeMode: boolean): Promise<
       const { promisify } = require('util') as typeof import('util')
       const exec = promisify(execCb)
       const cmd = [CLAUDE_BIN, ...args].map(a => `"${a}"`).join(' ')
-      const envExports = `export CC_CHANNEL_SESSION_UUID="${uuid}" CC_CHANNEL_DAEMON_SOCK="${SOCK_PATH}" CLAUBBIT=1 DISABLE_AUTOUPDATER=1;`
+      // zellij server is long-lived; its env is frozen at creation. If .env
+      // is updated and daemon restarts but zellij session is still alive,
+      // new tabs inherit stale zellij env. To make a var reliably visible
+      // in every spawned CC, set CHANNEL_DAEMON_FORWARD_ENV to a
+      // comma-separated list of var names; daemon explicitly re-exports
+      // them in the bash -c layer so they override zellij inheritance.
+      // Unset by default — no opinion about which vars matter for your setup.
+      const forwardList = (process.env.CHANNEL_DAEMON_FORWARD_ENV ?? '')
+        .split(',').map(s => s.trim()).filter(Boolean)
+      const forwardedExports = forwardList
+        .filter(k => process.env[k])
+        .map(k => `${k}="${(process.env[k] ?? '').replace(/"/g, '\\"')}"`)
+        .join(' ')
+      const envExports = `export ${forwardedExports} CC_CHANNEL_SESSION_UUID="${uuid}" CC_CHANNEL_DAEMON_SOCK="${SOCK_PATH}" CLAUBBIT=1 DISABLE_AUTOUPDATER=1;`
       await exec(
         `zellij --session ${ZELLIJ_SESSION} action new-tab --name "${tabName}" -- bash -c '${envExports} cd "${effectiveCwd}" && exec ${cmd}'`,
         { encoding: 'utf8', timeout: 10000 },
@@ -875,7 +933,7 @@ async function resumeAndBind(ck: string, uuid: string): Promise<void> {
   if (!live.has(uuid)) {
     const t = findTranscript(uuid)
     const hasTranscript = !!t
-    const cwd = t ? '/' + unsanitizePath(t.projectDir) : DEFAULT_CWD
+    const cwd = t ? unsanitizePath(t.projectDir) : DEFAULT_CWD
     const ok = await spawnCC(uuid, cwd, hasTranscript)
     if (!ok) {
       await adapterFor(ck)?.sendMessage(localId(ck), `❌ Failed to resume session.`)
@@ -1578,7 +1636,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         const channels = channelsForUuid(bound)
         const otherChannels = channels.filter(c => c !== ck)
         statusLines.push(`*Current session:* \`${bound.slice(0, 8)}\` ${isAlive ? '🟢 active' : '🔵 suspended'}`)
-        statusLines.push(`*Directory:* \`${t ? '/' + unsanitizePath(t.projectDir) : '~'}\``)
+        statusLines.push(`*Directory:* \`${t ? unsanitizePath(t.projectDir) : '~'}\``)
         if (otherChannels.length > 0) {
           statusLines.push(`*Also connected:* ${otherChannels.join(', ')}`)
         }
@@ -1821,10 +1879,28 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       // blocks aren't filtered against the previous turn's replies.
       recentReplies.delete(uuid)
 
+      // Pre-fetch thread context for thread replies so CC always has it
+      // without needing an extra fetch_thread tool round-trip.
+      let content = cmd.text
+      if (msg.replyToId && adapter?.fetchThread) {
+        try {
+          const threadMsgs = await adapter.fetchThread(id, msg.replyToId)
+          if (threadMsgs.length > 1) {
+            const history = threadMsgs
+              .filter(m => m.messageId !== msg.messageId)
+              .map(m => `[${m.ts}] ${m.userName}: ${m.text}`)
+              .join('\n')
+            content = `[Thread context — ${threadMsgs.length - 1} prior messages]\n${history}\n\n[Current message]\n${cmd.text}`
+          }
+        } catch (err) {
+          process.stderr.write(`daemon: thread pre-fetch failed for ${msg.replyToId}: ${err}\n`)
+        }
+      }
+
       sendToLive(uuid, {
         type: 'inbound',
         channelKey: ck,
-        content: cmd.text,
+        content,
         meta: {
           ...msg.meta,
           chat_id: ck,
@@ -1982,6 +2058,23 @@ const ipc: NetServer = createServer((conn: Socket) => {
       if (!line) continue
       let msg: any
       try { msg = JSON.parse(line) } catch { continue }
+
+      // PreCompact hook ping: fire 🗜️ BEFORE compaction (post-hoc JSONL
+      // detection fires AFTER compaction finishes, which has no UX value).
+      if (msg.type === 'compact_starting') {
+        const uuid = msg.uuid as string
+        if (!uuid) continue
+        const display = '🗜️ Compacting conversation context...'
+        for (const ck of channelsForUuid(uuid)) {
+          const adapter = adapterFor(ck)
+          if (!adapter) continue
+          adapter.sendMessage(localId(ck), display).catch(err => {
+            process.stderr.write(`daemon: compact_starting send to ${ck} failed: ${err}\n`)
+          })
+        }
+        process.stderr.write(`daemon: compact_starting received for ${uuid.slice(0, 8)}\n`)
+        continue
+      }
 
       if (msg.type === 'register') {
         const uuid = msg.uuid as string
