@@ -47,6 +47,7 @@ const SOCK_PATH = join(STATE_DIR, 'daemon.sock')
 const PID_FILE = join(STATE_DIR, 'daemon.pid')
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 const BINDINGS_FILE = join(STATE_DIR, 'bindings.json')
+const TRANSCRIPT_DELIVERY_FILE = join(STATE_DIR, 'transcript-delivery.json')
 const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
 // Page size now comes from adapter.pageSize
@@ -128,6 +129,60 @@ function saveBindings(b: Bindings): void {
   require('fs').renameSync(tmp, BINDINGS_FILE)
 }
 
+type StoredTranscriptDeliveries = Record<string, Record<string, { channels: string[]; ts: number }>>
+
+function loadTranscriptDeliveries(): StoredTranscriptDeliveries {
+  try { return JSON.parse(readFileSync(TRANSCRIPT_DELIVERY_FILE, 'utf8')) } catch { return {} }
+}
+
+const transcriptDeliveries = loadTranscriptDeliveries()
+
+function saveTranscriptDeliveries(): void {
+  const tmp = TRANSCRIPT_DELIVERY_FILE + '.tmp'
+  writeFileSync(tmp, JSON.stringify(transcriptDeliveries) + '\n', { mode: 0o600 })
+  require('fs').renameSync(tmp, TRANSCRIPT_DELIVERY_FILE)
+}
+
+function rememberTranscriptDelivery(uuid: string, key: string, channelKey: string): void {
+  const now = Date.now()
+  const byUuid = transcriptDeliveries[uuid] ??= {}
+  const entry = byUuid[key] ??= { channels: [], ts: now }
+  if (!entry.channels.includes(channelKey)) entry.channels.push(channelKey)
+  entry.ts = now
+
+  const keys = Object.keys(byUuid)
+  if (keys.length > TRANSCRIPT_DELIVERY_KEEP) {
+    keys.sort((a, b) => byUuid[a].ts - byUuid[b].ts)
+    for (const old of keys.slice(0, keys.length - TRANSCRIPT_DELIVERY_KEEP)) delete byUuid[old]
+  }
+  saveTranscriptDeliveries()
+}
+
+function transcriptDeliveredChannels(uuid: string, key: string): Set<string> {
+  return new Set(transcriptDeliveries[uuid]?.[key]?.channels ?? [])
+}
+
+function alignTranscriptOffsetToNextLine(path: string, offset: number): number {
+  if (offset <= 0) return 0
+  let fh: number | null = null
+  try {
+    fh = openSync(path, 'r')
+    const probe = Buffer.alloc(8192)
+    let cursor = offset
+    while (true) {
+      const bytesRead = readSync(fh, probe, 0, probe.length, cursor)
+      if (bytesRead <= 0) return offset
+      const newline = probe.subarray(0, bytesRead).indexOf(0x0a)
+      if (newline >= 0) return cursor + newline + 1
+      cursor += bytesRead
+    }
+  } catch {
+    return offset
+  } finally {
+    if (fh !== null) try { closeSync(fh) } catch {}
+  }
+}
+
 // ---------------------------------------------------------------------------
 // CC transcript metadata
 // ---------------------------------------------------------------------------
@@ -190,17 +245,18 @@ function unsanitizePath(sanitized: string): string {
   return current
 }
 
-function findTranscript(uuid: string): { mtime: number; size: number; projectDir: string } | null {
+function findTranscript(uuid: string): { mtime: number; size: number; projectDir: string; path: string } | null {
+  let newest: { mtime: number; size: number; projectDir: string; path: string } | null = null
   try {
     for (const proj of readdirSync(CC_PROJECTS_DIR)) {
       const p = join(CC_PROJECTS_DIR, proj, `${uuid}.jsonl`)
       try {
         const st = statSync(p)
-        return { mtime: st.mtimeMs, size: st.size, projectDir: proj }
+        if (!newest || st.mtimeMs > newest.mtime) newest = { mtime: st.mtimeMs, size: st.size, projectDir: proj, path: p }
       } catch {}
     }
   } catch {}
-  return null
+  return newest
 }
 
 type SessionInfo = { uuid: string; mtime: number; size: number; cwd?: string; title?: string }
@@ -395,10 +451,37 @@ const POLL_INTERVAL_MS = 2000
 const FINGERPRINT_CHARS = 50
 const REPLY_DEDUP_WINDOW_MS = 30_000  // short window for retry-storm suppression
 const REPLY_TEXT_KEEP_MS = 120_000    // how long to keep for poll-dedup after send
+const TRANSCRIPT_START_TAIL_BYTES = 64 * 1024
+const TRANSCRIPT_START_REPLAY_MS = 5 * 60 * 1000
+const TRANSCRIPT_DELIVERY_KEEP = 500
+const TRANSCRIPT_PARTIAL_MAX_BYTES = 1024 * 1024
 
 type TextMemo = { fp: string; text: string; ts: number }
 const recentReplies = new Map<string, TextMemo[]>()  // uuid → last N sent reply texts
-const pollState = new Map<string, { offset: number; timer: NodeJS.Timeout }>()
+type TranscriptDelivery = {
+  key: string
+  entryId: string
+  blockIndex: number
+  text: string
+  display: string
+  replyTo: string | null
+  isEndOfTurn: boolean
+  delivered: Set<string>
+  createdAt: number
+}
+type TranscriptPollState = {
+  path: string | null
+  offset: number
+  partialBytes: Buffer
+  timer: NodeJS.Timeout
+  currentReplyTo: string | null
+  startedAt: number
+  pending: Map<string, TranscriptDelivery>
+  deliveredOrder: string[]
+  deliveredKeys: Set<string>
+  compactSent?: boolean
+}
+const pollState = new Map<string, TranscriptPollState>()
 
 // UUIDs with a permission request in flight. The MCP `permission_request`
 // handler already sends a "🔐 Allow/Deny" message — the screen watcher
@@ -490,26 +573,106 @@ function isRecentDuplicateReply(uuid: string, text: string): boolean {
   return list.some(m => m.ts >= cutoff && m.fp === fp)
 }
 
+function markTranscriptDelivered(state: TranscriptPollState, key: string): void {
+  if (state.deliveredKeys.has(key)) return
+  state.deliveredKeys.add(key)
+  state.deliveredOrder.push(key)
+  while (state.deliveredOrder.length > TRANSCRIPT_DELIVERY_KEEP) {
+    const old = state.deliveredOrder.shift()
+    if (old) state.deliveredKeys.delete(old)
+  }
+}
+
+async function flushTranscriptDelivery(uuid: string, state: TranscriptPollState, item: TranscriptDelivery): Promise<boolean> {
+  let allDelivered = true
+  for (const ck of channelsForUuid(uuid)) {
+    if (item.delivered.has(ck)) continue
+    const adapter = adapterFor(ck)
+    if (!adapter) { item.delivered.add(ck); continue }
+    try {
+      await adapter.sendMessage(localId(ck), item.display, item.replyTo ? { replyTo: item.replyTo } : undefined)
+      item.delivered.add(ck)
+      try { rememberTranscriptDelivery(uuid, item.key, ck) }
+      catch (err) { process.stderr.write(`daemon: transcript delivery ledger save failed ${uuid.slice(0, 8)} key=${item.key}: ${err}\n`) }
+      if (item.isEndOfTurn) {
+        process.stderr.write(`daemon: poll end-turn delivered ${uuid.slice(0, 8)} key=${item.key} channel=${ck}\n`)
+      }
+    } catch (err) {
+      allDelivered = false
+      process.stderr.write(`daemon: poll send FAILED ${uuid.slice(0, 8)} key=${item.key} channel=${ck}: ${err}\n`)
+    }
+  }
+  if (allDelivered) {
+    state.pending.delete(item.key)
+    markTranscriptDelivered(state, item.key)
+  }
+  return allDelivered
+}
+
+async function flushPendingTranscriptDeliveries(uuid: string, state: TranscriptPollState): Promise<void> {
+  for (const item of [...state.pending.values()]) {
+    await flushTranscriptDelivery(uuid, state, item)
+  }
+}
+
 function startTranscriptPoll(uuid: string): void {
   if (pollState.has(uuid)) return
-  const state = { offset: 0, timer: null as unknown as NodeJS.Timeout, currentReplyTo: null as string | null }
+  const state: TranscriptPollState = {
+    path: null,
+    offset: 0,
+    partialBytes: Buffer.alloc(0),
+    timer: null as unknown as NodeJS.Timeout,
+    currentReplyTo: null,
+    startedAt: Date.now(),
+    pending: new Map(),
+    deliveredOrder: [],
+    deliveredKeys: new Set(),
+  }
   const tick = async () => {
     try {
+      await flushPendingTranscriptDeliveries(uuid, state)
       const t = findTranscript(uuid)
       if (!t) return
-      const path = join(CC_PROJECTS_DIR, t.projectDir, `${uuid}.jsonl`)
-      // Initialize offset on first successful stat — skip everything already on
-      // disk so we don't re-forward old messages at daemon start.
-      if (state.offset === 0 && t.size > 0) { state.offset = t.size; return }
+      const path = t.path
+      if (state.path !== path) {
+        state.path = path
+        state.partialBytes = Buffer.alloc(0)
+        // Start near EOF, but replay a small tail window so daemon restarts
+        // during an active turn don't skip the just-written final text.
+        state.offset = alignTranscriptOffsetToNextLine(path, Math.max(0, t.size - TRANSCRIPT_START_TAIL_BYTES))
+        process.stderr.write(`daemon: transcript poll using ${path} for ${uuid.slice(0, 8)} offset=${state.offset}\n`)
+      }
+      if (t.size < state.offset) {
+        state.offset = 0
+        state.partialBytes = Buffer.alloc(0)
+      }
       if (t.size <= state.offset) return
       const fh = openSync(path, 'r')
       try {
         const len = t.size - state.offset
         const buf = Buffer.alloc(len)
-        readSync(fh, buf, 0, len, state.offset)
-        state.offset = t.size
-        const chunk = buf.toString('utf8')
-        for (const line of chunk.split('\n')) {
+        const bytesRead = readSync(fh, buf, 0, len, state.offset)
+        if (bytesRead <= 0) return
+        const chunk = buf.subarray(0, bytesRead)
+        const startOffset = state.offset
+        const combined = state.partialBytes.length > 0 ? Buffer.concat([state.partialBytes, chunk]) : chunk
+        const lastNewline = combined.lastIndexOf(0x0a)
+        state.offset = startOffset + bytesRead
+        if (lastNewline < 0) {
+          state.partialBytes = Buffer.from(combined)
+          if (state.partialBytes.length > TRANSCRIPT_PARTIAL_MAX_BYTES) {
+            process.stderr.write(`daemon: transcript partial line too large for ${uuid.slice(0, 8)}, dropping ${state.partialBytes.length} bytes\n`)
+            state.partialBytes = Buffer.alloc(0)
+          }
+          return
+        }
+        const completeLines = combined.subarray(0, lastNewline).toString('utf8').split('\n')
+        state.partialBytes = Buffer.from(combined.subarray(lastNewline + 1))
+        if (state.partialBytes.length > TRANSCRIPT_PARTIAL_MAX_BYTES) {
+          process.stderr.write(`daemon: transcript partial line too large for ${uuid.slice(0, 8)}, dropping ${state.partialBytes.length} bytes\n`)
+          state.partialBytes = Buffer.alloc(0)
+        }
+        for (const line of completeLines) {
           if (!line.trim()) continue
           await processTranscriptLine(uuid, line, state)
         }
@@ -535,9 +698,12 @@ function stopTranscriptPoll(uuid: string): void {
 
 const CHANNEL_TAG_MESSAGE_ID_RE = /<channel[^>]*\bmessage_id="([^"]+)"[^>]*>/
 
-async function processTranscriptLine(uuid: string, line: string, pollState_: { currentReplyTo: string | null }): Promise<void> {
+async function processTranscriptLine(uuid: string, line: string, pollState_: TranscriptPollState): Promise<void> {
   let entry: Record<string, unknown>
-  try { entry = JSON.parse(line) } catch { return }
+  try { entry = JSON.parse(line) } catch (err) {
+    process.stderr.write(`daemon: transcript parse skipped ${uuid.slice(0, 8)}: ${err}\n`)
+    return
+  }
 
   if (entry.isSidechain === true) return
 
@@ -564,6 +730,9 @@ async function processTranscriptLine(uuid: string, line: string, pollState_: { c
     return
   }
 
+  const ts = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN
+  if (!Number.isNaN(ts) && ts + TRANSCRIPT_START_REPLAY_MS < pollState_.startedAt) return
+
   // Forward compaction events so the channel user knows context was compressed
   if (entry.type === 'attachment') {
     const att = entry.attachment as { type?: string } | undefined
@@ -571,8 +740,8 @@ async function processTranscriptLine(uuid: string, line: string, pollState_: { c
       // Post-hoc signal: compaction has COMPLETED (these entries are written
       // after the fact). The PreCompact hook sends the "starting" message;
       // this one is the "done" bookend so the user knows CC is ready again.
-      if (!(pollState_ as any)._compactSent) {
-        (pollState_ as any)._compactSent = true
+      if (!pollState_.compactSent) {
+        pollState_.compactSent = true
         const display = '✅ Context compacted, ready to continue.'
         const chans = channelsForUuid(uuid)
         process.stderr.write(`daemon: compaction complete for ${uuid.slice(0, 8)}, channels=[${chans.join(',')}]\n`)
@@ -583,8 +752,8 @@ async function processTranscriptLine(uuid: string, line: string, pollState_: { c
           catch (err) { process.stderr.write(`daemon: compaction-done msg FAILED for ${ck}: ${err}\n`) }
         }
       }
-    } else if ((pollState_ as any)._compactSent) {
-      (pollState_ as any)._compactSent = false
+    } else if (pollState_.compactSent) {
+      pollState_.compactSent = false
     }
     return
   }
@@ -598,24 +767,36 @@ async function processTranscriptLine(uuid: string, line: string, pollState_: { c
   const isEndOfTurn = msg?.stop_reason === 'end_turn'
   const prefix = isEndOfTurn ? '💡' : '💭'
 
-  for (const c of content) {
+  const msgWithId = msg as { id?: string }
+  const entryId = typeof entry.uuid === 'string'
+    ? entry.uuid
+    : typeof msgWithId.id === 'string'
+      ? msgWithId.id
+      : `${entry.timestamp ?? 'unknown'}:${textFingerprint(line)}`
+
+  for (let i = 0; i < content.length; i++) {
+    const c = content[i]
     if (typeof c !== 'object' || !c) continue
     const block = c as { type?: string; text?: string }
     if (block.type !== 'text' || typeof block.text !== 'string') continue
     const text = block.text.trim()
     if (!text) continue
+    const key = `${entryId}:${i}`
+    if (pollState_.deliveredKeys.has(key) || pollState_.pending.has(key)) continue
     if (isCoveredByReply(uuid, text)) continue
-    const display = `${prefix} ${text}`
-    for (const ck of channelsForUuid(uuid)) {
-      const adapter = adapterFor(ck)
-      if (!adapter) continue
-      try {
-        await adapter.sendMessage(localId(ck), display, pollState_.currentReplyTo ? { replyTo: pollState_.currentReplyTo } : undefined)
-      } catch (err) {
-        process.stderr.write(`daemon: poll send to ${ck} failed: ${err}\n`)
-      }
+    const item: TranscriptDelivery = {
+      key,
+      entryId,
+      blockIndex: i,
+      text,
+      display: `${prefix} ${text}`,
+      replyTo: pollState_.currentReplyTo,
+      isEndOfTurn,
+      delivered: transcriptDeliveredChannels(uuid, key),
+      createdAt: Date.now(),
     }
-    rememberReply(uuid, text)
+    pollState_.pending.set(key, item)
+    await flushTranscriptDelivery(uuid, pollState_, item)
   }
 }
 // Track last inbound message per channel for ack reaction cleanup
