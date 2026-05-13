@@ -356,6 +356,7 @@ cleanStaleBindings()
 type Live = { ipcConn: Socket | null; child: ChildProcess | null; primaryPid?: number }
 const live = new Map<string, Live>()
 const socketToUuid = new Map<Socket, string>()
+const resumeInFlight = new Map<string, Promise<boolean>>()
 // Tracks UUIDs we've already announced as "reconnected" this daemon lifetime.
 // Prevents spamming the channel when CC subagents (which inherit the session
 // UUID via env) each spawn their own server.ts and register independently.
@@ -689,6 +690,41 @@ async function ensureZellijSession(): Promise<void> {
 
 const zellijAvailable = hasZellij()
 
+type PaneStatus =
+  | { kind: 'alive'; paneId: number }
+  | { kind: 'exited'; paneId: number; exitStatus: number | null }
+  | { kind: 'missing' }
+  | { kind: 'zellij_down' }
+  | { kind: 'unknown'; reason: string }
+
+function isZellijSessionAlive(): boolean {
+  try {
+    const { execSync: ex } = require('child_process') as typeof import('child_process')
+    const out = ex('zellij list-sessions 2>&1', { encoding: 'utf8', stdio: 'pipe', timeout: 5000 })
+    const line = out.split('\n').find(l => l.includes(ZELLIJ_SESSION))
+    return !!line && !line.includes('EXITED')
+  } catch {
+    return false
+  }
+}
+
+function getPaneStatus(uuid: string): PaneStatus {
+  const tabName = `ccm:${uuid.slice(0, 8)}`
+  try {
+    const { execSync: ex } = require('child_process') as typeof import('child_process')
+    const panes = JSON.parse(ex(`zellij --session ${ZELLIJ_SESSION} action list-panes --json --tab --state 2>/dev/null`, {
+      encoding: 'utf8', stdio: 'pipe', timeout: 5000,
+    }))
+    const pane = panes.find((p: any) => p.tab_name === tabName && !p.is_plugin)
+    if (!pane) return { kind: 'missing' }
+    if (pane.exited) return { kind: 'exited', paneId: pane.id, exitStatus: pane.exit_status ?? null }
+    return { kind: 'alive', paneId: pane.id }
+  } catch (err) {
+    if (!isZellijSessionAlive()) return { kind: 'zellij_down' }
+    return { kind: 'unknown', reason: String(err) }
+  }
+}
+
 /** Clean up exited ccm tabs in zellij. Run on startup and after session exit. */
 function cleanExitedTabs(): void {
   if (!zellijAvailable) return
@@ -923,21 +959,76 @@ async function startNew(ck: string, cwd: string): Promise<void> {
   void startScreenWatch(ck, uuid)
 }
 
-async function resumeAndBind(ck: string, uuid: string): Promise<void> {
+function clearRuntimeState(uuid: string, reason: string, opts: { closePane?: boolean; killChild?: boolean } = {}): void {
+  stopScreenWatch(uuid)
+  stopTranscriptPoll(uuid)
+  const l = live.get(uuid)
+  if (l?.ipcConn) {
+    try { l.ipcConn.destroy() } catch {}
+  }
+  if (opts.killChild && l?.child) {
+    try { l.child.kill('SIGTERM') } catch {}
+  }
+  if (opts.closePane && zellijAvailable) {
+    try { closeTab(`ccm:${uuid.slice(0, 8)}`) } catch {}
+  }
+  live.delete(uuid)
+  socketToUuid.forEach((u, s) => { if (u === uuid) socketToUuid.delete(s) })
+  announcedReconnect.delete(uuid)
+  knownThreadAnchors.delete(uuid)
+  recentReplies.delete(uuid)
+  pendingPermission.delete(uuid)
+  process.stderr.write(`daemon: cleared runtime state for ${uuid.slice(0, 8)} (${reason})\n`)
+}
+
+function liveEntryNeedsRespawn(uuid: string): boolean {
+  const l = live.get(uuid)
+  if (!l) return true
+  if (l.ipcConn && !l.ipcConn.destroyed) return false
+  if (zellijAvailable) {
+    const status = getPaneStatus(uuid)
+    if (status.kind === 'alive' || status.kind === 'unknown') {
+      if (status.kind === 'unknown') {
+        process.stderr.write(`daemon: pane status unknown for ${uuid.slice(0, 8)}, preserving live entry: ${status.reason}\n`)
+      }
+      return false
+    }
+    clearRuntimeState(uuid, `pane ${status.kind}`)
+    return true
+  }
+  if (l.child?.pid && isProcessAlive(l.child.pid)) return false
+  clearRuntimeState(uuid, 'direct child missing')
+  return true
+}
+
+async function spawnResumeOnce(uuid: string): Promise<{ ok: boolean; hasTranscript: boolean }> {
+  const existing = resumeInFlight.get(uuid)
+  if (existing) return { ok: await existing, hasTranscript: !!findTranscript(uuid) }
+
+  const t = findTranscript(uuid)
+  const hasTranscript = !!t
+  const cwd = t ? unsanitizePath(t.projectDir) : DEFAULT_CWD
+  const promise = spawnCC(uuid, cwd, hasTranscript)
+  resumeInFlight.set(uuid, promise)
+  try {
+    return { ok: await promise, hasTranscript }
+  } finally {
+    if (resumeInFlight.get(uuid) === promise) resumeInFlight.delete(uuid)
+  }
+}
+
+async function resumeAndBind(ck: string, uuid: string): Promise<boolean> {
   const b = loadBindings()
   const prev = b[ck]
   if (prev && prev !== uuid) delete b[ck]
   b[ck] = uuid
   saveBindings(b)
 
-  if (!live.has(uuid)) {
-    const t = findTranscript(uuid)
-    const hasTranscript = !!t
-    const cwd = t ? unsanitizePath(t.projectDir) : DEFAULT_CWD
-    const ok = await spawnCC(uuid, cwd, hasTranscript)
+  if (liveEntryNeedsRespawn(uuid)) {
+    const { ok, hasTranscript } = await spawnResumeOnce(uuid)
     if (!ok) {
       await adapterFor(ck)?.sendMessage(localId(ck), `❌ Failed to resume session.`)
-      return
+      return false
     }
     await adapterFor(ck)?.sendMessage(localId(ck),
       hasTranscript ? `▶️ Resuming \`${uuid.slice(0, 8)}\`...` : `🚀 Session \`${uuid.slice(0, 8)}\` starting (no prior transcript)...`)
@@ -946,6 +1037,7 @@ async function resumeAndBind(ck: string, uuid: string): Promise<void> {
     await adapterFor(ck)?.sendMessage(localId(ck), `✅ Bound to \`${uuid.slice(0, 8)}\``)
   }
   process.stderr.write(`daemon: bound ${ck} → ${uuid.slice(0, 8)}\n`)
+  return true
 }
 
 // ---------------------------------------------------------------------------
@@ -1016,6 +1108,7 @@ const screenWatchers = new Map<string, {
   nonDialogStreak?: number  // consecutive non-dialog samples since entering dialog mode
   lastMaybeHint?: string    // dedup for MAYBE_PROMPT_HINT_RE warnings
 }>()
+const screenWatchStarting = new Set<string>()
 
 const SCREEN_THROTTLE_MS = 3000
 const DIALOG_OFF_STREAK = 2  // Require N consecutive non-dialog samples before clearing
@@ -1052,8 +1145,10 @@ const MAYBE_PROMPT_HINT_RE = /\b(Esc|Enter|Tab|Space|Ctrl\+|Alt\+|Shift\+|Press)
  * prefersReducedMotion + CLAUDE_CODE_NO_FLICKER=1 minimize screen noise.
  */
 async function startScreenWatch(ck: string, uuid: string): Promise<void> {
+  if (screenWatchers.has(uuid) || screenWatchStarting.has(uuid)) return
+  screenWatchStarting.add(uuid)
   const adapter = adapterFor(ck)
-  if (!adapter) return
+  if (!adapter) { screenWatchStarting.delete(uuid); return }
   const u = uuid.slice(0, 8)
 
   // Find pane
@@ -1062,8 +1157,10 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     paneId = resolvePaneId(u)
     if (paneId !== null) break
     await new Promise(r => setTimeout(r, 500))
+    if (!screenWatchStarting.has(uuid)) return
   }
-  if (paneId === null) return
+  if (paneId === null) { screenWatchStarting.delete(uuid); return }
+  if (!screenWatchStarting.has(uuid)) return
 
   // No WASM plugin needed — periodic dumpScreenAsync replaces it
   const id = localId(ck)
@@ -1151,6 +1248,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     lastContent: '', channelKey: ck, paneId,
     lastUpdateTime: 0, isDialog: false, nonDialogStreak: 0,
   })
+  screenWatchStarting.delete(uuid)
 
   // Initial check after CC has had time to render
   await new Promise(r => setTimeout(r, 2000))
@@ -1158,6 +1256,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
 }
 
 function stopScreenWatch(uuid: string): void {
+  screenWatchStarting.delete(uuid)
   const entry = screenWatchers.get(uuid)
   if (!entry) return
   entry.watcher?.close()
@@ -1837,7 +1936,12 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       const uuid = b[ck]
       if (!uuid) return
 
-      const l = live.get(uuid)
+      if (liveEntryNeedsRespawn(uuid)) {
+        const ok = await resumeAndBind(ck, uuid)
+        if (!ok) return
+      }
+
+      let l = live.get(uuid)
       if (!l) {
         await sendWithButtons(ck, `Session \`${uuid.slice(0, 8)}\` suspended.`, [
           { text: `▶️ Resume`, data: `ccr:${uuid}` },
@@ -1849,9 +1953,11 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         let waited = 0
         while (!l.ipcConn && waited < 10000) {
           await new Promise(r => setTimeout(r, 500))
+          l = live.get(uuid)
+          if (!l) break
           waited += 500
         }
-        if (!l.ipcConn) {
+        if (!l?.ipcConn) {
           await sendWithButtons(ck, '⏳ Session starting up.', [
             { text: '🔄 Retry', data: `cmd:retry:${uuid}` },
           ])
@@ -2167,25 +2273,18 @@ const ipc: NetServer = createServer((conn: Socket) => {
         l.ipcConn = null
         l.primaryPid = undefined
         if (zellijAvailable) {
-          // Zellij mode: session lives in a tab, not as a child process.
-          // IPC disconnect just means server.ts disconnected — session may still be alive.
-          // Keep the live entry so it can reconnect. Only remove if the pane is
-          // CONFIRMED exited (pane.exited === true). A null return from
-          // findPaneByTabName can come from a transient listPanes() failure
-          // (zellij CLI busy / timeout) — treating that as "dead" causes the
-          // live entry to get deleted and then re-auto-recovered in a loop,
-          // each cycle triggering user-visible noise. Be lenient: only delete
-          // on definite exit.
-          const pane = findPaneByTabName(`ccm:${uuid.slice(0, 8)}`)
-          if (pane && pane.exited) {
-            live.delete(uuid)
-            stopTranscriptPoll(uuid)
-            process.stderr.write(`daemon: session ${uuid.slice(0, 8)} pane exited, removed from live\n`)
+          const status = getPaneStatus(uuid)
+          if (status.kind === 'alive' || status.kind === 'unknown') {
+            if (status.kind === 'unknown') {
+              process.stderr.write(`daemon: session ${uuid.slice(0, 8)} IPC closed, pane status unknown (${status.reason}); preserving live entry\n`)
+            } else {
+              process.stderr.write(`daemon: session ${uuid.slice(0, 8)} IPC closed, pane still alive\n`)
+            }
           } else {
-            process.stderr.write(`daemon: session ${uuid.slice(0, 8)} IPC closed, pane still alive\n`)
+            clearRuntimeState(uuid, `IPC closed and pane ${status.kind}`)
           }
         } else if (!l.child) {
-          live.delete(uuid)
+          clearRuntimeState(uuid, 'IPC closed without child')
           process.stderr.write(`daemon: session ${uuid.slice(0, 8)} IPC closed, removed from live\n`)
         }
       }
