@@ -52,6 +52,7 @@ const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
 // Page size now comes from adapter.pageSize
 const CC_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
+const CC_TASKS_DIR = join(homedir(), '.claude', 'tasks')
 
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 })
 mkdirSync(INBOX_DIR, { recursive: true, mode: 0o700 })
@@ -480,6 +481,8 @@ type TranscriptPollState = {
   deliveredOrder: string[]
   deliveredKeys: Set<string>
   deliveredCompactKeys: Set<string>
+  lastTaskHash?: string
+  taskMessageIds: Map<string, string>
   lastCompactCompleteAt?: number
   lastCompletedCompactStartAt?: number
 }
@@ -642,6 +645,130 @@ async function flushPendingTranscriptDeliveries(uuid: string, state: TranscriptP
   }
 }
 
+type TaskStatus = 'pending' | 'in_progress' | 'completed'
+type TaskSnapshotItem = {
+  id: string
+  text: string
+  activeText?: string
+  status: TaskStatus
+  blockedBy: string[]
+}
+type TaskSnapshot = { items: TaskSnapshotItem[]; hash: string; newestMtime: number }
+
+function normalizeTaskStatus(value: unknown): TaskStatus | null {
+  return value === 'pending' || value === 'in_progress' || value === 'completed' ? value : null
+}
+
+function readTaskSnapshot(uuid: string): TaskSnapshot | null {
+  const dir = join(CC_TASKS_DIR, uuid)
+  if (!existsSync(dir)) return null
+  let files: string[]
+  try { files = readdirSync(dir).filter(f => f.endsWith('.json')) }
+  catch { return null }
+
+  const items: TaskSnapshotItem[] = []
+  let newestMtime = 0
+  for (const file of files) {
+    try {
+      const path = join(dir, file)
+      const st = statSync(path)
+      const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+      const status = normalizeTaskStatus(raw.status)
+      const subject = typeof raw.subject === 'string' ? raw.subject.trim() : ''
+      const content = typeof raw.content === 'string' ? raw.content.trim() : ''
+      const text = subject || content
+      if (!status || !text) continue
+      if (st.mtimeMs > newestMtime) newestMtime = st.mtimeMs
+      const id = typeof raw.id === 'string' && raw.id.trim()
+        ? raw.id.trim()
+        : basename(file, '.json')
+      const activeText = typeof raw.activeForm === 'string' && raw.activeForm.trim()
+        ? raw.activeForm.trim()
+        : undefined
+      const blockedBy = Array.isArray(raw.blockedBy)
+        ? raw.blockedBy.filter((v): v is string => typeof v === 'string')
+        : []
+      items.push({ id, text, activeText, status, blockedBy })
+    } catch (err) {
+      process.stderr.write(`daemon: task snapshot parse skipped ${uuid.slice(0, 8)} file=${file}: ${err}\n`)
+    }
+  }
+  if (items.length === 0) return null
+
+  items.sort((a, b) => {
+    const an = Number(a.id), bn = Number(b.id)
+    if (Number.isFinite(an) && Number.isFinite(bn) && an !== bn) return an - bn
+    return a.id.localeCompare(b.id)
+  })
+  const canonical = items.map(({ id, text, activeText, status, blockedBy }) => ({ id, text, activeText, status, blockedBy }))
+  return { items, hash: JSON.stringify(canonical), newestMtime }
+}
+
+function formatTaskSnapshot(uuid: string, snapshot: TaskSnapshot): string {
+  const rank: Record<TaskStatus, number> = { in_progress: 0, pending: 1, completed: 2 }
+  const icon: Record<TaskStatus, string> = { in_progress: '⏳', pending: '⬜', completed: '✅' }
+  const sorted = [...snapshot.items].sort((a, b) => rank[a.status] - rank[b.status] || a.id.localeCompare(b.id, undefined, { numeric: true }))
+  const visible = sorted.slice(0, 10)
+  const lines = [`📋 Tasks \`${uuid.slice(0, 8)}\``]
+  for (const item of visible) {
+    const label = item.status === 'in_progress' && item.activeText ? item.activeText : item.text
+    const blocked = item.blockedBy.length > 0 ? ` _(blocked by ${item.blockedBy.join(', ')})_` : ''
+    lines.push(`${icon[item.status]} ${label}${blocked}`)
+  }
+  if (sorted.length > visible.length) lines.push(`… +${sorted.length - visible.length} more`)
+  return lines.join('\n').slice(0, 3000)
+}
+
+async function publishTaskSnapshot(uuid: string, state: TranscriptPollState, snapshot: TaskSnapshot): Promise<void> {
+  if (!state.lastTaskHash && snapshot.newestMtime + TRANSCRIPT_START_REPLAY_MS < state.startedAt) {
+    state.lastTaskHash = snapshot.hash
+    return
+  }
+  const hasOpenTasks = snapshot.items.some(item => item.status !== 'completed')
+  if (!hasOpenTasks && !state.lastTaskHash) {
+    state.lastTaskHash = snapshot.hash
+    return
+  }
+  const channels = channelsForUuid(uuid)
+  const changed = snapshot.hash !== state.lastTaskHash
+  const missingChannels = channels.filter(ck => !state.taskMessageIds.has(ck))
+  if (!changed && missingChannels.length === 0) return
+
+  const text = formatTaskSnapshot(uuid, snapshot)
+  let attempted = false
+  for (const ck of channels) {
+    const adapter = adapterFor(ck)
+    if (!adapter) continue
+    const id = localId(ck)
+    const existing = state.taskMessageIds.get(ck)
+    if (existing && changed) {
+      attempted = true
+      try {
+        await adapter.editMessage(id, existing, text)
+        continue
+      } catch (err) {
+        process.stderr.write(`daemon: task list edit failed ${uuid.slice(0, 8)} channel=${ck}: ${err}\n`)
+        state.taskMessageIds.delete(ck)
+      }
+    }
+    if (existing && !changed) continue
+    try {
+      attempted = true
+      const msgId = await adapter.sendMessage(id, text)
+      if (msgId) state.taskMessageIds.set(ck, msgId)
+    } catch (err) {
+      process.stderr.write(`daemon: task list send failed ${uuid.slice(0, 8)} channel=${ck}: ${err}\n`)
+    }
+  }
+  if (attempted) state.lastTaskHash = snapshot.hash
+}
+
+async function pollTaskSnapshot(uuid: string, state: TranscriptPollState): Promise<void> {
+  const snapshot = readTaskSnapshot(uuid)
+  if (!snapshot) return
+  await publishTaskSnapshot(uuid, state, snapshot)
+}
+
 function startTranscriptPoll(uuid: string): void {
   if (pollState.has(uuid)) return
   const state: TranscriptPollState = {
@@ -655,10 +782,12 @@ function startTranscriptPoll(uuid: string): void {
     deliveredOrder: [],
     deliveredKeys: new Set(),
     deliveredCompactKeys: new Set(),
+    taskMessageIds: new Map(),
   }
   const tick = async () => {
     try {
       await flushPendingTranscriptDeliveries(uuid, state)
+      await pollTaskSnapshot(uuid, state)
       const t = findTranscript(uuid)
       if (!t) return
       const path = t.path
