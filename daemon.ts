@@ -479,9 +479,36 @@ type TranscriptPollState = {
   pending: Map<string, TranscriptDelivery>
   deliveredOrder: string[]
   deliveredKeys: Set<string>
-  compactSent?: boolean
+  deliveredCompactKeys: Set<string>
+  lastCompactCompleteAt?: number
+  lastCompletedCompactStartAt?: number
 }
 const pollState = new Map<string, TranscriptPollState>()
+
+async function sendCompactionComplete(uuid: string, key: string): Promise<void> {
+  const state = pollState.get(uuid)
+  const watcher = screenWatchers.get(uuid)
+  const lifecycleStart = watcher?.compactingStartedAt
+  const isNewScreenLifecycle = lifecycleStart !== undefined && state?.lastCompletedCompactStartAt !== lifecycleStart
+  if (state?.deliveredCompactKeys.has(key)) return
+  if (lifecycleStart !== undefined && state?.lastCompletedCompactStartAt === lifecycleStart) return
+  if (state?.lastCompactCompleteAt && Date.now() - state.lastCompactCompleteAt < 3000 && !isNewScreenLifecycle) return
+  state?.deliveredCompactKeys.add(key)
+  if (state) {
+    state.lastCompactCompleteAt = Date.now()
+    if (lifecycleStart !== undefined) state.lastCompletedCompactStartAt = lifecycleStart
+  }
+  const display = '✅ Context compacted, ready to continue.'
+  const chans = channelsForUuid(uuid)
+  if (watcher) watcher.compactingActive = false
+  process.stderr.write(`daemon: compaction complete for ${uuid.slice(0, 8)}, key=${key}, channels=[${chans.join(',')}]\n`)
+  for (const ck of chans) {
+    const adapter = adapterFor(ck)
+    if (!adapter) continue
+    try { await adapter.sendMessage(localId(ck), display) }
+    catch (err) { process.stderr.write(`daemon: compaction-done msg FAILED for ${ck}: ${err}\n`) }
+  }
+}
 
 // UUIDs with a permission request in flight. The MCP `permission_request`
 // handler already sends a "🔐 Allow/Deny" message — the screen watcher
@@ -627,6 +654,7 @@ function startTranscriptPoll(uuid: string): void {
     pending: new Map(),
     deliveredOrder: [],
     deliveredKeys: new Set(),
+    deliveredCompactKeys: new Set(),
   }
   const tick = async () => {
     try {
@@ -733,27 +761,24 @@ async function processTranscriptLine(uuid: string, line: string, pollState_: Tra
   const ts = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN
   if (!Number.isNaN(ts) && ts + TRANSCRIPT_START_REPLAY_MS < pollState_.startedAt) return
 
-  // Forward compaction events so the channel user knows context was compressed
+  // Forward compaction completion so the channel user knows CC is ready again.
+  // Newer CC versions may write only a system "Conversation compacted" entry;
+  // older/manual compactions also write compact_file_reference attachments.
+  if (entry.type === 'system' && entry.content === 'Conversation compacted') {
+    const key = typeof entry.uuid === 'string'
+      ? `system:${entry.uuid}`
+      : `system:${entry.timestamp ?? 'unknown'}`
+    await sendCompactionComplete(uuid, key)
+    return
+  }
+
   if (entry.type === 'attachment') {
     const att = entry.attachment as { type?: string } | undefined
     if (att?.type === 'compact_file_reference') {
-      // Post-hoc signal: compaction has COMPLETED (these entries are written
-      // after the fact). The PreCompact hook sends the "starting" message;
-      // this one is the "done" bookend so the user knows CC is ready again.
-      if (!pollState_.compactSent) {
-        pollState_.compactSent = true
-        const display = '✅ Context compacted, ready to continue.'
-        const chans = channelsForUuid(uuid)
-        process.stderr.write(`daemon: compaction complete for ${uuid.slice(0, 8)}, channels=[${chans.join(',')}]\n`)
-        for (const ck of chans) {
-          const adapter = adapterFor(ck)
-          if (!adapter) continue
-          try { await adapter.sendMessage(localId(ck), display) }
-          catch (err) { process.stderr.write(`daemon: compaction-done msg FAILED for ${ck}: ${err}\n`) }
-        }
-      }
-    } else if (pollState_.compactSent) {
-      pollState_.compactSent = false
+      const key = typeof entry.uuid === 'string'
+        ? `attachment:${entry.uuid}`
+        : `attachment:${entry.timestamp ?? 'unknown'}:${JSON.stringify(att)}`
+      await sendCompactionComplete(uuid, key)
     }
     return
   }
@@ -1288,13 +1313,17 @@ const screenWatchers = new Map<string, {
   isDialog: boolean
   nonDialogStreak?: number  // consecutive non-dialog samples since entering dialog mode
   lastMaybeHint?: string    // dedup for MAYBE_PROMPT_HINT_RE warnings
+  compactingActive?: boolean
+  compactingStartedAt?: number
 }>()
 const screenWatchStarting = new Set<string>()
 
-const SCREEN_THROTTLE_MS = 3000
+const SCREEN_THROTTLE_MS = 1000
 const DIALOG_OFF_STREAK = 2  // Require N consecutive non-dialog samples before clearing
 const THINKING_DOT = process.platform === 'darwin' ? '⏺' : '●'
 const TOOL_CALL_RE = /^[⏺●]\s+[A-Z][a-zA-Z]*\(/
+const COMPACTING_SCREEN_RE = /\bcompact(?:ing)?\b.*\b(?:conversation|context)\b|\b(?:conversation|context)\b.*\bcompact(?:ing)?\b/i
+const COMPACTED_SCREEN_RE = /\bcompacted\b(?:\s*\([^)]*\))?/i
 
 // Matches CC's interactive prompt hints. Covers the key vocabulary seen in
 // src/components/**/*.tsx and src/commands/**/*.tsx:
@@ -1367,6 +1396,23 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     entry.lastContent = content
 
     const lines = content.split('\n')
+
+    if (COMPACTING_SCREEN_RE.test(content) && !entry.compactingActive) {
+      entry.compactingActive = true
+      entry.compactingStartedAt = Date.now()
+      try {
+        await adapter.sendMessage(id, '🗜️ Compacting conversation context...')
+        process.stderr.write(`daemon: compacting screen detected for ${u}\n`)
+      } catch (err) {
+        process.stderr.write(`daemon: compacting screen send FAILED for ${u}: ${err}\n`)
+      }
+    }
+
+    if (entry.compactingActive && COMPACTED_SCREEN_RE.test(content)) {
+      const key = `screen:${entry.compactingStartedAt ?? now}`
+      await sendCompactionComplete(uuid, key)
+    }
+
     // Suppress dialog-branch when a permission request is in flight — the
     // MCP `permission_request` path already sent a 🔐 Allow/Deny message,
     // and CC's permission TUI matches our dialog markers. Without this we
@@ -1427,7 +1473,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
   screenWatchers.set(uuid, {
     watcher: { close: () => clearInterval(interval) } as any,
     lastContent: '', channelKey: ck, paneId,
-    lastUpdateTime: 0, isDialog: false, nonDialogStreak: 0,
+    lastUpdateTime: 0, isDialog: false, nonDialogStreak: 0, compactingActive: false, compactingStartedAt: undefined,
   })
   screenWatchStarting.delete(uuid)
 
