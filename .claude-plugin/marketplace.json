@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "claude-channel-mux",
-  "description": "Multi-channel session multiplexer for Claude Code",
+  "description": "Multi-channel room multiplexer for Claude Code and Codex",
   "owner": {
     "name": "flyingImer",
     "email": "flyingImer@users.noreply.github.com"
@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "claude-channel-mux",
-      "description": "Routes Slack and Telegram conversations to independent CC sessions via MCP",
+      "description": "Routes Slack and Telegram conversations to Claude Code and Codex agent slots via CCM",
       "category": "channels",
       "source": {
         "source": "url",

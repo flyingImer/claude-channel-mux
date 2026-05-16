@@ -25,12 +25,19 @@ export type InteractionCallback = {
   channelId: string
   data: string              // callback_data from inline keyboard
   ackId?: string            // for platforms that need explicit ack (Telegram callback_query_id)
+  messageId?: string        // message containing the clicked button, when available
 }
+
+export type SearchContext = {
+  runtime?: string
+}
+
+export type PlatformInlineKeyboard = unknown
 
 export type SendOptions = {
   replyTo?: string          // message ID to reply to / thread under
   broadcast?: boolean       // Slack: also send to channel when replying in thread
-  inlineKeyboard?: any      // platform-native keyboard structure
+  inlineKeyboard?: PlatformInlineKeyboard // platform-native keyboard structure
 }
 
 export interface ChannelAdapter {
@@ -87,6 +94,9 @@ export interface ChannelAdapter {
    */
   showTyping?(channelId: string, threadTs?: string): Promise<void>
 
+  /** Clear typing/processing indicator when the platform requires explicit cleanup. */
+  clearTyping?(channelId: string, threadTs?: string): Promise<void>
+
   /** Download a file to the inbox dir. Returns local file path. */
   downloadFile(fileId: string): Promise<string>
 
@@ -114,7 +124,7 @@ export interface ChannelAdapter {
    * Render a list picker (session list, stop list). Returns SendOptions
    * with platform-native inline keyboard/blocks.
    */
-  renderListPicker(items: PickerItem[], page: number, totalPages: number, callbackPrefix: string): any
+  renderListPicker(items: PickerItem[], page: number, totalPages: number, callbackPrefix: string): SendOptions
 
   /**
    * Render a button grid (directory browser, action buttons).
@@ -125,25 +135,25 @@ export interface ChannelAdapter {
     gridItems?: ButtonItem[]
     filterButtons?: ButtonItem[]
     bottomButtons?: ButtonItem[]
-  }): any
+  }): SendOptions
 
   /**
    * Render a row of action buttons (for sendWithButtons).
    */
-  renderButtons(buttons: ButtonItem[]): any
+  renderButtons(buttons: ButtonItem[]): SendOptions
 
   /**
    * Prompt user for text input using platform-native UX.
    * Telegram: force_reply message. Slack: modal.
    * Result delivered via onSearch callback.
    */
-  promptSearch(channelId: string, prompt: string): Promise<void>
+  promptSearch(channelId: string, prompt: string, context?: SearchContext): Promise<void>
 
   /**
    * Register search result callback. Fired when user submits text
    * from a promptSearch interaction.
    */
-  onSearch(cb: (channelId: string, query: string) => void): void
+  onSearch(cb: (channelId: string, query: string, context?: SearchContext) => void): void
 }
 
 export type PickerItem = {

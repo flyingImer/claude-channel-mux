@@ -1,0 +1,30 @@
+{
+  "name": "claude-channel-mux",
+  "version": "0.3.0",
+  "description": "Multi-channel, multi-agent room multiplexer for Claude Code and Codex CLI over Slack/Telegram.",
+  "author": {
+    "name": "flyingImer",
+    "email": "flyingImer@users.noreply.github.com",
+    "url": "https://github.com/flyingImer"
+  },
+  "homepage": "https://github.com/flyingImer/claude-channel-mux",
+  "repository": "https://github.com/flyingImer/claude-channel-mux",
+  "license": "Apache-2.0",
+  "keywords": ["slack", "telegram", "channel", "codex", "claude-code", "multiplexer"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Claude Channel Mux",
+    "shortDescription": "Route Slack and Telegram to agent sessions.",
+    "longDescription": "Runs a lightweight daemon that binds Slack/Telegram rooms to cwd-scoped Claude Code and Codex agent slots, with visible agent identity, lazy session startup, Agent SPI routing, Codex App Server transport, and resilient platform delivery.",
+    "developerName": "flyingImer",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Slack", "Telegram", "Automation"],
+    "websiteURL": "https://github.com/flyingImer/claude-channel-mux",
+    "defaultPrompt": [
+      "Configure Slack and Telegram for channel mux.",
+      "Start the claude-channel-mux daemon.",
+      "Explain how Codex runtime mode works."
+    ],
+    "brandColor": "#111827"
+  }
+}
