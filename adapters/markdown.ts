@@ -18,6 +18,7 @@
 import { slackifyMarkdown } from 'slackify-markdown'
 // @ts-ignore — telegramify-markdown is CommonJS with type definitions
 import telegramify from 'telegramify-markdown'
+import { errorMessage } from '../redact.js'
 
 /**
  * Strip an outer ```lang ... ``` wrapper when the ENTIRE text is a single
@@ -25,8 +26,10 @@ import telegramify from 'telegramify-markdown'
  * — the intent is structured markdown, not a literal code block.
  */
 function unwrapOuterFence(text: string): string {
-  const m = text.match(/^```\w*\n([\s\S]*)\n```\s*$/)
-  return m ? m[1] : text
+  const m = text.match(/^```([^`\n]*)\n([\s\S]*)\n```\s*$/)
+  if (!m) return text
+  const lang = m[1].trim().toLowerCase()
+  return (lang === 'markdown' || lang === 'md') ? m[2] : text
 }
 
 // GFM table row: `| ... |` (ASCII pipe).
@@ -35,10 +38,10 @@ const TABLE_ROW_RE = /^\s*\|.+\|\s*$/
 const TABLE_SEP_RE = /^\s*\|[\s\-:|]+\|\s*$/
 
 /**
- * Convert GFM tables to code-block format for Slack readability.
- * Slack has no native table support and uses proportional fonts, so
+ * Convert GFM tables to code-block format for platform readability.
+ * Slack/Telegram have no native table support and often use proportional fonts, so
  * pipe-delimited text loses column alignment. A code block (monospace)
- * is the only way to preserve cross-row comparison on Slack.
+ * is the only way to preserve cross-row comparison in forwarded messages.
  *
  * Cleans up the table: removes the `|---|---|` separator row and pads
  * columns for consistent alignment within the code block.
@@ -47,9 +50,12 @@ function gfmTableToCodeBlock(text: string): string {
   const lines = text.split('\n')
   const out: string[] = []
   let tableLines: string[] = []
+  let insideFence = false
+  let fenceChar = ''
+  let fenceLength = 0
 
   const flushTable = () => {
-    if (tableLines.length < 2) {
+    if (tableLines.length < 2 || !tableLines.some(l => TABLE_SEP_RE.test(l))) {
       out.push(...tableLines)
       tableLines = []
       return
@@ -86,7 +92,29 @@ function gfmTableToCodeBlock(text: string): string {
   }
 
   for (const line of lines) {
-    if (TABLE_ROW_RE.test(line)) {
+    const fenceMatch = line.match(/^\s*(`{3,}|~{3,})/)
+    if (fenceMatch) {
+      const marker = fenceMatch[1]
+      if (!insideFence) {
+        flushTable()
+        insideFence = true
+        fenceChar = marker[0]
+        fenceLength = marker.length
+        out.push(line)
+        continue
+      }
+      if (marker[0] === fenceChar && marker.length >= fenceLength) {
+        insideFence = false
+        fenceChar = ''
+        fenceLength = 0
+        out.push(line)
+        continue
+      }
+    }
+
+    if (insideFence) {
+      out.push(line)
+    } else if (TABLE_ROW_RE.test(line)) {
       tableLines.push(line)
     } else {
       flushTable()
@@ -126,6 +154,7 @@ export function autoFenceAsciiArt(text: string): string {
   const out: string[] = []
   let insideFence = false
   let fenceMarker = ''
+  let fenceCloseMarker = ''
   let pending: string[] = []
 
   const flushPending = () => {
@@ -147,6 +176,7 @@ export function autoFenceAsciiArt(text: string): string {
         flushPending()
         insideFence = true
         fenceMarker = fenceMatch[2]
+        fenceCloseMarker = fenceMarker
         out.push(line)
         continue
       }
@@ -154,6 +184,7 @@ export function autoFenceAsciiArt(text: string): string {
       if (line.trim().startsWith(fenceMarker[0].repeat(fenceMarker.length))) {
         insideFence = false
         fenceMarker = ''
+        fenceCloseMarker = ''
         out.push(line)
         continue
       }
@@ -164,8 +195,7 @@ export function autoFenceAsciiArt(text: string): string {
     }
     // Outside any fence — classify line.
     // Only fence true ASCII art (box-drawing, structural lines). GFM tables
-    // (pipe-delimited) are left for slackifyMarkdown/telegramify which handle
-    // them natively as readable aligned text.
+    // are normalized to explicit code blocks before platform conversion.
     if (looksArty(line)) {
       pending.push(line)
     } else {
@@ -175,7 +205,7 @@ export function autoFenceAsciiArt(text: string): string {
   }
   flushPending()
   // Close any unterminated fence to keep remark happy
-  if (insideFence) out.push('```')
+  if (insideFence) out.push(fenceCloseMarker || '```')
   return out.join('\n')
 }
 
@@ -185,7 +215,7 @@ export function renderForSlack(text: string): string {
   try {
     return slackifyMarkdown(autoFenceAsciiArt(gfmTableToCodeBlock(unwrapOuterFence(text))))
   } catch (err) {
-    process.stderr.write(`slack: markdown render failed: ${err}\n`)
+    process.stderr.write(`slack: markdown render failed: ${errorMessage(err)}\n`)
     return text
   }
 }
@@ -194,9 +224,9 @@ export function renderForSlack(text: string): string {
 export function renderForTelegram(text: string): string {
   if (!text) return text
   try {
-    return telegramify(autoFenceAsciiArt(unwrapOuterFence(text)), 'escape')
+    return telegramify(autoFenceAsciiArt(gfmTableToCodeBlock(unwrapOuterFence(text))), 'escape')
   } catch (err) {
-    process.stderr.write(`telegram: markdown render failed: ${err}\n`)
+    process.stderr.write(`telegram: markdown render failed: ${errorMessage(err)}\n`)
     return text
   }
 }
@@ -208,6 +238,33 @@ export function renderForTelegram(text: string): string {
  * block, the chunk gets a closing fence appended and the next chunk gets
  * a re-opening fence prepended so each chunk is self-contained.
  */
+type OpenFence = { marker: string; opener: string }
+
+function openFenceMarker(text: string): OpenFence | null {
+  let openFence: OpenFence | null = null
+  let fenceChar = ''
+  let fenceLength = 0
+
+  for (const line of text.split('\n')) {
+    const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})(.*)$/)
+    if (!fenceMatch) continue
+    const fence = fenceMatch[1]
+    if (!openFence) {
+      openFence = { marker: fence, opener: `${fence}${fenceMatch[2] ?? ''}`.trimEnd() }
+      fenceChar = fence[0]
+      fenceLength = fence.length
+      continue
+    }
+    if (fence[0] === fenceChar && fence.length >= fenceLength) {
+      openFence = null
+      fenceChar = ''
+      fenceLength = 0
+    }
+  }
+
+  return openFence
+}
+
 export function splitForLimit(text: string, limit: number): string[] {
   if (text.length <= limit) return [text]
   const chunks: string[] = []
@@ -217,13 +274,16 @@ export function splitForLimit(text: string, limit: number): string[] {
     if (cut < limit * 0.5) cut = remaining.lastIndexOf('\n', limit)
     if (cut < limit * 0.5) cut = remaining.lastIndexOf(' ', limit)
     if (cut <= 0) cut = limit
-    let chunk = remaining.slice(0, cut).trimEnd()
-    remaining = remaining.slice(cut).trimStart()
-    // Check if cut lands inside a code fence — odd number of ``` means open
-    const fenceCount = (chunk.match(/^```/gm) || []).length
-    if (fenceCount % 2 !== 0) {
-      chunk += '\n```'
-      remaining = '```\n' + remaining
+
+    const rawChunk = remaining.slice(0, cut)
+    const rawRest = remaining.slice(cut)
+    let chunk = rawChunk.trimEnd()
+    const marker = openFenceMarker(chunk)
+    remaining = marker ? rawRest.replace(/^\n/, '') : rawRest.trimStart()
+
+    if (marker) {
+      chunk += `\n${marker.marker}`
+      remaining = `${marker.opener}\n${remaining}`
     }
     chunks.push(chunk)
   }
