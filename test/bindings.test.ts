@@ -1,0 +1,73 @@
+import { test, expect } from 'bun:test'
+import { AGENT_RUNTIMES, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding } from '../bindings.ts'
+
+test('normalizeBinding upgrades legacy string bindings to Claude sessions', () => {
+  expect(normalizeBinding('legacy-uuid', 'codex')).toEqual({
+    active: 'claude',
+    sessions: { claude: 'legacy-uuid' },
+    agentMeta: {},
+  })
+})
+
+test('normalizeBinding chooses default runtime when that session exists', () => {
+  expect(normalizeBinding({ sessions: { claude: 'cc', codex: 'cx' } }, 'codex').active).toBe('codex')
+  expect(normalizeBinding({ sessions: { claude: 'cc', codex: 'cx' } }, 'claude').active).toBe('claude')
+})
+
+test('normalizeBinding trims cwd and preserves agent metadata', () => {
+  const normalized = normalizeBinding({ active: 'codex', sessions: { codex: 'cx' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt' } } }, 'claude')
+  expect(normalized.cwd).toBe('/repo')
+  expect(normalized.agentMeta.codex?.model).toBe('gpt')
+})
+
+test('serializeBinding omits empty default bindings and empty metadata', () => {
+  expect(serializeBinding({ active: 'claude', sessions: {}, agentMeta: {} }, 'claude')).toBeUndefined()
+  expect(serializeBinding({ active: 'codex', sessions: { claude: '', codex: 'cx' }, agentMeta: { codex: {} } }, 'claude')).toEqual({
+    active: 'codex',
+    sessions: { codex: 'cx' },
+  })
+})
+
+
+test('keepAgentModelMeta preserves only model overrides', () => {
+  expect(keepAgentModelMeta(undefined)).toBeUndefined()
+  expect(keepAgentModelMeta({ cwd: '/repo', nativeSessionId: 'native' })).toBeUndefined()
+  expect(keepAgentModelMeta({ model: 'gpt-5.4', cwd: '/repo', nativeSessionId: 'native' })).toEqual({ model: 'gpt-5.4' })
+})
+
+
+test('bindingsFromJson keeps valid bindings and drops malformed persisted state', () => {
+  expect(bindingsFromJson({
+    'slack:C1': 'legacy-uuid',
+    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx', other: 'bad' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', cwd: '/repo', bad: 1 } } },
+    'slack:bad': { active: 'other', sessions: { claude: 1 }, cwd: '   ', agentMeta: { codex: { model: '' } } },
+    'slack:number-active': { active: 1, sessions: { codex: 2 } },
+    'slack:null': null,
+  })).toEqual({
+    'slack:C1': 'legacy-uuid',
+    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx' }, cwd: '/repo', agentMeta: { codex: { cwd: '/repo', model: 'gpt' } } },
+  })
+  expect(bindingsFromJson([])).toEqual({})
+})
+
+
+test('bindingSessionEntries returns typed active session entries', () => {
+  expect(bindingSessionEntries({ active: 'codex', sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })).toEqual([
+    { runtime: 'claude', uuid: 'cc', active: false },
+    { runtime: 'codex', uuid: 'cx', active: true },
+  ])
+  expect(bindingSessionEntries({ active: 'claude', sessions: { claude: '', codex: undefined }, agentMeta: {} })).toEqual([])
+})
+
+
+test('AGENT_RUNTIMES is the shared runtime order', () => {
+  expect(AGENT_RUNTIMES).toEqual(['claude', 'codex'])
+})
+
+
+test('isAgentRuntimeKind accepts only supported runtimes', () => {
+  expect(isAgentRuntimeKind('claude')).toBe(true)
+  expect(isAgentRuntimeKind('codex')).toBe(true)
+  expect(isAgentRuntimeKind('other')).toBe(false)
+  expect(isAgentRuntimeKind(1)).toBe(false)
+})
