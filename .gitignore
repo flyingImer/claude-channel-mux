@@ -7,3 +7,6 @@ zellij-plugin/target/
 /tmp/
 *.screen
 *.log
+
+# Runtime agent worktrees
+.claude/worktrees/
