@@ -11,25 +11,41 @@
  * pane is alive, close tab.
  */
 
-import { execSync } from 'child_process'
+import { execFile, execFileSync } from 'child_process'
+import { promisify } from 'util'
+import { parseZellijJson, zellijPanes, zellijTabs, type ZellijPane } from './zellij-json.js'
+import { errorMessage } from './redact.js'
 
-const ZELLIJ_SESSION = 'ccmux'
+const ZELLIJ_SESSION = process.env.CHANNEL_DAEMON_ZELLIJ_SESSION ?? 'ccmux'
+const execFileAsync = promisify(execFile)
 
 // ---------------------------------------------------------------------------
 // Zellij helpers
 // ---------------------------------------------------------------------------
 
-function zj(cmd: string): string {
-  return execSync(`zellij --session ${ZELLIJ_SESSION} action ${cmd}`, {
+function zj(...args: string[]): string {
+  return execFileSync('zellij', ['--session', ZELLIJ_SESSION, 'action', ...args], {
     encoding: 'utf8',
     timeout: 5000,
   }).trim()
 }
 
-export function listPanes(): any[] {
-  try {
-    return JSON.parse(zj('list-panes --json'))
-  } catch { return [] }
+function listZellijSessions(): string {
+  return execFileSync('zellij', ['list-sessions', '--no-formatting'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 5000,
+  }).trim()
+}
+
+export function zellijSessionAlive(output = listZellijSessions(), sessionName = ZELLIJ_SESSION): boolean {
+  const line = output.split('\n').find(item => item.trim().split(/\s+/)[0] === sessionName)
+  return !!line && !line.includes('EXITED')
+}
+
+export function listPanes(): ZellijPane[] {
+  if (!zellijSessionAlive()) return []
+  return zellijPanes(parseZellijJson(zj('list-panes', '--json')))
 }
 
 export function findPaneByTabName(tabName: string): { paneId: number; exited: boolean; exitStatus: number | null } | null {
@@ -44,65 +60,108 @@ export function findPaneByTabName(tabName: string): { paneId: number; exited: bo
 
 export function dumpScreen(paneId: number): string {
   try {
-    return zj(`dump-screen --pane-id ${paneId}`)
-  } catch { return '' }
+    return zj('dump-screen', '--pane-id', String(paneId))
+  } catch (err) {
+    process.stderr.write(`escort: dump-screen failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    return ''
+  }
 }
 
 /** Async version of dumpScreen — doesn't block event loop */
 export async function dumpScreenAsync(paneId: number): Promise<string> {
   try {
-    const { exec: execCb } = require('child_process') as typeof import('child_process')
-    const { promisify } = require('util') as typeof import('util')
-    const exec = promisify(execCb)
-    const { stdout } = await exec(
-      `zellij --session ${ZELLIJ_SESSION} action dump-screen --pane-id ${paneId}`,
-      { encoding: 'utf8', timeout: 5000 },
-    )
+    const { stdout } = await execFileAsync('zellij', ['--session', ZELLIJ_SESSION, 'action', 'dump-screen', '--pane-id', String(paneId)], {
+      encoding: 'utf8',
+      timeout: 5000,
+    })
     return stdout.trim()
-  } catch { return '' }
+  } catch (err) {
+    process.stderr.write(`escort: async dump-screen failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    return ''
+  }
 }
 
 const ZELLIJ_KEY_ALIASES: Record<string, string> = { Escape: 'Esc' }
+const ESCORT_ALLOWED_KEYS = new Set(['Up', 'Down', 'Left', 'Right', 'Enter', 'Escape', 'Tab', 'Backspace'])
 
-export function sendKeys(paneId: number, ...keys: string[]): void {
+function positiveSafeInteger(text: string | undefined): number | undefined {
+  if (!text || !/^\d+$/.test(text)) return undefined
+  const value = Number(text)
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined
+}
+
+function nonNegativeSafeInteger(text: string | undefined): number | undefined {
+  if (text == null || !/^\d+$/.test(text)) return undefined
+  const value = Number(text)
+  return Number.isSafeInteger(value) ? value : undefined
+}
+
+export type EscortCallbackAction =
+  | { type: 'key'; paneId: number; key: string }
+  | { type: 'select'; paneId: number; targetIndex: number }
+
+export function parseEscortCallback(data: string): EscortCallbackAction | undefined {
+  const parts = data.split(':')
+  if (parts[0] !== 'esc' || parts.length !== 4) return undefined
+  const paneId = positiveSafeInteger(parts[1])
+  if (!paneId) return undefined
+  const kind = parts[2]
+  const value = parts[3]
+  if (kind === 'key' && ESCORT_ALLOWED_KEYS.has(value)) return { type: 'key', paneId, key: value }
+  if (kind === 'select') {
+    const targetIndex = nonNegativeSafeInteger(value)
+    if (targetIndex != null) return { type: 'select', paneId, targetIndex }
+  }
+  return undefined
+}
+
+export function sendKeys(paneId: number, ...keys: string[]): boolean {
   try {
     const normalized = keys.map(k => ZELLIJ_KEY_ALIASES[k] ?? k)
-    zj(`send-keys --pane-id ${paneId} ${normalized.join(' ')}`)
-  } catch {}
+    zj('send-keys', '--pane-id', String(paneId), ...normalized)
+    return true
+  } catch (err) {
+    process.stderr.write(`escort: send-keys failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    return false
+  }
 }
 
 /** Write raw bytes to a pane's PTY. More reliable than sendKeys for Ink TUIs. */
 export function writeRaw(paneId: number, ...bytes: number[]): void {
   try {
-    zj(`write -p ${paneId} ${bytes.join(' ')}`)
-  } catch {}
+    zj('write', '-p', String(paneId), ...bytes.map(String))
+  } catch (err) {
+    process.stderr.write(`escort: write raw failed for pane ${paneId}: ${errorMessage(err)}\n`)
+  }
 }
 
-export function writeChars(paneId: number, text: string): void {
+export function writeChars(paneId: number, text: string): boolean {
   try {
-    // Escape single quotes for shell
-    const escaped = text.replace(/'/g, "'\\''")
-    execSync(
-      `zellij --session ${ZELLIJ_SESSION} action write-chars --pane-id ${paneId} '${escaped}'`,
-      { encoding: 'utf8', timeout: 5000 },
-    )
-  } catch {}
+    zj('write-chars', '--pane-id', String(paneId), text)
+    return true
+  } catch (err) {
+    process.stderr.write(`escort: write chars failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    return false
+  }
 }
 
 export function closeTab(tabName: string): void {
   try {
+    if (!zellijSessionAlive()) return
     // Find tab ID by name
-    const tabs = JSON.parse(zj('list-tabs --json'))
-    const tab = tabs.find((t: any) => t.name === tabName)
+    const tabs = zellijTabs(parseZellijJson(zj('list-tabs', '--json')))
+    const tab = tabs.find(t => t.name === tabName)
     if (tab) {
-      zj(`close-tab-by-id ${tab.tab_id}`)
+      zj('close-tab-by-id', String(tab.tab_id))
     }
-  } catch {}
+  } catch (err) {
+    process.stderr.write(`escort: close tab ${JSON.stringify(tabName)} failed: ${errorMessage(err)}\n`)
+  }
 }
 
 export function isPaneAlive(paneId: number): boolean {
   const panes = listPanes()
-  const p = panes.find((x: any) => x.id === paneId && !x.is_plugin)
+  const p = panes.find(x => x.id === paneId && !x.is_plugin)
   return p ? !p.exited : false
 }
 
@@ -259,16 +318,12 @@ export function buildKeyboard(ui: DetectedUI, paneId: number): KeyboardRow[] {
  * with screen verification between each keystroke. Event-based, not timer-based.
  */
 export async function handleEscortCallback(data: string): Promise<void> {
-  const parts = data.split(':')
-  if (parts[0] !== 'esc' || parts.length < 3) return
-  const paneId = parseInt(parts[1])
-  const action = parts.slice(2).join(':')
-
-  if (action.startsWith('key:')) {
-    sendKeys(paneId, action.slice(4))
-  } else if (action.startsWith('select:')) {
-    const targetIdx = parseInt(action.slice(7))
-    await navigateAndSelect(paneId, targetIdx)
+  const action = parseEscortCallback(data)
+  if (!action) return
+  if (action.type === 'key') {
+    sendKeys(action.paneId, action.key)
+  } else {
+    await navigateAndSelect(action.paneId, action.targetIndex)
   }
 }
 
@@ -325,6 +380,28 @@ export type EscortCallbacks = {
   isIpcConnected: () => boolean
 }
 
+async function updateEscortMessage(
+  callbacks: EscortCallbacks,
+  messageId: string | undefined,
+  text: string,
+  keyboard: KeyboardRow[] | undefined,
+  label: string,
+): Promise<string | undefined> {
+  if (!messageId) return await callbacks.sendToChannel(text, keyboard)
+  try {
+    await callbacks.editMessage(messageId, text, keyboard)
+    return messageId
+  } catch (err) {
+    process.stderr.write(`escort: ${label} edit failed, sending replacement: ${errorMessage(err)}\n`)
+    try {
+      return await callbacks.sendToChannel(text, keyboard)
+    } catch (sendErr) {
+      process.stderr.write(`escort: ${label} replacement send failed: ${errorMessage(sendErr)}\n`)
+      return messageId
+    }
+  }
+}
+
 export async function runEscort(
   tabName: string,
   callbacks: EscortCallbacks,
@@ -352,7 +429,7 @@ export async function runEscort(
     // Check if IPC connected → escort done
     if (callbacks.isIpcConnected()) {
       if (lastMessageId) {
-        await callbacks.editMessage(lastMessageId, '✅ Session ready.').catch(() => {})
+        await updateEscortMessage(callbacks, lastMessageId, '✅ Session ready.', undefined, 'ready')
       }
       return 'connected'
     }
@@ -362,7 +439,7 @@ export async function runEscort(
       pane = findPaneByTabName(tabName)
       if (!pane || pane.exited) {
         if (lastMessageId) {
-          await callbacks.editMessage(lastMessageId, `❌ Session exited (code ${pane?.exitStatus}).`).catch(() => {})
+          await updateEscortMessage(callbacks, lastMessageId, `❌ Session exited (code ${pane?.exitStatus}).`, undefined, 'exited')
         }
         return 'exited'
       }
@@ -381,11 +458,7 @@ export async function runEscort(
         const kb = buildKeyboard(ui, pane.paneId)
         const text = `🔧 *Setup:* ${ui.title || '(interactive prompt)'}\n\n${ui.options.map((o, i) => `${i === ui.selectedIndex ? '▸' : ' '} ${i + 1}. ${o}`).join('\n')}`
 
-        if (lastMessageId) {
-          await callbacks.editMessage(lastMessageId, text, kb).catch(() => {})
-        } else {
-          lastMessageId = await callbacks.sendToChannel(text, kb)
-        }
+        lastMessageId = await updateEscortMessage(callbacks, lastMessageId, text, kb, 'setup prompt')
       }
     }
 

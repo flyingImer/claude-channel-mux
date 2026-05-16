@@ -1,13 +1,271 @@
 import { WebClient } from '@slack/web-api'
 import { SocketModeClient } from '@slack/socket-mode'
-import { readFileSync } from 'fs'
+import type { KnownBlock } from '@slack/types'
+import { createHash } from 'crypto'
+import { createWriteStream, readFileSync } from 'fs'
+import { homedir } from 'os'
 import { basename } from 'path'
-import type { ChannelAdapter, InboundMessage, InteractionCallback, SendOptions } from './types.js'
+import { pipeline } from 'stream/promises'
+import type { ButtonItem, ChannelAdapter, InboundMessage, InteractionCallback, PickerItem, SearchContext, SendOptions } from './types.js'
 import { renderForSlack, splitForLimit } from './markdown.js'
+import { responseBodyStream } from './stream.js'
+import { errorMessage, redactSensitiveText } from '../redact.js'
 
 // Slack section block text hard limit per the API. Each section holds up
 // to 3000 chars; a single chat.postMessage can carry up to 50 blocks.
 const SECTION_LIMIT = 2900
+const BLOCK_LIMIT = 50
+const SEARCH_CONTEXT_TTL_MS = 10 * 60 * 1000
+const CALLBACK_VALUE_LIMIT = 1900
+const CALLBACK_VALUE_TTL_MS = 10 * 60 * 1000
+
+type SlackButtonElement = { type: 'button'; text: { type: 'plain_text'; text: string }; action_id: string; value: string }
+type SlackBlock = KnownBlock
+
+function slackInlineKeyboard(value: unknown): SlackBlock[] {
+  return Array.isArray(value) ? value.filter((block): block is SlackBlock => typeof block === 'object' && block !== null) : []
+}
+
+function slackActionId(data: string): string {
+  if (data.length <= 64) return data
+  return `ccm:${createHash('sha256').update(data).digest('base64url').slice(0, 16)}`
+}
+
+function slackMessageBlocks(rendered: string, inlineKeyboard: unknown): SlackBlock[] {
+  const keyboard = slackInlineKeyboard(inlineKeyboard).slice(0, BLOCK_LIMIT - 1)
+  const sectionBudget = Math.max(1, BLOCK_LIMIT - keyboard.length)
+  const sections = splitForLimit(rendered, SECTION_LIMIT).slice(0, sectionBudget)
+  const textBlocks: SlackBlock[] = sections.map(text => ({
+    type: 'section',
+    text: { type: 'mrkdwn', text },
+  }))
+  return [...textBlocks, ...keyboard]
+}
+
+type SlackApiError = { data?: { error?: unknown }; code?: unknown }
+type SlackAck = () => void | Promise<void>
+type SlackInteractiveEnvelope = { body?: unknown; ack?: SlackAck }
+type SlackSlashEnvelope = { body?: unknown; ack?: SlackAck }
+
+async function slackAck(ack: SlackAck | undefined, label: string): Promise<void> {
+  try {
+    await ack?.()
+  } catch (err) {
+    process.stderr.write(`slack: ${label} ack failed: ${errorMessage(err)}\n`)
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function optionalStringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function fallbackStringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function safeDownloadName(value: string): string {
+  return value.replace(/[<>[\]{}|\\^`/\x00-\x1f]/g, '_') || 'file'
+}
+
+export async function slackDownloadHttpError(fileId: string, resp: Response): Promise<Error> {
+  const contentType = resp.headers.get('content-type') ?? 'unknown content-type'
+  const raw = await resp.text().catch(() => '')
+  const preview = redactSensitiveText(raw).replace(/\s+/g, ' ').trim().slice(0, 200)
+  return new Error(`Slack download ${fileId}: HTTP ${resp.status}, ${contentType}${preview ? `, body: ${preview}` : ''}`)
+}
+
+function slackPostTs(value: unknown): string | undefined {
+  return optionalStringValue(recordValue(value)?.ts)
+}
+
+function slackTimestampIso(value: unknown): string {
+  const text = fallbackStringValue(value)
+  if (!text || !/^\d+(?:\.\d+)?$/.test(text)) return new Date(0).toISOString()
+  const timestamp = Number(text)
+  return new Date(Number.isFinite(timestamp) && timestamp > 0 ? timestamp * 1000 : 0).toISOString()
+}
+
+function firstRecord(value: unknown): Record<string, unknown> | undefined {
+  return Array.isArray(value) ? recordValue(value[0]) : undefined
+}
+
+export function slackSearchRuntimeFromAction(data: string): SearchContext | undefined | null {
+  if (data === 'cmd:search') return undefined
+  const match = data.match(/^cmd:search:(claude|codex)$/)
+  return match ? { runtime: match[1] as SearchContext['runtime'] } : null
+}
+
+export function isSlackSearchAction(data: string): boolean {
+  return slackSearchRuntimeFromAction(data) !== null
+}
+
+export function slackModalViewId(body: unknown): string | undefined {
+  const payload = recordValue(body)
+  if (payload?.type !== 'view_submission') return undefined
+  const viewId = stringValue(recordValue(payload.view)?.id)
+  return viewId || undefined
+}
+
+export function slackModalSubmission(body: unknown): { viewId: string; query: string } | undefined {
+  const payload = recordValue(body)
+  const viewId = slackModalViewId(payload)
+  if (!viewId) return undefined
+  const view = recordValue(payload?.view)
+  const state = recordValue(view?.state)
+  const values = recordValue(state?.values)
+  const searchBlock = recordValue(values?.search_block)
+  const searchInput = recordValue(searchBlock?.search_input)
+  const query = stringValue(searchInput?.value).trim()
+  return query ? { viewId, query } : undefined
+}
+
+export function slackInteractionCallback(body: unknown): InteractionCallback | undefined {
+  const payload = recordValue(body)
+  const action = firstRecord(payload?.actions)
+  if (!payload || !action) return undefined
+  const data = stringValue(action.value) || stringValue(action.action_id)
+  const channelId = stringValue(recordValue(payload.channel)?.id)
+  if (!data || !channelId) return undefined
+  return {
+    channelId,
+    data,
+    messageId: stringValue(recordValue(payload.message)?.ts) || undefined,
+  }
+}
+
+export function slackSlashInboundMessage(body: unknown): InboundMessage | undefined {
+  const payload = recordValue(body)
+  if (!payload) return undefined
+  const command = stringValue(payload.command)
+  const text = stringValue(payload.text)
+  const channelId = stringValue(payload.channel_id)
+  const userId = stringValue(payload.user_id)
+  if (!command || !channelId || !userId) return undefined
+  return {
+    channelId,
+    userId,
+    userName: stringValue(payload.user_name) || userId,
+    text: normalizeSlackSlashCommandText(command, text),
+    messageId: '',
+    meta: { ts: new Date().toISOString() },
+  }
+}
+
+function slackErrorCode(err: unknown): string {
+  const record = typeof err === 'object' && err !== null ? err as SlackApiError & { message?: unknown } : undefined
+  const dataError = record?.data?.error
+  if (typeof dataError === 'string') return dataError
+  if (typeof record?.code === 'string') return record.code
+  const message = typeof record?.message === 'string' ? record.message : undefined
+  if (message) return redactSensitiveText(message).replace(/\s+/g, ' ').trim().slice(0, 160) || 'unknown'
+  if (typeof err === 'string') return redactSensitiveText(err).replace(/\s+/g, ' ').trim().slice(0, 160) || 'unknown'
+  return 'unknown'
+}
+
+function isSlackBlockPayloadError(err: unknown): boolean {
+  return ['invalid_blocks', 'msg_blocks_too_long', 'invalid_arguments'].includes(slackErrorCode(err))
+}
+
+
+export type SlackInboundIdentityInput = {
+  user?: string
+  bot_id?: string
+  username?: string
+  bot_profile?: { name?: string }
+}
+
+export type SlackInboundEventInput = SlackInboundIdentityInput & {
+  channel?: string
+  ts?: string
+  text?: string
+  thread_ts?: string
+}
+
+export function slackInboundIdentity(
+  event: SlackInboundIdentityInput,
+  botUserId = '',
+  botId = '',
+): { userId: string; fallbackName?: string } {
+  const userId = [event.user, event.bot_id, botUserId, botId]
+    .flatMap(value => fallbackStringValue(value) ?? [])
+    .at(0) ?? ''
+  const fallbackName = fallbackStringValue(event.user)
+    ? undefined
+    : fallbackStringValue(event.username) ?? fallbackStringValue(event.bot_profile?.name) ?? userId
+  return { userId, fallbackName }
+}
+
+export function slackInboundEventFields(event: SlackInboundEventInput): { channelId: string; messageId: string; text: string; timestampIso: string; replyToId?: string } | undefined {
+  const channelId = stringValue(event.channel)
+  const messageId = stringValue(event.ts)
+  const timestamp = Number(messageId)
+  if (!channelId || !messageId || !Number.isFinite(timestamp) || timestamp <= 0) return undefined
+  return {
+    channelId,
+    messageId,
+    text: stringValue(event.text),
+    timestampIso: new Date(timestamp * 1000).toISOString(),
+    replyToId: optionalStringValue(event.thread_ts),
+  }
+}
+
+export function normalizeSlackSlashCommandText(command: string, text = ''): string {
+  if (command === '/ccm') return `ccm ${text}`.trim()
+  if (command === '/cc') return `/cc ${text}`.trim()
+  if (command === '/cx') return `/cx ${text}`.trim()
+  return text.trim()
+}
+
+export type SlackFileInfo = {
+  id?: string
+  name?: string
+  mimetype?: string
+  size?: number | string
+}
+
+function slackFileString(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function slackFileSize(value: unknown): string | number | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? value : undefined
+}
+
+function slackFileInfos(value: unknown): SlackFileInfo[] {
+  return Array.isArray(value) ? value.filter((file): file is SlackFileInfo => typeof file === 'object' && file !== null) : []
+}
+
+export function slackFileMetadata(files: unknown): Record<string, string> {
+  const safeFiles = slackFileInfos(files)
+  if (safeFiles.length === 0) return {}
+  const first = safeFiles[0]
+  const meta: Record<string, string> = {}
+  const firstId = slackFileString(first.id)
+  const firstName = slackFileString(first.name)
+  const firstMime = slackFileString(first.mimetype)
+  const firstSize = slackFileSize(first.size)
+  if (firstId) meta.attachment_file_id = firstId
+  if (firstName) meta.attachment_name = firstName
+  if (firstMime) meta.attachment_mime = firstMime
+  if (firstSize != null) meta.attachment_size = String(firstSize)
+  if (safeFiles.length > 1) {
+    meta.attachment_files = JSON.stringify(safeFiles.map(f => ({
+      file_id: slackFileString(f.id),
+      name: slackFileString(f.name),
+      mime: slackFileString(f.mimetype),
+      size: slackFileSize(f.size),
+    })))
+  }
+  return meta
+}
 
 export class SlackAdapter implements ChannelAdapter {
   readonly platform = 'slack'
@@ -24,15 +282,54 @@ export class SlackAdapter implements ChannelAdapter {
   private inboxDir: string
   private messageCb: ((msg: InboundMessage) => void | Promise<void>) | null = null
   private interactionCb: ((i: InteractionCallback) => void | Promise<void>) | null = null
-  private searchCb: ((channelId: string, query: string) => void) | null = null
-  private pendingSearchChannels = new Map<string, string>()  // view_id → channel_id
+  private searchCb: ((channelId: string, query: string, context?: SearchContext) => void) | null = null
+  private pendingSearchChannels = new Map<string, { channelId: string; context?: SearchContext; createdAt: number }>()  // view_id → search context
   private nameCache = new Map<string, string>()
+  private callbackValueMap = new Map<string, { data: string; createdAt: number }>()
+  private callbackValueSeq = 0
 
   constructor(opts: { botToken?: string; appToken?: string; inboxDir: string }) {
     this.botToken = opts.botToken ?? ''
     this.appToken = opts.appToken ?? ''
     this.inboxDir = opts.inboxDir
     this.configured = !!(this.botToken && this.appToken)
+  }
+
+  private get webClient(): WebClient {
+    if (!this.web) throw new Error('Slack adapter is not started')
+    return this.web
+  }
+
+  injectWebClientForTest(web: WebClient): void {
+    if (process.env.NODE_ENV !== 'test') throw new Error('injectWebClientForTest is test-only')
+    this.web = web
+  }
+
+  private prunePendingSearchChannels(now = Date.now()): void {
+    for (const [viewId, pending] of this.pendingSearchChannels) {
+      if (now - pending.createdAt > SEARCH_CONTEXT_TTL_MS) this.pendingSearchChannels.delete(viewId)
+    }
+  }
+
+  private pruneCallbackValueMap(now = Date.now()): void {
+    for (const [key, pending] of this.callbackValueMap) {
+      if (now - pending.createdAt > CALLBACK_VALUE_TTL_MS) this.callbackValueMap.delete(key)
+    }
+  }
+
+  private compactCallbackValue(data: string): string {
+    if (Buffer.byteLength(data, 'utf8') <= CALLBACK_VALUE_LIMIT) return data
+    this.pruneCallbackValueMap()
+    const token = `slcb:${(++this.callbackValueSeq).toString(36)}`
+    this.callbackValueMap.set(token, { data, createdAt: Date.now() })
+    return token
+  }
+
+  private resolveCallbackValue(data: string, opts: { consume?: boolean } = {}): string | undefined {
+    const pending = this.callbackValueMap.get(data)
+    if (!pending) return data.startsWith('slcb:') ? undefined : data
+    if (opts.consume ?? true) this.callbackValueMap.delete(data)
+    return pending.data
   }
 
   async start(): Promise<void> {
@@ -43,130 +340,134 @@ export class SlackAdapter implements ChannelAdapter {
 
     try {
       const auth = await this.web.auth.test()
-      this.botUserId = (auth.user_id as string) ?? ''
-      this.botId = (auth.bot_id as string) ?? ''
+      this.botUserId = stringValue(recordValue(auth)?.user_id)
+      this.botId = stringValue(recordValue(auth)?.bot_id)
       process.stderr.write(`slack: bot user ${this.botUserId} bot_id ${this.botId}\n`)
     } catch (err) {
-      process.stderr.write(`slack: auth.test failed: ${err}\n`)
+      process.stderr.write(`slack: auth.test failed: ${errorMessage(err)}\n`)
     }
 
     this.socket.on('message', async ({ event, ack }) => {
-      await ack()
-      if (event.user === this.botUserId || event.bot_id === this.botId) return
-      if (event.subtype && event.subtype !== 'file_share') return
-
-      const userName = await this.resolveUserName(event.user)
-      const meta: Record<string, string> = {
-        ts: new Date(parseFloat(event.ts) * 1000).toISOString(),
+      await slackAck(ack, 'message')
+      if (event.user === this.botUserId || event.bot_id === this.botId) {
+        const prefix = process.env.CHANNEL_DAEMON_SELF_TEST_PREFIX
+        if (!prefix || !String(event.text ?? '').startsWith(prefix)) return
+        event.text = String(event.text ?? '').slice(prefix.length).trimStart()
       }
+      if (event.subtype && event.subtype !== 'file_share' && event.subtype !== 'bot_message') return
+
+      const fields = slackInboundEventFields(event)
+      if (!fields) return
+      const identity = slackInboundIdentity(event, this.botUserId, this.botId)
+      const userId = identity.userId
+      if (!userId) return
+      const userName = event.user
+        ? await this.resolveUserName(userId)
+        : identity.fallbackName ?? userId
+      const meta: Record<string, string> = { ts: fields.timestampIso }
       // thread_ts present = message is in a thread. Pass as replyToId
       // so CC knows the context. CC will reply with reply_broadcast=true
       // so the response appears in both channel and thread.
-      const replyToId = event.thread_ts as string | undefined
+      const replyToId = fields.replyToId
 
-      const files = (event.files as any[]) ?? []
-      if (files.length > 0) {
-        // First file in dedicated fields (backwards compatible)
-        meta.attachment_file_id = files[0].id
-        if (files[0].name) meta.attachment_name = files[0].name
-        if (files[0].mimetype) meta.attachment_mime = files[0].mimetype
-        if (files[0].size != null) meta.attachment_size = String(files[0].size)
-        // All files as JSON array for multi-file support
-        if (files.length > 1) {
-          meta.attachment_files = JSON.stringify(files.map((f: any) => ({
-            file_id: f.id, name: f.name, mime: f.mimetype, size: f.size,
-          })))
-        }
-      }
+      Object.assign(meta, slackFileMetadata(event.files))
 
-      this.messageCb?.({
-        channelId: event.channel,
-        userId: event.user,
+      this.dispatchMessage({
+        channelId: fields.channelId,
+        userId,
         userName,
-        text: event.text ?? '',
-        messageId: event.ts,
+        text: fields.text,
+        messageId: fields.messageId,
         replyToId,
         meta,
       })
     })
 
-    this.socket.on('interactive', async ({ body, ack }: any) => {
-      await ack()
+    this.socket.on('interactive', async ({ body, ack }: SlackInteractiveEnvelope) => {
+      await slackAck(ack, 'interactive')
+      const payload = recordValue(body)
+      if (!payload) return
+
+      this.prunePendingSearchChannels()
 
       // Handle view_submission (modal submit — e.g. search)
-      if (body.type === 'view_submission') {
-        const viewId = body.view?.id
-        const channelId = this.pendingSearchChannels.get(viewId)
-        if (channelId && this.searchCb) {
-          const values = body.view?.state?.values
-          const query = values?.search_block?.search_input?.value
-          if (query) this.searchCb(channelId, query.trim())
-          this.pendingSearchChannels.delete(viewId)
-        }
+      const modalViewId = slackModalViewId(payload)
+      if (modalViewId) {
+        const pending = this.pendingSearchChannels.get(modalViewId)
+        const modal = slackModalSubmission(payload)
+        this.pendingSearchChannels.delete(modalViewId)
+        if (pending && modal) this.dispatchSearch(pending.channelId, modal.query, pending.context)
         return
       }
+      if (payload.type === 'view_submission') return
 
-      const action = body.actions?.[0]
+      const action = firstRecord(payload.actions)
       if (!action) return
 
       // Intercept search button → open modal directly (no daemon round-trip)
-      if (action.action_id === 'cmd:search' && body.trigger_id) {
-        const channelId = body.channel?.id
+      const rawActionData = stringValue(action.value) || stringValue(action.action_id)
+      const actionData = this.resolveCallbackValue(rawActionData, { consume: false })
+      if (!actionData) {
+        const channelId = stringValue(recordValue(payload.channel)?.id)
         if (channelId) {
-          const res = await this.web!.views.open({
-            trigger_id: body.trigger_id,
-            view: {
-              type: 'modal',
-              title: { type: 'plain_text', text: 'Search directories' },
-              submit: { type: 'plain_text', text: 'Search' },
-              blocks: [{
-                type: 'input',
-                block_id: 'search_block',
-                label: { type: 'plain_text', text: 'Directory name' },
-                element: {
-                  type: 'plain_text_input',
-                  action_id: 'search_input',
-                  placeholder: { type: 'plain_text', text: 'e.g. proj' },
-                },
-              }],
-            },
+          void this.sendMessage(channelId, '⚠️ This button expired after a CCM restart or timeout. Please rerun the command to refresh it.').catch(err => {
+            process.stderr.write(`slack: expired button warning send failed for ${channelId}: ${errorMessage(err)}\n`)
           })
-          if (res.view?.id) {
-            this.pendingSearchChannels.set(res.view.id, channelId)
+        }
+        return
+      }
+      const searchContext = slackSearchRuntimeFromAction(actionData)
+      if (searchContext !== null) {
+        const triggerId = stringValue(payload.trigger_id)
+        const channelId = stringValue(recordValue(payload.channel)?.id)
+        if (triggerId && channelId) {
+          try {
+            const res = await this.webClient.views.open({
+              trigger_id: triggerId,
+              view: {
+                type: 'modal',
+                title: { type: 'plain_text', text: 'Search directories' },
+                submit: { type: 'plain_text', text: 'Search' },
+                blocks: [{
+                  type: 'input',
+                  block_id: 'search_block',
+                  label: { type: 'plain_text', text: 'Directory name' },
+                  element: {
+                    type: 'plain_text_input',
+                    action_id: 'search_input',
+                    placeholder: { type: 'plain_text', text: 'e.g. proj' },
+                  },
+                }],
+              },
+            })
+            if (res.view?.id) {
+              this.prunePendingSearchChannels()
+              this.pendingSearchChannels.set(res.view.id, { channelId, context: searchContext ?? undefined, createdAt: Date.now() })
+            }
+          } catch (err) {
+            process.stderr.write(`slack: search modal open failed: ${errorMessage(err)}\n`)
+            await this.sendMessage(channelId, '❌ Failed to open directory search modal. Try `ccm find <query>` instead.').catch(sendErr => {
+              process.stderr.write(`slack: search modal failure notice failed for ${channelId}: ${errorMessage(sendErr)}\n`)
+            })
           }
         }
         return
       }
 
-      this.interactionCb?.({
-        channelId: body.channel?.id,
-        data: action.value ?? action.action_id,
-      })
+      const interaction = slackInteractionCallback(payload)
+      if (interaction) {
+        const data = this.resolveCallbackValue(interaction.data)
+        if (data) this.dispatchInteraction({ ...interaction, data })
+      }
     })
 
-    // Handle Slack slash commands (/ccm, /cc)
-    this.socket.on('slash_commands', async ({ body, ack }: any) => {
-      await ack()
-      const command = body.command as string    // "/ccm" or "/cc"
-      const text = body.text as string          // args after the command
-      const channelId = body.channel_id as string
-
-      // Reconstruct as a message that parseCmd can handle
-      // /ccm resume → "ccm resume", /cc compact → "/cc compact"
-      const fullText = command === '/ccm'
-        ? `ccm ${text}`.trim()
-        : command === '/cc'
-          ? `/cc ${text}`.trim()
-          : text
-
-      this.messageCb?.({
-        channelId,
-        userId: body.user_id ?? '',
-        userName: body.user_name ?? '',
-        text: fullText,
-        messageId: '',
-        meta: { ts: new Date().toISOString() },
-      })
+    // Handle Slack slash commands (/ccm, /cc, /cx)
+    this.socket.on('slash_commands', async ({ body, ack }: SlackSlashEnvelope) => {
+      await slackAck(ack, 'slash_commands')
+      const payload = recordValue(body)
+      if (!payload) return
+      const msg = slackSlashInboundMessage(payload)
+      if (msg) this.dispatchMessage(msg)
     })
 
     await this.socket.start()
@@ -174,7 +475,29 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   async stop(): Promise<void> {
-    await this.socket?.disconnect().catch(() => {})
+    try {
+      await this.socket?.disconnect()
+    } catch (err) {
+      process.stderr.write(`slack: Socket Mode disconnect failed: ${errorMessage(err)}\n`)
+    }
+  }
+
+  private dispatchMessage(msg: InboundMessage): void {
+    void Promise.resolve(this.messageCb?.(msg)).catch(err => {
+      process.stderr.write(`slack: message handler failed: ${errorMessage(err)}\n`)
+    })
+  }
+
+  private dispatchInteraction(interaction: InteractionCallback): void {
+    void Promise.resolve(this.interactionCb?.(interaction)).catch(err => {
+      process.stderr.write(`slack: interaction handler failed: ${errorMessage(err)}\n`)
+    })
+  }
+
+  private dispatchSearch(channelId: string, query: string, context?: SearchContext): void {
+    void Promise.resolve(this.searchCb?.(channelId, query, context)).catch(err => {
+      process.stderr.write(`slack: search handler failed: ${errorMessage(err)}\n`)
+    })
   }
 
   async sendMessage(channelId: string, text: string, opts?: SendOptions): Promise<string | undefined> {
@@ -184,20 +507,21 @@ export class SlackAdapter implements ChannelAdapter {
     // Split long text into multiple section blocks rather than truncating.
     // Each section caps at 3000 chars; one message can carry up to 50
     // sections, plus whatever inline keyboard buttons we're attaching.
-    const sections = splitForLimit(rendered, SECTION_LIMIT).slice(0, 45)
-    const textBlocks = sections.map(s => ({
-      type: 'section',
-      text: { type: 'mrkdwn', text: s },
-    }))
-    const keyboard = opts?.inlineKeyboard as any[] | undefined
-    const blocks = keyboard ? [...textBlocks, ...keyboard] : textBlocks
-    const res = await this.web!.chat.postMessage({
-      channel: channelId,
-      text,  // notification fallback; Slack accepts up to 40k here
-      ...(opts?.replyTo ? { thread_ts: opts.replyTo, reply_broadcast: opts.broadcast ?? true } : {}),
-      ...(blocks.length > 0 ? { blocks } : {}),
-    })
-    return res.ts as string | undefined
+    const blocks = slackMessageBlocks(rendered, opts?.inlineKeyboard)
+    const payload = { channel: channelId, text, blocks }
+    const basePayload = opts?.replyTo
+      ? { ...payload, thread_ts: opts.replyTo, reply_broadcast: opts.broadcast ?? true }
+      : payload
+    let res: unknown
+    try {
+      res = await this.webClient.chat.postMessage(basePayload)
+    } catch (err) {
+      if (!isSlackBlockPayloadError(err)) throw err
+      process.stderr.write(`slack: rich message blocks rejected, retrying plain text: ${slackErrorCode(err)}\n`)
+      const { blocks: _blocks, ...plainPayload } = basePayload
+      res = await this.webClient.chat.postMessage({ ...plainPayload, text: rendered })
+    }
+    return slackPostTs(res)
   }
 
   // Unicode → Slack name mapping for common emoji
@@ -210,13 +534,13 @@ export class SlackAdapter implements ChannelAdapter {
   async addReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
     const name = SlackAdapter.EMOJI_MAP[emoji] ?? emoji.replace(/:/g, '')
     try {
-      await this.web!.reactions.add({ channel: channelId, timestamp: messageId, name })
-    } catch (err: any) {
+      await this.webClient.reactions.add({ channel: channelId, timestamp: messageId, name })
+    } catch (err) {
       // `already_reacted` is expected when the same bot reacts twice with the
       // same emoji — not a bug, stay quiet. Everything else (missing scope,
       // invalid channel, rate limit) is worth surfacing so we can tell why
       // the 👀 ack didn't appear.
-      const code = err?.data?.error ?? err?.code ?? 'unknown'
+      const code = slackErrorCode(err)
       if (code !== 'already_reacted') {
         process.stderr.write(`slack: addReaction(${emoji}→${name}) on ${channelId}/${messageId} failed: ${code}\n`)
       }
@@ -225,24 +549,44 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   async removeReaction(channelId: string, messageId: string, emoji: string): Promise<void> {
-    await this.web!.reactions.remove({
+    const name = SlackAdapter.EMOJI_MAP[emoji] ?? emoji.replace(/:/g, '')
+    await this.webClient.reactions.remove({
       channel: channelId,
       timestamp: messageId,
-      name: emoji.replace(/:/g, ''),
-    }).catch(() => {})  // ignore if not found
+      name,
+    }).catch(err => {
+      const code = slackErrorCode(err)
+      if (!['no_reaction', 'not_reacted', 'message_not_found'].includes(code)) {
+        process.stderr.write(`slack: removeReaction(${emoji}→${name}) on ${channelId}/${messageId} failed: ${code}\n`)
+      }
+    })
   }
 
   async showTyping(channelId: string, threadTs?: string): Promise<void> {
     if (!threadTs) return
     try {
-      await this.web!.assistant.threads.setStatus({
+      await this.webClient.assistant.threads.setStatus({
         channel_id: channelId,
         thread_ts: threadTs,
         status: 'is thinking...',
       })
-    } catch (err: any) {
-      const code = err?.data?.error ?? err?.code ?? 'unknown'
+    } catch (err) {
+      const code = slackErrorCode(err)
       process.stderr.write(`slack: assistant.threads.setStatus failed: ${code}\n`)
+    }
+  }
+
+  async clearTyping(channelId: string, threadTs?: string): Promise<void> {
+    if (!threadTs) return
+    try {
+      await this.webClient.assistant.threads.setStatus({
+        channel_id: channelId,
+        thread_ts: threadTs,
+        status: '',
+      })
+    } catch (err) {
+      const code = slackErrorCode(err)
+      process.stderr.write(`slack: assistant.threads.setStatus(clear) failed: ${code}\n`)
     }
   }
 
@@ -252,42 +596,42 @@ export class SlackAdapter implements ChannelAdapter {
     // mrkdwn conversion + multi-section split, and forward the inline keyboard
     // explicitly when the caller passes it.
     const rendered = renderForSlack(text)
-    const sections = splitForLimit(rendered, SECTION_LIMIT).slice(0, 45)
-    const textBlocks = sections.map(s => ({
-      type: 'section',
-      text: { type: 'mrkdwn', text: s },
-    }))
-    const keyboard = opts?.inlineKeyboard as any[] | undefined
-    const blocks = keyboard ? [...textBlocks, ...keyboard] : textBlocks
-    await this.web!.chat.update({
+    const blocks = slackMessageBlocks(rendered, opts?.inlineKeyboard)
+    const payload = {
       channel: channelId,
       ts: messageId,
       text,
       ...(blocks.length > 0 ? { blocks } : {}),
-    })
+    }
+    try {
+      await this.webClient.chat.update(payload)
+    } catch (err) {
+      if (!isSlackBlockPayloadError(err)) throw err
+      process.stderr.write(`slack: rich message edit rejected, retrying plain text: ${slackErrorCode(err)}\n`)
+      const { blocks: _blocks, ...plainPayload } = payload
+      await this.webClient.chat.update({ ...plainPayload, text: rendered })
+    }
   }
 
   async downloadFile(fileId: string): Promise<string> {
-    const info = await this.web!.files.info({ file: fileId })
+    const info = await this.webClient.files.info({ file: fileId })
     const file = info.file
-    if (!file?.url_private_download) throw new Error('No download URL')
-    const name = (file.name ?? fileId).replace(/[<>[\]{}|\\^`\x00-\x1f]/g, '_')
-    const dest = `${this.inboxDir}/${fileId}-${name}`
-    const { createWriteStream } = await import('fs')
-    const { pipeline } = await import('stream/promises')
-    const { Readable } = await import('stream')
+    if (!file?.url_private_download) throw new Error(`Slack download ${fileId}: missing download URL`)
+    const id = safeDownloadName(fileId)
+    const name = safeDownloadName(file.name ?? fileId)
+    const dest = `${this.inboxDir}/${id}-${name}`
     const resp = await fetch(file.url_private_download, {
       headers: { Authorization: `Bearer ${this.botToken}` },
     })
-    if (!resp.ok) throw new Error(`Download ${resp.status}`)
+    if (!resp.ok) throw await slackDownloadHttpError(fileId, resp)
     const ws = createWriteStream(dest)
-    await pipeline(Readable.fromWeb(resp.body as any), ws)
+    await pipeline(responseBodyStream(resp), ws)
     return dest
   }
 
   async uploadFile(channelId: string, filePath: string, filename: string): Promise<void> {
     const content = readFileSync(filePath)
-    await this.web!.files.uploadV2({ channel_id: channelId, file: content, filename })
+    await this.webClient.files.uploadV2({ channel_id: channelId, file: content, filename })
   }
 
   onMessage(cb: (msg: InboundMessage) => void | Promise<void>): void {
@@ -295,7 +639,7 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   formatButtonText(text: string): string {
-    const home = require('os').homedir()
+    const home = homedir()
     let t = text.replace(home, '~')
     if (t.length <= this.buttonTextLimit) return t
     const pathMatch = t.match(/^(.*?)(\/[^\s]+)(\s.*)?$/)
@@ -314,16 +658,16 @@ export class SlackAdapter implements ChannelAdapter {
     return t.slice(0, this.buttonTextLimit - 1) + '…'
   }
 
-  async promptSearch(channelId: string, prompt: string): Promise<void> {
+  async promptSearch(channelId: string, prompt: string, _context?: SearchContext): Promise<void> {
     // For Slack, the search button (action_id=cmd:search) directly opens a modal
     // via the interactive handler above. This method is a fallback for programmatic use.
-    await this.web!.chat.postMessage({
+    await this.webClient.chat.postMessage({
       channel: channelId,
       text: `🔍 ${prompt} — use the Search button above`,
     })
   }
 
-  onSearch(cb: (channelId: string, query: string) => void): void {
+  onSearch(cb: (channelId: string, query: string, context?: SearchContext) => void): void {
     this.searchCb = cb
   }
 
@@ -337,37 +681,47 @@ export class SlackAdapter implements ChannelAdapter {
     const cached = this.nameCache.get(userId)
     if (cached) return cached
     try {
-      const r = await this.web!.users.info({ user: userId })
-      const n = r.user?.profile?.display_name || r.user?.real_name || r.user?.name || userId
-      this.nameCache.set(userId, n)
-      return n
-    } catch { return userId }
+      const r = await this.webClient.users.info({ user: userId })
+      const user = recordValue(r.user)
+      const profile = recordValue(user?.profile)
+      const name = fallbackStringValue(profile?.display_name) ?? fallbackStringValue(user?.real_name) ?? fallbackStringValue(user?.name) ?? userId
+      this.nameCache.set(userId, name)
+      return name
+    } catch (err) {
+      process.stderr.write(`slack: users.info failed for ${userId}: ${errorMessage(err)}\n`)
+      return userId
+    }
   }
 
   async fetchThread(channelId: string, threadId: string): Promise<import('./types.js').ThreadMessage[]> {
-    const res = await this.web!.conversations.replies({
+    const res = await this.webClient.conversations.replies({
       channel: channelId,
       ts: threadId,
       limit: 200,
     })
     const messages: import('./types.js').ThreadMessage[] = []
-    for (const m of res.messages ?? []) {
-      const userName = m.user ? await this.resolveUserName(m.user) : 'unknown'
+    const items = Array.isArray(res.messages) ? res.messages : []
+    for (const item of items) {
+      const m = recordValue(item)
+      if (!m) continue
+      const userId = fallbackStringValue(m.user) ?? ''
+      const messageId = fallbackStringValue(m.ts) ?? ''
+      const userName = userId ? await this.resolveUserName(userId) : 'unknown'
       messages.push({
-        messageId: m.ts ?? '',
-        userId: m.user ?? '',
+        messageId,
+        userId,
         userName,
-        text: m.text ?? '',
-        ts: new Date(parseFloat(m.ts ?? '0') * 1000).toISOString(),
+        text: fallbackStringValue(m.text) ?? '',
+        ts: slackTimestampIso(messageId),
       })
     }
     return messages
   }
 
-  renderListPicker(items: import('./types.js').PickerItem[], page: number, totalPages: number, callbackPrefix: string): any {
-    const blocks: any[] = []
+  renderListPicker(items: PickerItem[], page: number, totalPages: number, callbackPrefix: string): SendOptions {
+    const blocks: SlackBlock[] = []
     // Collect consecutive nav items into a single actions block
-    let navBatch: any[] = []
+    let navBatch: SlackButtonElement[] = []
 
     const flushNav = () => {
       if (navBatch.length > 0) {
@@ -382,8 +736,8 @@ export class SlackAdapter implements ChannelAdapter {
         navBatch.push({
           type: 'button',
           text: { type: 'plain_text', text: this.formatButtonText(item.label) },
-          action_id: `${callbackPrefix}${item.value}`,
-          value: `${callbackPrefix}${item.value}`,
+          action_id: slackActionId(`${callbackPrefix}${item.value}`),
+          value: this.compactCallbackValue(`${callbackPrefix}${item.value}`),
         })
       } else {
         // Content items: section + accessory button
@@ -394,8 +748,8 @@ export class SlackAdapter implements ChannelAdapter {
           accessory: {
             type: 'button',
             text: { type: 'plain_text', text: 'Select' },
-            action_id: `${callbackPrefix}${item.value}`,
-            value: `${callbackPrefix}${item.value}`,
+            action_id: slackActionId(`${callbackPrefix}${item.value}`),
+            value: this.compactCallbackValue(`${callbackPrefix}${item.value}`),
           },
         })
       }
@@ -404,7 +758,7 @@ export class SlackAdapter implements ChannelAdapter {
 
     // Built-in pagination (from adapter)
     if (totalPages > 1) {
-      const elements: any[] = []
+      const elements: SlackButtonElement[] = []
       if (page > 0) elements.push({ type: 'button', text: { type: 'plain_text', text: '⬅️ Prev' }, action_id: `ccp:${page - 1}`, value: `ccp:${page - 1}` })
       elements.push({ type: 'button', text: { type: 'plain_text', text: `${page + 1}/${totalPages}` }, action_id: 'noop', value: 'noop' })
       if (page < totalPages - 1) elements.push({ type: 'button', text: { type: 'plain_text', text: '➡️ Next' }, action_id: `ccp:${page + 1}`, value: `ccp:${page + 1}` })
@@ -414,12 +768,12 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   renderGrid(opts: {
-    topButtons?: import('./types.js').ButtonItem[]
-    gridItems?: import('./types.js').ButtonItem[]
-    filterButtons?: import('./types.js').ButtonItem[]
-    bottomButtons?: import('./types.js').ButtonItem[]
-  }): any {
-    const blocks: any[] = []
+    topButtons?: ButtonItem[]
+    gridItems?: ButtonItem[]
+    filterButtons?: ButtonItem[]
+    bottomButtons?: ButtonItem[]
+  }): SendOptions {
+    const blocks: SlackBlock[] = []
     const allButtons = [
       ...(opts.topButtons ?? []),
       ...(opts.filterButtons ?? []),
@@ -434,25 +788,28 @@ export class SlackAdapter implements ChannelAdapter {
         elements: chunk.map(b => ({
           type: 'button',
           text: { type: 'plain_text', text: this.formatButtonText(b.text) },
-          action_id: b.data,
-          value: b.data,
+          action_id: slackActionId(b.data),
+          value: this.compactCallbackValue(b.data),
         })),
       })
     }
     return { inlineKeyboard: blocks }
   }
 
-  renderButtons(buttons: import('./types.js').ButtonItem[]): any {
-    return {
-      inlineKeyboard: [{
+  renderButtons(buttons: ButtonItem[]): SendOptions {
+    const blocks: SlackBlock[] = []
+    for (let i = 0; i < buttons.length; i += 5) {
+      const chunk = buttons.slice(i, i + 5)
+      blocks.push({
         type: 'actions',
-        elements: buttons.map(b => ({
+        elements: chunk.map(b => ({
           type: 'button',
           text: { type: 'plain_text', text: this.formatButtonText(b.text) },
-          action_id: b.data,
-          value: b.data,
+          action_id: slackActionId(b.data),
+          value: this.compactCallbackValue(b.data),
         })),
-      }],
+      })
     }
+    return { inlineKeyboard: blocks }
   }
 }

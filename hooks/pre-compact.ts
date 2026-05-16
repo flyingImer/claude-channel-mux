@@ -11,22 +11,44 @@ import { createConnection } from 'net'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { fileURLToPath } from 'url'
 
 const SOCK = join(homedir(), '.config', 'claude-channel-mux', 'daemon.sock')
 
-let input: string
-try { input = readFileSync(0, 'utf8') } catch { process.exit(0) }
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
 
-let data: { session_id?: string }
-try { data = JSON.parse(input) } catch { process.exit(0) }
+export function preCompactSessionId(input: string): string | undefined {
+  let parsed: unknown
+  try { parsed = JSON.parse(input) } catch { return undefined }
+  const record = recordValue(parsed)
+  const sessionId = record?.session_id
+  return typeof sessionId === 'string' && sessionId.trim() ? sessionId : undefined
+}
 
-const uuid = data.session_id
-if (!uuid) process.exit(0)
+export function compactStartingMessage(uuid: string): string {
+  return JSON.stringify({ type: 'compact_starting', uuid }) + '\n'
+}
 
-const sock = createConnection(SOCK)
-sock.on('connect', () => {
-  sock.write(JSON.stringify({ type: 'compact_starting', uuid }) + '\n')
-  sock.end()
-})
-sock.on('error', () => process.exit(0))
-setTimeout(() => process.exit(0), 2000)
+export function notifyCompactStarting(uuid: string, sockPath = SOCK): void {
+  const sock = createConnection(sockPath)
+  sock.on('connect', () => {
+    sock.write(compactStartingMessage(uuid))
+    sock.end()
+  })
+  sock.on('error', () => process.exit(0))
+  setTimeout(() => process.exit(0), 2000)
+}
+
+export function main(): void {
+  let input: string
+  try { input = readFileSync(0, 'utf8') } catch { process.exit(0) }
+
+  const uuid = preCompactSessionId(input)
+  if (!uuid) process.exit(0)
+  notifyCompactStarting(uuid)
+}
+
+const invokedPath = process.argv[1] ? fileURLToPath(import.meta.url) === process.argv[1] : false
+if (invokedPath) main()

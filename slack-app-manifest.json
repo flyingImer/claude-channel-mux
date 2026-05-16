@@ -1,25 +1,31 @@
 {
   "display_information": {
     "name": "Claude Channel Mux",
-    "description": "Routes Slack conversations to Claude Code sessions via claude-channel-mux",
+    "description": "Routes Slack conversations to Claude Code and Codex via claude-channel-mux",
     "background_color": "#1a1a2e"
   },
   "features": {
     "bot_user": {
-      "display_name": "Claude Mux",
+      "display_name": "CCM Mux",
       "always_online": true
     },
     "slash_commands": [
       {
         "command": "/ccm",
-        "description": "Claude Channel Mux — new session, resume, stop, help",
-        "usage_hint": "[resume | stop | help | find <query>]",
+        "description": "Claude Channel Mux — room, resume, stop, help",
+        "usage_hint": "[default claude|codex | agents | route | resume [agent] | stop [agent] | find <query> | help]",
         "should_escape": false
       },
       {
         "command": "/cc",
-        "description": "Send a Claude Code slash command to the active session",
-        "usage_hint": "<command> (e.g. compact, model, exit, cost)",
+        "description": "Claude command proxy — help, ss, nav, transcript, cancel",
+        "usage_hint": "<command> (e.g. help, ss, nav, transcript, compact, model, cancel)",
+        "should_escape": false
+      },
+      {
+        "command": "/cx",
+        "description": "Codex command proxy — help, ss, nav, transcript, cancel",
+        "usage_hint": "<command> (e.g. help, ss, nav, transcript, status, mcp, model, cancel)",
         "should_escape": false
       }
     ]
