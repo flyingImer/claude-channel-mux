@@ -24,8 +24,8 @@
       },
       {
         "command": "/cx",
-        "description": "Codex command proxy — help, ss, nav, transcript, cancel",
-        "usage_hint": "<command> (e.g. help, ss, nav, transcript, status, mcp, model, cancel)",
+        "description": "Codex command proxy — help, ss, nav, transcript, goal, cancel",
+        "usage_hint": "<command> (e.g. help, ss, nav, transcript, status, mcp, model, goal, cancel)",
         "should_escape": false
       }
     ]

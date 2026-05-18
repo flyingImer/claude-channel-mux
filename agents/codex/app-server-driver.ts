@@ -11,6 +11,38 @@ export type CodexAppServerDriverOptions = {
   log?: (line: string) => void
 }
 
+
+type CodexApprovalPolicy = 'never' | 'on-failure' | 'on-request' | 'untrusted'
+
+function codexApprovalPolicyFromEnv(env: NodeJS.ProcessEnv): CodexApprovalPolicy {
+  if (/^(1|true|yes|on|yolo)$/i.test(env.CODEX_YOLO ?? '')) return 'never'
+  const raw = (env.CCM_CODEX_APPROVAL_POLICY ?? env.CHANNEL_DAEMON_CODEX_APPROVAL_POLICY ?? '').trim().toLowerCase()
+  if (raw === 'yolo' || raw === 'never') return 'never'
+  if (raw === 'on-failure' || raw === 'on_failure') return 'on-failure'
+  if (raw === 'on-request' || raw === 'on_request') return 'on-request'
+  if (raw === 'untrusted') return 'untrusted'
+  return 'on-request'
+}
+
+function codexTurnSandboxPolicy(cwd: string, env: NodeJS.ProcessEnv): JsonObject {
+  if (/^(1|true|yes|on|yolo)$/i.test(env.CODEX_YOLO ?? '')) return { type: 'dangerFullAccess' }
+  const raw = (env.CCM_CODEX_SANDBOX ?? env.CHANNEL_DAEMON_CODEX_SANDBOX ?? '').trim().toLowerCase()
+  if (raw === 'danger-full-access' || raw === 'danger_full_access' || raw === 'yolo') return { type: 'dangerFullAccess' }
+  return {
+    type: 'workspaceWrite',
+    writableRoots: [cwd],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  }
+}
+
+function codexThreadSandbox(env: NodeJS.ProcessEnv): string {
+  if (/^(1|true|yes|on|yolo)$/i.test(env.CODEX_YOLO ?? '')) return 'danger-full-access'
+  const raw = (env.CCM_CODEX_SANDBOX ?? env.CHANNEL_DAEMON_CODEX_SANDBOX ?? '').trim().toLowerCase()
+  return raw === 'danger-full-access' || raw === 'danger_full_access' || raw === 'yolo' ? 'danger-full-access' : 'workspace-write'
+}
+
 type CodexRuntime = {
   session: AgentSession
   modelOverride?: string
@@ -20,6 +52,7 @@ type CodexRuntime = {
   turnThreads: Map<string, string>
   turnChannels: Map<string, string>
   buffers: Map<string, string>
+  deliveredMessages: Map<string, string[]>
   latestNativeTurnId?: string
   pendingRequests: Map<string, number>
   pendingRequestDetails: Map<string, { method: string; params: JsonObject }>
@@ -164,6 +197,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         { name: 'cancel', status: 'supported', summary: 'Interrupt the latest Codex turn.', aliases: ['stop', 'interrupt'] },
         { name: 'mcp', status: 'supported', summary: 'List Codex MCP servers reported by app-server.' },
         { name: 'model', status: 'supported', summary: 'Show or set this CCM room’s Codex model override.' },
+        { name: 'goal', status: 'supported', summary: 'Replace the current Codex goal by interrupting any active turn and starting a new goal turn.' },
         { name: 'raw', status: 'experimental', summary: 'Explicitly send a slash-shaped turn to Codex for source-aligned experiments.' },
       ],
     }
@@ -176,14 +210,8 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       threadId: runtime.threadId,
       input: [{ type: 'text', text: this.formatTurn(input.turn), text_elements: [] }],
       cwd: input.turn.cwd,
-      approvalPolicy: 'never',
-      sandboxPolicy: {
-        type: 'workspaceWrite',
-        writableRoots: [input.turn.cwd],
-        networkAccess: false,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
+      approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv),
+      sandboxPolicy: codexTurnSandboxPolicy(input.turn.cwd, this.opts.baseEnv),
     }, 120_000)
     const nativeTurnId = codexNativeTurnId(response, input.turn.turnId)
     runtime.activeTurns.set(nativeTurnId, input.turn.turnId)
@@ -245,6 +273,21 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       }
       runtime.modelOverride = args
       return { commandId, display: `Codex model override for this CCM room set to \`${args}\`. Restart or resume the Codex slot for it to take effect; global Codex config was not changed.` }
+    }
+
+    if (name === 'goal') {
+      const goal = args.trim()
+      if (!goal) return { commandId, display: 'Usage: `/cx goal <new goal>` interrupts any active Codex turn and starts a replacement goal turn.' }
+      const interrupted = runtime.latestNativeTurnId ?? [...runtime.activeTurns.keys()][0]
+      if (interrupted) {
+        await runtime.client.request('turn/interrupt', { threadId: runtime.threadId, turnId: interrupted }, 15_000).catch(() => ({}))
+      }
+      const nativeTurnId = await this.startPlainTurn(runtime, input.command, [
+        'Replace the current CCM Codex goal with the following goal. Stop pursuing the previous goal unless it is directly needed for this replacement.',
+        '',
+        goal,
+      ].join('\n'))
+      return { commandId, nativeCommandId: nativeTurnId, display: interrupted ? `Replacing Codex goal; interrupted active turn ${interrupted}.` : 'Replacing Codex goal.' }
     }
 
     if (name === 'raw') {
@@ -392,8 +435,8 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     const response = threadResponse ?? await client.request('thread/start', {
       cwd,
       ...(modelOverride ? { model: modelOverride } : {}),
-      approvalPolicy: 'never',
-      sandbox: 'workspace-write',
+      approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv),
+      sandbox: codexThreadSandbox(this.opts.baseEnv),
     }, 60_000)
     const thread = codexResponseObject(response, 'thread')
     const threadId = typeof thread?.id === 'string' ? thread.id : nativeSessionId
@@ -407,7 +450,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       status: 'idle',
       capabilities: { streaming: true, cancel: true, resume: true, toolCalling: true },
     }
-    this.runtimes.set(sessionId, { session, modelOverride, client, threadId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() })
+    this.runtimes.set(sessionId, { session, modelOverride, client, threadId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() })
     this.threadToSession.set(threadId, sessionId)
     this.emit({ type: 'status', session, status: 'idle' })
     return session
@@ -460,6 +503,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     const channelThreadId = runtime.turnThreads.get(nativeTurnId)
     const channelKey = runtime.turnChannels.get(nativeTurnId)
     runtime.buffers.delete(nativeTurnId)
+    runtime.deliveredMessages.delete(nativeTurnId)
     runtime.turnThreads.delete(nativeTurnId)
     runtime.turnChannels.delete(nativeTurnId)
     runtime.activeTurns.delete(nativeTurnId)
@@ -499,9 +543,25 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         this.emit({ type: 'compaction', session: runtime.session, turnId, status: 'completed' })
         return
       }
-      if (item?.type === 'agentMessage' && typeof item.text === 'string' && nativeTurnId) {
+      if (item?.type === 'agentMessage' && typeof item.text === 'string' && nativeTurnId && turnId) {
+        const text = item.text.trim()
         const existing = runtime.buffers.get(nativeTurnId)
         if (!existing || item.text.length > existing.length) runtime.buffers.set(nativeTurnId, item.text)
+        if (text) {
+          const delivered = runtime.deliveredMessages.get(nativeTurnId) ?? []
+          if (!delivered.includes(text)) {
+            delivered.push(text)
+            runtime.deliveredMessages.set(nativeTurnId, delivered)
+            this.emit({
+              type: 'assistant_message',
+              session: runtime.session,
+              turnId,
+              text,
+              channelKey: runtime.turnChannels.get(nativeTurnId),
+              threadId: runtime.turnThreads.get(nativeTurnId),
+            })
+          }
+        }
       }
       return
     }
@@ -546,19 +606,13 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
 
-  private async sendSlashCommandAsTurn(runtime: CodexRuntime, command: import('../types.js').AgentCommand): Promise<AgentCommandResult> {
+  private async startPlainTurn(runtime: CodexRuntime, command: import('../types.js').AgentCommand, text: string): Promise<string> {
     const response = await runtime.client.request('turn/start', {
       threadId: runtime.threadId,
-      input: [{ type: 'text', text: command.command, text_elements: [] }],
+      input: [{ type: 'text', text, text_elements: [] }],
       cwd: command.cwd,
-      approvalPolicy: 'never',
-      sandboxPolicy: {
-        type: 'workspaceWrite',
-        writableRoots: [command.cwd],
-        networkAccess: false,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
+      approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv),
+      sandboxPolicy: codexTurnSandboxPolicy(command.cwd, this.opts.baseEnv),
     }, 120_000)
     const nativeTurnId = codexNativeTurnId(response, command.commandId)
     runtime.activeTurns.set(nativeTurnId, command.commandId)
@@ -567,6 +621,11 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     runtime.latestNativeTurnId = nativeTurnId
     runtime.session.status = 'running'
     this.emit({ type: 'status', session: runtime.session, status: 'running' })
+    return nativeTurnId
+  }
+
+  private async sendSlashCommandAsTurn(runtime: CodexRuntime, command: import('../types.js').AgentCommand): Promise<AgentCommandResult> {
+    const nativeTurnId = await this.startPlainTurn(runtime, command, command.command)
     return {
       commandId: command.commandId,
       nativeCommandId: nativeTurnId,

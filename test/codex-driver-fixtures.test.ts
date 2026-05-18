@@ -19,6 +19,7 @@ type TestCodexRuntime = {
   turnThreads: Map<string, string>
   turnChannels: Map<string, string>
   buffers: Map<string, string>
+  deliveredMessages: Map<string, string[]>
   latestNativeTurnId?: string
   pendingRequests: Map<string, number>
   pendingRequestDetails: Map<string, { method: string; params: JsonObject }>
@@ -43,7 +44,7 @@ function codexSession(sessionId: string, nativeSessionId: string): AgentSession 
 }
 
 function testRuntime(session: AgentSession, client: TestCodexClient = {}): TestCodexRuntime {
-  return { session, client, threadId: session.nativeSessionId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() }
+  return { session, client, threadId: session.nativeSessionId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() }
 }
 
 function driver(): CodexDriverHarness {
@@ -145,7 +146,7 @@ test('Codex sendCommand fails closed for unknown commands and only raw starts a 
   d.runtimes.set('s2', testRuntime(session, client))
   const base = { commandId: 'cmd', roomId: 'room', channelKey: 'test:room', platform: 'test', channelId: 'room', threadId: 'msg', messageId: 'msg', cwd: '/tmp', meta: {} }
 
-  const unknown = await d.sendCommand({ session, command: { ...base, command: '/goal create x' } })
+  const unknown = await d.sendCommand({ session, command: { ...base, command: '/memory list' } })
   expect(unknown.display).toContain('Unsupported Codex command')
   expect(calls).toEqual([])
 
@@ -156,6 +157,35 @@ test('Codex sendCommand fails closed for unknown commands and only raw starts a 
   expect(calls[0].params.input[0].text).toBe('/goal create x')
   const runtime = d.runtimes.get('s2')
   expect(runtime?.turnChannels.get('native')).toBe('test:room')
+})
+
+test('Codex goal command interrupts active turn and starts replacement goal turn', async () => {
+  const d = driver()
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const session = codexSession('goal-session', 'goal-thread')
+  const client = {
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'turn/start') return { result: { turn: { id: 'native-goal' } } }
+      return { result: {} }
+    },
+  }
+  const runtime = testRuntime(session, client)
+  runtime.latestNativeTurnId = 'native-old'
+  runtime.activeTurns.set('native-old', 'ccm-old')
+  d.runtimes.set('goal-session', runtime)
+  const base = { commandId: 'goal-cmd', roomId: 'room', channelKey: 'test:room', platform: 'test', channelId: 'room', threadId: 'msg', messageId: 'msg', cwd: '/tmp', meta: {} }
+
+  const result = await d.sendCommand({ session, command: { ...base, command: '/goal ship better UX' } })
+
+  expect(result.nativeCommandId).toBe('native-goal')
+  expect(result.display).toContain('interrupted active turn native-old')
+  expect(calls.map(call => call.method)).toEqual(['turn/interrupt', 'turn/start'])
+  expect(calls[0]).toMatchObject({ method: 'turn/interrupt', params: { threadId: 'goal-thread', turnId: 'native-old' } })
+  expect(String(calls[1].params.input[0].text)).toContain('Replace the current CCM Codex goal')
+  expect(String(calls[1].params.input[0].text)).toContain('ship better UX')
+  expect(runtime.turnChannels.get('native-goal')).toBe('test:room')
+  expect(runtime.turnThreads.get('native-goal')).toBe('msg')
 })
 
 test('Codex snapshot records typed app-server read/config failures', async () => {
@@ -321,6 +351,27 @@ test('Codex error notification clears active turn state', () => {
   expect(runtime.turnThreads.size).toBe(0)
   expect(runtime.turnChannels.size).toBe(0)
   expect(runtime.buffers.size).toBe(0)
+})
+
+test('Codex completed agent message emits routable mid-turn event', () => {
+  const d = driver()
+  const session = codexSession('mid-session', 'mid-thread')
+  const events: AgentEvent[] = []
+  const runtime = testRuntime(session)
+  runtime.activeTurns.set('native-mid-turn', 'ccm-mid-turn')
+  runtime.turnThreads.set('native-mid-turn', 'room-thread')
+  runtime.turnChannels.set('native-mid-turn', 'test:room')
+  d.runtimes.set('mid-session', runtime)
+  d.threadToSession.set('mid-thread', 'mid-session')
+  d.onEvent((event: AgentEvent) => events.push(event))
+
+  d.handleNotification({ method: 'item/completed', params: { threadId: 'mid-thread', turnId: 'native-mid-turn', item: { type: 'agentMessage', text: 'mid update' } } })
+
+  expect(events).toEqual([
+    { type: 'assistant_message', session, turnId: 'ccm-mid-turn', text: 'mid update', channelKey: 'test:room', threadId: 'room-thread' },
+  ])
+  expect(runtime.buffers.get('native-mid-turn')).toBe('mid update')
+  expect(runtime.deliveredMessages.get('native-mid-turn')).toEqual(['mid update'])
 })
 
 test('Codex final turn preserves channel/thread before clearing turn state', () => {

@@ -23,6 +23,7 @@ export type AgentPeerPointer = {
   kind: AgentKind
   sessionId?: string
   status: 'active' | 'suspended' | 'missing'
+  recent?: Array<{ threadId: string; messageId?: string; preview: string; text?: string; sameThread?: boolean; likelyReference?: boolean }>
 }
 
 export type AgentTurn = {
@@ -53,6 +54,7 @@ export type AgentPlanStep = { step: string; status: 'pending' | 'inProgress' | '
 
 export type AgentEvent =
   | { type: 'assistant_delta'; session: AgentSession; turnId: string; text: string }
+  | { type: 'assistant_message'; session: AgentSession; turnId: string; text: string; channelKey?: string; threadId?: string }
   | { type: 'assistant_final'; session: AgentSession; turnId: string; text: string; channelKey?: string; threadId?: string }
   | { type: 'status'; session: AgentSession; status: AgentSessionStatus }
   | { type: 'server_request'; session: AgentSession; request: AgentServerRequest }

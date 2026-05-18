@@ -321,15 +321,26 @@ test('Claude command docs and Telegram hints match supported command spec', () =
 })
 
 
+
+test('Agent running turns expose manual interrupt controls', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain('async function interruptAgentTurn')
+  expect(daemon).toContain("data: `cmd:interrupt:${runtime}`")
+  expect(daemon).toContain("action === 'interrupt' || action.startsWith('interrupt:')")
+  expect(daemon).toContain("await interruptAgentTurn(ck, runtimeSuffix ?? bindingRuntime(ck), interaction.messageId)")
+  expect(daemon).toContain("if (/^(cancel|stop|interrupt)$/i.test(sub)) return { t: 'agent_command', runtime: 'claude', command: '/cancel' }")
+  expect(daemon).toContain("return interruptAgentTurn(ck, runtime, msg.replyToId ?? msg.messageId)")
+})
+
 test('Codex command docs, Telegram hints, and driver spec stay aligned', () => {
   const codex = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   const telegram = readFileSync('adapters/telegram.ts', 'utf8')
   const readme = readFileSync('README.md', 'utf8')
-  for (const name of ['ss', 'nav', 'transcript', 'status', 'compact', 'cancel', 'mcp', 'model', 'raw']) {
+  for (const name of ['ss', 'nav', 'transcript', 'status', 'compact', 'cancel', 'mcp', 'model', 'goal', 'raw']) {
     expect(codex).toContain(`name: '${name}'`)
     expect(readme).toContain(`/cx ${name}`)
   }
-  for (const command of ['cx_help', 'cx_ss', 'cx_nav', 'cx_transcript', 'cx_status', 'cx_model', 'cx_mcp', 'cx_compact', 'cx_stop', 'cx_cancel']) {
+  for (const command of ['cx_help', 'cx_ss', 'cx_nav', 'cx_transcript', 'cx_status', 'cx_model', 'cx_goal', 'cx_mcp', 'cx_compact', 'cx_stop', 'cx_cancel']) {
     expect(telegram).toContain(`command: '${command}'`)
   }
   expect(readme).toContain('/cx stop` / `/cx cancel')
@@ -340,13 +351,42 @@ test('Codex command docs, Telegram hints, and driver spec stay aligned', () => {
 
 test('Telegram autocomplete only advertises supported Codex commands', () => {
   const telegram = readFileSync('adapters/telegram.ts', 'utf8')
-  for (const command of ['cx_help', 'cx_ss', 'cx_nav', 'cx_transcript', 'cx_status', 'cx_model', 'cx_mcp', 'cx_compact', 'cx_stop', 'cx_cancel']) {
+  for (const command of ['cx_help', 'cx_ss', 'cx_nav', 'cx_transcript', 'cx_status', 'cx_model', 'cx_goal', 'cx_mcp', 'cx_compact', 'cx_stop', 'cx_cancel']) {
     expect(telegram).toContain(`command: '${command}'`)
   }
   expect(telegram).toContain('Codex: snapshot + pending buttons')
   expect(telegram).toContain('Codex: pending N action/answer')
-  expect(telegram).not.toContain("command: 'cx_goal'")
   expect(telegram).not.toContain("command: 'cx_memory'")
+})
+
+
+test('Agent turns include recent peer context pointers without daemon memory logs', () => {
+  const types = readFileSync('agents/types.ts', 'utf8')
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(types).toContain('recent?: Array<{ threadId: string; messageId?: string; preview: string; text?: string; sameThread?: boolean; likelyReference?: boolean }>')
+  expect(daemon).toContain('function recentPeerReplyPointers')
+  expect(daemon).toContain('const sameThreadDelta')
+  expect(daemon).toContain('likelyReference: true')
+  expect(daemon).toContain('text.length <= 4000')
+  expect(daemon).toContain('rememberAgentReplyPointer(event.session.kind, ck')
+  expect(daemon).toContain('rememberAgentReplyPointer(runtimeForUuid(uuid), ck, replyTo ?? ts, ts, text)')
+})
+
+test('Codex app-server approval and sandbox are configurable for trusted YOLO rooms', () => {
+  const codex = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
+  const readme = readFileSync('README.md', 'utf8')
+  const env = readFileSync('.env.example', 'utf8')
+  expect(codex).toContain('function codexApprovalPolicyFromEnv')
+  expect(codex).toContain("env.CODEX_YOLO")
+  expect(codex).toContain("raw === 'yolo' || raw === 'never'")
+  expect(codex).toContain('function codexTurnSandboxPolicy')
+  expect(codex).toContain("return { type: 'dangerFullAccess' }")
+  expect(codex).toContain('approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv)')
+  expect(readme).toContain('CCM_CODEX_APPROVAL_POLICY')
+  expect(readme).toContain('CCM_CODEX_SANDBOX')
+  expect(env).toContain('CCM_CODEX_APPROVAL_POLICY=never')
+  expect(env).toContain('CCM_CODEX_SANDBOX=danger-full-access')
+  expect(env).toContain('CODEX_YOLO=1')
 })
 
 test('Codex interactive request coverage includes approval, input, and MCP elicitation', () => {
@@ -364,9 +404,9 @@ test('Codex interactive request coverage includes approval, input, and MCP elici
   expect(daemon).toContain('codexApprovalResult')
   expect(daemon).toContain("import { codexApprovalResult, codexOptionInputResult, codexPendingRequestButtons, codexRequestActionAllowed, codexTextResponseResult, summarizeCodexRequest } from './codex-response.js'")
   expect(daemon).toContain('codexTextResponseResult')
-  expect(daemon).toContain("Codex option is invalid or expired.")
-  expect(daemon).toContain("Codex request action is invalid or expired.")
-  expect(daemon).toContain("Codex request action is malformed.")
+  expect(daemon).toContain("Codex option is invalid or expired. Refreshing current Codex pending actions.")
+  expect(daemon).toContain("Codex request action is invalid or expired. Refreshing current Codex pending actions.")
+  expect(daemon).toContain("Codex request action is malformed. Refreshing current Codex pending actions.")
   expect(daemon).toContain('function codexRequestCallbackCandidates(data: string): CodexRequestCallback[]')
   expect(daemon).toContain('function parseCodexRequestCallbackData(data: string, pending: PendingCodexRequest[])')
   expect(daemon).toContain('const matches = candidates.filter(candidate => pending.some(req => req.requestId === candidate.requestId))')
@@ -999,6 +1039,18 @@ test('daemon Claude nav callbacks validate select indexes and keys', () => {
   expect(daemon).not.toContain('sendKeys(paneId, action)')
 })
 
+test('zellij pane disappearance preserves agent slot bindings for resumable peer handoff', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const liveBlock = daemon.slice(daemon.indexOf('function liveEntryNeedsRespawn'), daemon.indexOf('async function spawnResumeOnce'))
+  expect(liveBlock).toContain('needs respawn because zellij pane is')
+  expect(liveBlock).toContain('live.delete(uuid)')
+  expect(liveBlock).toContain('socketToUuid.forEach')
+  expect(liveBlock).not.toContain('clearRuntimeState(uuid, `pane ' + '${status.kind}' + '`)')
+  const uiBlock = daemon.slice(daemon.indexOf('function clearPerSessionUiState'), daemon.indexOf('async function handleAgentEvent'))
+  expect(uiBlock).toContain('opts: { clearPeerInflight?: boolean } = {}')
+  expect(uiBlock).toContain('if (opts.clearPeerInflight) clearAskPeerInflightForSession(uuid)')
+  expect(uiBlock).toContain('function clearSessionTerminalState(uuid: string): void')
+})
 test('daemon sendToLive write failures clear stale live IPC state', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const block = daemon.slice(daemon.indexOf('function clearBrokenLiveConn'), daemon.indexOf('function isLiveBridgeConnected'))
@@ -1370,9 +1422,10 @@ test('ask_peer in-flight state clears when either session is torn down', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function clearAskPeerInflightForSession(sessionId: string): void')
   expect(daemon).toContain('inflight.fromUuid === sessionId || inflight.peerUuid === sessionId')
-  expect(daemon).toContain('clearAskPeerInflightForSession(uuid)')
-  const clearUiBody = daemon.slice(daemon.indexOf('function clearPerSessionUiState(uuid: string): void'), daemon.indexOf('async function handleAgentEvent'))
-  expect(clearUiBody).toContain('clearAskPeerInflightForSession(uuid)')
+  expect(daemon).toContain('clearSessionTerminalState(uuid)')
+  const clearUiBody = daemon.slice(daemon.indexOf('function clearPerSessionUiState'), daemon.indexOf('async function handleAgentEvent'))
+  expect(clearUiBody).toContain('if (opts.clearPeerInflight) clearAskPeerInflightForSession(uuid)')
+  expect(clearUiBody).toContain('clearPerSessionUiState(uuid, { clearPeerInflight: true })')
 })
 
 
@@ -1383,10 +1436,13 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(server).toContain('Ask another agent in the same CCM room')
   expect(server).toContain('async visible handoff')
   expect(server).toContain('const timeoutMs = 60_000')
+  expect(daemon).toContain('type AgentCue =')
+  expect(daemon).toContain('async function routeCue(cue: AgentCue)')
   expect(daemon).toContain('async function askPeerAgent')
+  expect(daemon).toContain('return routeCue(cue)')
   expect(daemon).toContain("reason: 'self_ask'")
   expect(daemon).toContain("throw new Error('ask_peer target must be a different agent')")
-  expect(daemon).toContain('const peerUuid = binding.sessions[peer]')
+  expect(daemon).toContain('let peerUuid = binding.sessions[peer]')
   expect(daemon).toContain('waitForLiveBridge(peerUuid)')
   expect(daemon).toContain('roomCwd(bound.channelKey)')
   expect(daemon).toContain('setAgentMeta(ck, runtime, { cwd })')
@@ -1395,7 +1451,7 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).toContain('User-authorized peer handoff from')
   expect(daemon).toContain('Peer task:')
   expect(daemon).toContain('const handoffId =')
-  expect(daemon).toContain('const messageId = threadId')
+  expect(daemon).toContain('const messageId = cue.messageId || threadId')
   expect(daemon).toContain('rememberThreadAnchor(peerUuid, messageId)')
   expect(daemon).toContain('rememberThreadAnchor(peerUuid, threadId)')
   expect(daemon).not.toContain('const messageId = handoffId')
@@ -1406,8 +1462,9 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   for (const call of askPeerAuditCalls) {
     expect(call).not.toMatch(/\bquestion\b|\btext\b|\bcontent\b|\bprompt\b/)
   }
-  for (const reason of ['invalid_agent', 'self_ask', 'missing_question', 'peer_not_started', 'peer_unavailable', 'peer_session_not_loaded', 'rate_limited', 'room_inflight_limit', 'send_failed']) {
-    expect(daemon).toContain(`reason: '${reason}'`)
+  expect(daemon).toContain("event: 'ask_peer_denied', reason: 'invalid_agent'")
+  for (const reason of ['self_ask', 'missing_question', 'peer_not_started', 'peer_unavailable', 'peer_session_not_loaded', 'rate_limited', 'room_inflight_limit', 'send_failed']) {
+    expect(daemon).toContain(`'${reason}'`)
   }
   expect(daemon).toContain('askPeerInflight.delete(handoffId)')
   expect(daemon).toContain('completeAskPeerInflightFromText')
@@ -1431,11 +1488,39 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).toContain('*ask_peer:*')
   expect(daemon).toContain('Sent visible async handoff')
   expect(daemon).toContain('__ask_peer')
+  expect(daemon).toContain("auditEvent({ event: 'cue_created'")
+  expect(daemon).toContain("auditEvent({ event: 'cue_routed'")
+  expect(daemon).toContain("source: 'tool'")
+  expect(daemon).toContain("mode: 'visible'")
+  expect(daemon).toContain("expectation: 'must_reply'")
+  expect(daemon).toContain('type AgentHandoffStatus =')
+  expect(daemon).toContain('const recentAgentHandoffs = new Map<string, AgentHandoffStatus>()')
+  expect(daemon).toContain('function agentHandoffStatusLines(roomId: string): string[]')
+  expect(daemon).toContain("return [...lines, '*Agents:*', ...slots, ...askPeerRoomStatusLines(ck), ...agentHandoffStatusLines(ck)]")
+  expect(daemon).toContain('*Handoffs:*')
+  expect(daemon).toContain("updateAgentHandoffStatus(handoffId, 'replied')")
+  expect(daemon).toContain("updateAgentHandoffStatus(handoffId, 'failed', errorMessage(err))")
   expect(daemon).not.toContain('peerAnswerWaiters')
   expect(daemon).not.toContain('peerAnswerNextWaiters')
   expect(daemon).not.toContain('ASK_PEER_TIMEOUT_MS')
   expect(daemon).not.toContain('resolvePeerAnswerWaiter')
   expect(daemon).not.toContain('unreadPeer')
+})
+
+
+test('visible @peer cues route through the unified cue router', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain('function peerMentionTargets(text: string, fromRuntime: AgentRuntimeKind): AgentRuntimeKind[]')
+  expect(daemon).toContain('async function routeVisiblePeerMentions')
+  expect(daemon).toContain('await routeCue(cue)')
+  expect(daemon).toContain("source: 'text_fallback'")
+  expect(daemon).toContain("causeId: `visible_peer:${randomUUID()}`")
+  expect(daemon).toContain("event: 'visible_peer_mention_failed'")
+  expect(daemon).toContain("cue: cueMatch[1] ? 'visible_peer' : 'explicit'")
+  expect(daemon).toContain('↔️ Cueing ${agentName(runtime)} in this room/thread.')
+  expect(daemon).toContain('await routeVisiblePeerMentions(event.session.sessionId, ck, text, messageId, event.threadId ?? messageId)')
+  expect(daemon).toContain('await routeVisiblePeerMentions(uuid, ck, item.text, item.key, item.replyTo ?? item.key)')
+  expect(daemon).toContain('await routeVisiblePeerMentions(uuid, ck, text, ts, replyTo ?? ts)')
 })
 
 test('Codex slots default to sibling git worktrees when available', () => {
@@ -1679,7 +1764,7 @@ test('agent control commands do not lazy-start unloaded sessions', () => {
   expect(guardIdx).toBeLessThan(startIdx)
   expect(guardIdx).toBeLessThan(block.indexOf('startNew(ck, roomCwd(ck), runtime'))
   expect(guardIdx).toBeLessThan(block.indexOf('if (!driver.sendCommand)'))
-  expect(block).toContain("['cancel', 'stop', 'interrupt', 'compact', 'mcp'].includes(commandVerb)")
+  expect(block).toContain("['cancel', 'stop', 'interrupt', 'compact', 'mcp', 'goal'].includes(commandVerb)")
   expect(block).toContain("runtime === 'claude' && commandVerb === 'model'")
   expect(block).toContain('`${runtime} command not started notice`')
   expect(block).toContain('`${runtime} command not loaded notice`')
@@ -2414,14 +2499,14 @@ test('Slack slash command bridge covers /cx without duplicate message id', () =>
   const cc = commands.find((cmd: { command: string }) => cmd.command === '/cc')
   const cx = commands.find((cmd: { command: string }) => cmd.command === '/cx')
   expect(ccm.description).toBe('Claude Channel Mux — room, resume, stop, help')
-  expect(cx.description).toBe('Codex command proxy — help, ss, nav, transcript, cancel')
+  expect(cx.description).toBe('Codex command proxy — help, ss, nav, transcript, goal, cancel')
   expect(cc.description).toBe('Claude command proxy — help, ss, nav, transcript, cancel')
   expect(ccm.usage_hint).toBe('[default claude|codex | agents | route | resume [agent] | stop [agent] | find <query> | help]')
   expect(cc.usage_hint).toBe('<command> (e.g. help, ss, nav, transcript, compact, model, cancel)')
-  expect(cx.usage_hint).toBe('<command> (e.g. help, ss, nav, transcript, status, mcp, model, cancel)')
+  expect(cx.usage_hint).toBe('<command> (e.g. help, ss, nav, transcript, status, mcp, model, goal, cancel)')
   for (const name of ['default', 'agents', 'route', 'resume', 'stop', 'find', 'help']) expect(ccm.usage_hint).toContain(name)
   for (const name of ['help', 'ss', 'nav', 'transcript', 'compact', 'model', 'cancel']) expect(cc.usage_hint).toContain(name)
-  for (const name of ['help', 'ss', 'nav', 'transcript', 'status', 'mcp', 'model', 'cancel']) expect(cx.usage_hint).toContain(name)
+  for (const name of ['help', 'ss', 'nav', 'transcript', 'status', 'mcp', 'model', 'goal', 'cancel']) expect(cx.usage_hint).toContain(name)
   expect(manifest).not.toContain('exit, cost')
   expect(manifest).toContain('Claude Code and Codex')
   expect(slack).toContain('export function normalizeSlackSlashCommandText')
@@ -2589,6 +2674,18 @@ test('agent event and transcript poll missing adapters are observable', () => {
   expect(pollBlock).not.toContain('if (!adapter) { item.delivered.add(ck); continue }')
 })
 
+test('Codex assistant messages are forwarded before final turn completion', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const types = readFileSync('agents/types.ts', 'utf8')
+  const codexDriver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
+  expect(types).toContain("type: 'assistant_message'")
+  expect(codexDriver).toContain("type: 'assistant_message'")
+  expect(codexDriver).toContain("item?.type === 'agentMessage'")
+  expect(daemon).toContain("event.type === 'assistant_message'")
+  expect(daemon).toContain("formatAgentReply(event.session.kind, `💭 ${text}`)")
+  expect(daemon).toContain('daemon: agent mid-turn send skipped')
+})
+
 test('agent final fallback replies preserve originating thread when known', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const types = readFileSync('agents/types.ts', 'utf8')
@@ -2697,6 +2794,19 @@ test('agent typing indicators are started and cleared on terminal paths', () => 
 })
 
 
+test('shutdown broadcasts service restart notices before stopping adapters', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const shutdown = daemon.slice(daemon.indexOf('async function shutdown(): Promise<void>'))
+  expect(daemon).toContain('function activeRoomChannelsForShutdown(): string[]')
+  expect(daemon).toContain('async function notifyRoomsDaemonShutdown(): Promise<void>')
+  expect(daemon).toContain('for (const [uuid, entry] of live)')
+  expect(daemon).toContain('for (const anchor of activeTypingAnchors.values())')
+  expect(daemon).toContain("sendChannelNotice(ck, text, undefined, 'daemon shutdown notice')")
+  expect(shutdown.indexOf('await notifyRoomsDaemonShutdown()')).toBeGreaterThan(-1)
+  expect(shutdown.indexOf('await notifyRoomsDaemonShutdown()')).toBeLessThan(shutdown.indexOf('for (const [uuid] of live) killSession(uuid)'))
+  expect(shutdown.indexOf('await notifyRoomsDaemonShutdown()')).toBeLessThan(shutdown.indexOf('for (const adapter of activeAdapters)'))
+})
+
 test('shutdown adapter stops log failures without aborting cleanup', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const slack = readFileSync('adapters/slack.ts', 'utf8')
@@ -2740,7 +2850,7 @@ test('daemon zellij cleanup and teardown failures are observable', () => {
 
 test('daemon runtime teardown clears per-session UI state', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain('function clearPerSessionUiState(uuid: string): void')
+  expect(daemon).toContain('function clearPerSessionUiState(uuid: string, opts: { clearPeerInflight?: boolean } = {}): void')
   expect(daemon).toContain('codexNativeSessionIds.delete(uuid)')
   expect(daemon).toContain('codexPlanMessages.delete(uuid)')
   expect(daemon).toContain('announcedReconnect.delete(uuid)')
@@ -2756,7 +2866,8 @@ test('daemon runtime teardown clears per-session UI state', () => {
   expect(daemon).toContain('IPC destroy failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}')
   expect(daemon).not.toContain("if (l?.child) {\n    l.child.kill('SIGTERM')")
   expect(daemon).not.toContain('const l = live.get(uuid)\n  if (!l) return\n  const claudeSession = claudeSessions.get(uuid)')
-  expect((daemon.match(/clearPerSessionUiState\(uuid\)/g) ?? []).length).toBeGreaterThanOrEqual(2)
+  expect(daemon).toContain('clearSessionTerminalState(uuid)')
+  expect(daemon).toContain('clearPerSessionUiState(uuid, { clearPeerInflight: true })')
 })
 
 test('daemon stop buttons unbind all channels before killing session', () => {
@@ -2801,7 +2912,7 @@ test('Codex explicit stop clears pending requests while stale panels remain rest
 
 test('Codex pending acknowledgements keep agent identity on send and edit paths', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain("await sendCodexNotice(adapter, localId(ck), formatAgentReply('codex', '⚠️ Codex request expired or already resolved.'))")
+  expect(daemon).toContain("await sendCodexNotice(adapter, localId(ck), formatAgentReply('codex', '⚠️ Codex request expired or already resolved. Refreshing current Codex pending actions.'))")
   expect(daemon).toContain('const pendingNoticeOpts = pending.threadId ? { replyTo: pending.threadId, broadcast: true } : undefined')
   expect(daemon).toContain("await sendCodexNotice(adapter, localId(ck), formatAgentReply('codex', '⚠️ Clear is only available for stale Codex requests. Use Deny or Abort for live requests.'), pendingNoticeOpts)")
   expect(daemon).toContain("const text = formatAgentReply('codex', '🧹 Cleared stale Codex request.')")

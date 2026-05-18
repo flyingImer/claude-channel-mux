@@ -331,6 +331,7 @@ export class TelegramAdapter implements ChannelAdapter {
           { command: 'cx_transcript', description: 'Codex: transcript' },
           { command: 'cx_status', description: 'Codex: status' },
           { command: 'cx_model', description: 'Codex: room model' },
+          { command: 'cx_goal', description: 'Codex: replace goal' },
           { command: 'cx_mcp', description: 'Codex: MCP servers' },
           { command: 'cx_compact', description: 'Codex: compact context' },
           { command: 'cx_stop', description: 'Codex: interrupt turn' },
