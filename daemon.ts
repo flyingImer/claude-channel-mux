@@ -3228,7 +3228,7 @@ type Cmd =
   | { t: 'nav'; runtime?: AgentRuntimeKind }
   | { t: 'slash'; command: string }
   | { t: 'agent_command'; runtime: AgentRuntimeKind; command: string }
-  | { t: 'msg_all'; text: string }
+  | { t: 'msg_many'; text: string; runtimes: AgentRuntimeKind[]; cue?: string }
   | { t: 'msg'; text: string; runtime?: AgentRuntimeKind; cue?: string }
 
 function parseRuntimePrefix(args: string): { runtime?: AgentRuntimeKind; rest: string } {
@@ -3236,6 +3236,33 @@ function parseRuntimePrefix(args: string): { runtime?: AgentRuntimeKind; rest: s
   if (!m) return { rest: args }
   const runtime = /^(codex|cx)$/i.test(m[1]) ? 'codex' : 'claude'
   return { runtime, rest: m[2].trim() }
+}
+
+function allAgentRuntimes(): AgentRuntimeKind[] {
+  const runtimes: AgentRuntimeKind[] = []
+  for (const runtime of AGENT_RUNTIMES) runtimes.push(runtime)
+  return runtimes
+}
+
+function cueTokenRuntime(token: string): AgentRuntimeKind | undefined {
+  if (/^(codex|cx)$/i.test(token)) return 'codex'
+  if (/^(claude|cc)$/i.test(token)) return 'claude'
+  return undefined
+}
+
+function parseLeadingAgentCues(text: string): { runtimes: AgentRuntimeKind[]; rest: string } | undefined {
+  let rest = text.trim()
+  const runtimes: AgentRuntimeKind[] = []
+  while (rest) {
+    rest = rest.replace(/^(?:[,，+&]|and|和)\s+/i, '').trimStart()
+    const match = rest.match(/^@?(claude|cc|codex|cx)(?=\s|[:：,，+&]|$)/i)
+    if (!match) break
+    const runtime = cueTokenRuntime(match[1])
+    if (runtime && !runtimes.includes(runtime)) runtimes.push(runtime)
+    rest = rest.slice(match[0].length).trimStart()
+  }
+  rest = rest.replace(/^[:：]\s*/, '').trim()
+  return runtimes.length > 1 && rest ? { runtimes, rest } : undefined
 }
 
 function splitRuntimePayload(value: string, fallback?: AgentRuntimeKind): { runtime?: AgentRuntimeKind; payload: string } {
@@ -3325,7 +3352,10 @@ function parseCmd(text: string): Cmd {
   }
 
   const agentsCueMatch = c.match(/^(?:@agents|agents)\s*[:：]?\s*([\s\S]+)$/i)
-  if (agentsCueMatch && agentsCueMatch[1].trim()) return { t: 'msg_all', text: agentsCueMatch[1].trim() }
+  if (agentsCueMatch && agentsCueMatch[1].trim()) return { t: 'msg_many', text: agentsCueMatch[1].trim(), runtimes: allAgentRuntimes(), cue: 'multi_agent' }
+
+  const multiCue = parseLeadingAgentCues(c)
+  if (multiCue) return { t: 'msg_many', text: multiCue.rest, runtimes: multiCue.runtimes, cue: 'multi_agent' }
 
   const cueMatch = c.match(/^(?:@(claude|cc|codex|cx)|(claude|cc|codex|cx))\s*[:：]?\s*([\s\S]+)$/i)
   if (cueMatch && cueMatch[3].trim()) {
@@ -4687,8 +4717,10 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       await deliverAgentCommand(ck, msg, cmd.runtime, cmd.command)
       return
     }
-    case 'msg_all': {
-      for (const runtime of AGENT_RUNTIMES) {
+    case 'msg_many': {
+      const labels = cmd.runtimes.map(agentName).join(' + ')
+      await sendChannelNotice(ck, `↔️ ${labels} are looking at the same topic. Each agent will receive this turn in the same room/thread.`, { replyTo: msg.replyToId ?? msg.messageId, broadcast: true }, 'multi-agent cue notice')
+      for (const runtime of cmd.runtimes) {
         await deliverUserTurn(ck, msg, cmd.text, runtime, false)
       }
       return
