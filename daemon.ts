@@ -2361,6 +2361,26 @@ async function waitForLiveBridge(uuid: string, timeoutMs = 20_000): Promise<bool
   return isLiveBridgeConnected(uuid)
 }
 
+async function waitForClaudeTranscriptReceipt(uuid: string, needles: string[], timeoutMs = 8_000): Promise<boolean> {
+  const filtered = needles.filter(Boolean)
+  if (filtered.length === 0) return true
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const transcript = findTranscript(uuid, 'claude')
+    if (transcript) {
+      try {
+        const text = readFileSync(transcript.path, 'utf8')
+        if (filtered.some(needle => text.includes(needle))) return true
+      } catch (err) {
+        logUnexpectedFsReadError('read Claude transcript receipt probe', transcript.path, err)
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  return false
+}
+
+
 function escapeXmlAttr(value: unknown): string {
   return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
@@ -5085,7 +5105,17 @@ async function routeCue(cue: AgentCue): Promise<string> {
   rememberThreadAnchor(peerUuid, messageId)
   rememberThreadAnchor(peerUuid, threadId)
   try {
-    const nativeTurnId = await agentRegistry.get(peer).sendTurn({ session, turn })
+    let nativeTurnId = await agentRegistry.get(peer).sendTurn({ session, turn })
+    if (peer === 'claude') {
+      const receipt = await waitForClaudeTranscriptReceipt(peerUuid, [handoffId, messageId])
+      if (!receipt) {
+        process.stderr.write(`daemon: Claude inbound receipt missing for ${peerUuid.slice(0, 8)} handoff=${handoffId}; retrying once\n`)
+        auditEvent({ event: 'cue_retry', reason: 'claude_inbound_receipt_missing', handoff_id: handoffId, to_session_id: peerUuid, ...baseAudit })
+        nativeTurnId = await agentRegistry.get(peer).sendTurn({ session, turn })
+        const retryReceipt = await waitForClaudeTranscriptReceipt(peerUuid, [handoffId, messageId])
+        if (!retryReceipt) throw new Error('Claude channel did not acknowledge inbound handoff; retry after the session is ready')
+      }
+    }
     recordAskPeerRate(ck, fromRuntime, peer)
     auditEvent({ event: 'cue_routed', handoff_id: handoffId, native_turn_id: nativeTurnId, to_session_id: peerUuid, ...baseAudit })
     if (isToolCue) auditEvent({ event: 'ask_peer_sent', handoff_id: handoffId, native_turn_id: nativeTurnId, room_id: ck, thread_id: threadId, from_agent: fromRuntime, to_agent: peer, from_session_id: fromUuid, to_session_id: peerUuid, message_id: messageId })
