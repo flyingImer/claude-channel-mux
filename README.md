@@ -325,6 +325,7 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CCM_COLLAB_MAX_HANDOFFS` / `CHANNEL_DAEMON_COLLAB_MAX_HANDOFFS` | `4` | Max peer handoffs per CCM collaboration before the lead must converge or ask the user to continue |
 | `CCM_COLLAB_STALE_TTL_MS` / `CHANNEL_DAEMON_COLLAB_STALE_TTL_MS` | `7200000` | Inactive collaboration TTL before active collabs are marked stale |
 | `CCM_PEER_REPLY_INJECTION_MAX_CHARS` / `CHANNEL_DAEMON_PEER_REPLY_INJECTION_MAX_CHARS` | `2000` | Max inline peer reply chars injected back to the lead; full text remains available through Slack thread pointers |
+| `CCM_AGENT_CONTEXT_TURN_MAX_CHARS` / `CHANNEL_DAEMON_AGENT_CONTEXT_TURN_MAX_CHARS` | `8000` | Hard cap for escaped daemon-generated peer/collaboration current-message text; agents should fetch full context from thread pointers |
 
 ### Persistent state
 

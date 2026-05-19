@@ -374,6 +374,13 @@ test('Agent turns include recent peer context pointers without daemon memory log
   expect(daemon).toContain('rememberAgentReplyPointer(event.session.kind, ck')
   expect(daemon).toContain('rememberAgentReplyPointer(runtimeForUuid(uuid), ck, replyTo ?? ts, ts, text)')
   expect(daemon).toContain('PEER_REPLY_INJECTION_MAX_CHARS')
+  expect(daemon).toContain('AGENT_CONTEXT_TURN_MAX_CHARS')
+  const formatter = readFileSync('agents/turn-format.ts', 'utf8')
+  expect(daemon).toContain('function truncateAgentContextTurnText')
+  expect(daemon).toContain('truncateAgentContextTurnTextToMax')
+  expect(formatter).toContain('function escapedCurrentMessageBytes')
+  expect(formatter).toContain('escaped current-message bytes')
+  expect(formatter).toContain('fallbackSuffix')
   expect(daemon).toContain('COLLAB_MAX_HANDOFFS')
   expect(daemon).toContain('function markStaleCollabs')
 })
@@ -1423,6 +1430,7 @@ test('ask_peer env numeric knobs fail closed to positive defaults', () => {
   expect(daemon).toContain('const COLLAB_STALE_TTL_MS = positiveFiniteEnv')
   expect(daemon).toContain('const COLLAB_MAX_HANDOFFS = positiveFiniteEnv')
   expect(daemon).toContain('const PEER_REPLY_INJECTION_MAX_CHARS = positiveFiniteEnv')
+  expect(daemon).toContain('const AGENT_CONTEXT_TURN_MAX_CHARS = positiveFiniteEnv')
   expect(daemon).not.toContain('const ASK_PEER_RATE_WINDOW_MS = Number(process.env')
   expect(daemon).not.toContain('const ASK_PEER_RATE_LIMIT = Number(process.env')
 })
@@ -1969,6 +1977,8 @@ test('env example covers README-documented operational knobs', () => {
     'CHANNEL_DAEMON_COLLAB_MAX_HANDOFFS',
     'CHANNEL_DAEMON_COLLAB_STALE_TTL_MS',
     'CHANNEL_DAEMON_PEER_REPLY_INJECTION_MAX_CHARS',
+    'CCM_AGENT_CONTEXT_TURN_MAX_CHARS',
+    'CHANNEL_DAEMON_AGENT_CONTEXT_TURN_MAX_CHARS',
   ]) expect(env).toContain(name)
 })
 
