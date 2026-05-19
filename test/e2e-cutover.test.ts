@@ -6,10 +6,11 @@ import { test, expect } from 'bun:test'
 
 const script = join(process.cwd(), 'scripts/e2e-cutover.sh')
 const repoRoot = process.cwd()
+const prodCwd = `${repoRoot}__prod`
 
-type Harness = { dir: string; bin: string; unit: string; cwdFile: string; log: string; procRoot: string; failStartFile: string }
+type Harness = { dir: string; bin: string; unit: string; cwdFile: string; log: string; procRoot: string; failStartFile: string; prodCwd: string }
 
-function makeHarness(initialCwd = '/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux'): Harness {
+function makeHarness(initialCwd = prodCwd): Harness {
   const dir = mkdtempSync(join(tmpdir(), 'ccm-cutover-'))
   const bin = join(dir, 'bin')
   mkdirSync(bin)
@@ -63,7 +64,7 @@ if [[ "$1" == '${procRoot}/12345/cwd' ]]; then cat '${cwdFile}'; exit 0; fi
   chmodSync(join(bin, 'systemctl'), 0o755)
   chmodSync(join(bin, 'readlink'), 0o755)
   chmodSync(join(bin, 'sleep'), 0o755)
-  return { dir, bin, unit, cwdFile, log, procRoot, failStartFile }
+  return { dir, bin, unit, cwdFile, log, procRoot, failStartFile, prodCwd }
 }
 
 function runCutover(args: string[], harness: Harness, extraEnv: Record<string, string | undefined> = {}): { ok: boolean; output: string } {
@@ -78,6 +79,7 @@ function runCutover(args: string[], harness: Harness, extraEnv: Record<string, s
         SLACK_BOT_TOKEN: 'x',
         SLACK_APP_TOKEN: 'y',
         CCM_E2E_PROC_ROOT: harness.procRoot,
+        CCM_E2E_PROD_CWD: harness.prodCwd,
         ...extraEnv,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -97,7 +99,7 @@ test('e2e cutover helper starts candidate and rewrites only the test unit', () =
   const unit = readFileSync(harness.unit, 'utf8')
   expect(unit).toContain(`WorkingDirectory=${repoRoot}`)
   expect(unit).toContain('Environment=CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:C0B3V2ZSLER,telegram:-1003714310865')
-  expect(readFileSync(`${harness.unit}.before-cx-e2e`, 'utf8')).toContain('WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux')
+  expect(readFileSync(`${harness.unit}.before-cx-e2e`, 'utf8')).toContain(`WorkingDirectory=${harness.prodCwd}`)
   expect(readFileSync(harness.log, 'utf8')).toContain('--user stop ccm-daemon.service')
   expect(readFileSync(harness.log, 'utf8')).toContain('--user daemon-reload')
 })
@@ -106,14 +108,14 @@ test('e2e cutover helper restores old unit and verifies production cwd', () => {
   const harness = makeHarness(repoRoot)
   writeFileSync(`${harness.unit}.before-cx-e2e`, [
     '[Service]',
-    'WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux',
+    `WorkingDirectory=${harness.prodCwd}`,
     'ExecStart=/bin/true',
   ].join('\n'))
   const result = runCutover(['restore-old'], harness)
   expect(result.ok).toBe(true)
   expect(result.output).toContain('Restored production service')
-  expect(readFileSync(harness.unit, 'utf8')).toContain('WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux')
-  expect(readFileSync(harness.cwdFile, 'utf8')).toBe('/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux')
+  expect(readFileSync(harness.unit, 'utf8')).toContain(`WorkingDirectory=${harness.prodCwd}`)
+  expect(readFileSync(harness.cwdFile, 'utf8')).toBe(harness.prodCwd)
 })
 
 test('e2e cutover helper refuses manual self-test prefix', () => {
@@ -121,7 +123,7 @@ test('e2e cutover helper refuses manual self-test prefix', () => {
   const result = runCutover(['start-candidate'], harness, { CHANNEL_DAEMON_SELF_TEST_PREFIX: 'bot:' })
   expect(result.ok).toBe(false)
   expect(result.output).toContain('CHANNEL_DAEMON_SELF_TEST_PREFIX must be unset')
-  expect(readFileSync(harness.unit, 'utf8')).toContain('WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux')
+  expect(readFileSync(harness.unit, 'utf8')).toContain(`WorkingDirectory=${harness.prodCwd}`)
 })
 
 
@@ -146,8 +148,8 @@ test('e2e cutover helper auto-restores old unit when candidate cwd verification 
   const result = runCutover(['start-candidate'], harness)
   expect(result.ok).toBe(false)
   expect(result.output).toContain('Restoring previous unit automatically')
-  expect(result.output).toContain('restored cwd: /home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux')
-  expect(readFileSync(harness.unit, 'utf8')).toContain('WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux')
+  expect(result.output).toContain(`restored cwd: ${harness.prodCwd}`)
+  expect(readFileSync(harness.unit, 'utf8')).toContain(`WorkingDirectory=${harness.prodCwd}`)
   const log = readFileSync(harness.log, 'utf8')
   expect((log.match(/--user stop ccm-daemon\.service/g) ?? []).length).toBeGreaterThanOrEqual(2)
   expect((log.match(/--user start ccm-daemon\.service/g) ?? []).length).toBeGreaterThanOrEqual(2)
@@ -163,5 +165,5 @@ test('e2e cutover helper refuses to overwrite suspicious existing backup', () =>
   const result = runCutover(['start-candidate'], harness)
   expect(result.ok).toBe(false)
   expect(result.output).toContain('Refusing to overwrite existing backup with unexpected cwd')
-  expect(readFileSync(harness.unit, 'utf8')).toContain('WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux')
+  expect(readFileSync(harness.unit, 'utf8')).toContain(`WorkingDirectory=${harness.prodCwd}`)
 })

@@ -363,13 +363,19 @@ test('Telegram autocomplete only advertises supported Codex commands', () => {
 test('Agent turns include recent peer context pointers without daemon memory logs', () => {
   const types = readFileSync('agents/types.ts', 'utf8')
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(types).toContain('recent?: Array<{ threadId: string; messageId?: string; preview: string; text?: string; sameThread?: boolean; likelyReference?: boolean }>')
+  const server = readFileSync('server.ts', 'utf8')
+  expect(types).toContain('recent?: Array<{ threadId: string; messageId?: string; preview: string; sameThread?: boolean; likelyReference?: boolean }>')
+  expect(server).toContain('previews only')
   expect(daemon).toContain('function recentPeerReplyPointers')
   expect(daemon).toContain('const sameThreadDelta')
   expect(daemon).toContain('likelyReference: true')
-  expect(daemon).toContain('text.length <= 4000')
+  expect(daemon).not.toContain('text.length <= 4000')
+  expect(daemon).not.toContain('text?: string; createdAt')
   expect(daemon).toContain('rememberAgentReplyPointer(event.session.kind, ck')
   expect(daemon).toContain('rememberAgentReplyPointer(runtimeForUuid(uuid), ck, replyTo ?? ts, ts, text)')
+  expect(daemon).toContain('PEER_REPLY_INJECTION_MAX_CHARS')
+  expect(daemon).toContain('COLLAB_MAX_HANDOFFS')
+  expect(daemon).toContain('function markStaleCollabs')
 })
 
 test('Codex app-server approval and sandbox are configurable for trusted YOLO rooms', () => {
@@ -1414,6 +1420,9 @@ test('ask_peer env numeric knobs fail closed to positive defaults', () => {
   expect(daemon).toContain('const ASK_PEER_RATE_LIMIT = positiveFiniteEnv')
   expect(daemon).toContain('const ASK_PEER_MAX_INFLIGHT_PER_ROOM = positiveFiniteEnv')
   expect(daemon).toContain('const ASK_PEER_INFLIGHT_TTL_MS = positiveFiniteEnv')
+  expect(daemon).toContain('const COLLAB_STALE_TTL_MS = positiveFiniteEnv')
+  expect(daemon).toContain('const COLLAB_MAX_HANDOFFS = positiveFiniteEnv')
+  expect(daemon).toContain('const PEER_REPLY_INJECTION_MAX_CHARS = positiveFiniteEnv')
   expect(daemon).not.toContain('const ASK_PEER_RATE_WINDOW_MS = Number(process.env')
   expect(daemon).not.toContain('const ASK_PEER_RATE_LIMIT = Number(process.env')
 })
@@ -1957,6 +1966,9 @@ test('env example covers README-documented operational knobs', () => {
     'CHANNEL_DAEMON_ASK_PEER_RATE_WINDOW_MS',
     'CHANNEL_DAEMON_ASK_PEER_MAX_INFLIGHT_PER_ROOM',
     'CHANNEL_DAEMON_ASK_PEER_INFLIGHT_TTL_MS',
+    'CHANNEL_DAEMON_COLLAB_MAX_HANDOFFS',
+    'CHANNEL_DAEMON_COLLAB_STALE_TTL_MS',
+    'CHANNEL_DAEMON_PEER_REPLY_INJECTION_MAX_CHARS',
   ]) expect(env).toContain(name)
 })
 
