@@ -1496,7 +1496,7 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).toContain('type AgentHandoffStatus =')
   expect(daemon).toContain('const recentAgentHandoffs = new Map<string, AgentHandoffStatus>()')
   expect(daemon).toContain('function agentHandoffStatusLines(roomId: string): string[]')
-  expect(daemon).toContain("return [...lines, '*Agents:*', ...slots, ...askPeerRoomStatusLines(ck), ...agentHandoffStatusLines(ck)]")
+  expect(daemon).toContain("return [...lines, '*Agents:*', ...slots, ...askPeerRoomStatusLines(ck), ...agentHandoffStatusLines(ck), ...collabStatusLines(ck)]")
   expect(daemon).toContain('*Handoffs:*')
   expect(daemon).toContain("updateAgentHandoffStatus(handoffId, 'replied')")
   expect(daemon).toContain("updateAgentHandoffStatus(handoffId, 'failed', errorMessage(err))")
