@@ -23,7 +23,7 @@ export type AgentPeerPointer = {
   kind: AgentKind
   sessionId?: string
   status: 'active' | 'suspended' | 'missing'
-  recent?: Array<{ threadId: string; messageId?: string; preview: string; sameThread?: boolean; likelyReference?: boolean }>
+  recent?: Array<{ threadId: string; messageId?: string; preview: string; kind?: 'midturn' | 'final' | 'reply_tool' | 'poll'; source?: 'event' | 'reply_tool' | 'poll'; sameThread?: boolean; likelyReference?: boolean; ageMs?: number; referenceHint?: string }>
 }
 
 export type AgentTurn = {

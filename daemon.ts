@@ -42,6 +42,7 @@ import { watch as fsWatch, readFileSync as fsReadSync } from 'fs'
 import { ClaudeChannelAgentDriver } from './agents/claude/channel-driver.js'
 import { CodexAppServerAgentDriver } from './agents/codex/app-server-driver.js'
 import { AgentRegistry } from './agents/registry.js'
+import { recentAgentReplyPointerFromJson, recentPeerReplyPointers as buildRecentPeerReplyPointers, type RecentAgentReplyKind, type RecentAgentReplyPointer, type RecentAgentReplySource } from './agents/peer-pointers.js'
 import { agentLabel, agentName, formatAgentReply } from './agents/identity.js'
 import { truncateAgentContextTurnText as truncateAgentContextTurnTextToMax } from './agents/turn-format.js'
 import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanStep, AgentServerRequest, AgentSession, AgentSnapshot, AgentTranscript, AgentTurn } from './agents/types.js'
@@ -132,6 +133,7 @@ const BINDINGS_FILE = join(STATE_DIR, 'bindings.json')
 const TRANSCRIPT_DELIVERY_FILE = join(STATE_DIR, 'transcript-delivery.json')
 const CODEX_PENDING_REQUESTS_FILE = join(STATE_DIR, 'codex-pending-requests.json')
 const COLLAB_STATE_FILE = join(STATE_DIR, 'collabs.json')
+const RECENT_AGENT_REPLIES_FILE = join(STATE_DIR, 'recent-agent-replies.json')
 const AUDIT_LOG_FILE = join(STATE_DIR, 'audit.jsonl')
 // Page size now comes from adapter.pageSize
 const CC_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
@@ -530,27 +532,31 @@ function agentMeta(ck: string, runtime: AgentRuntimeKind): AgentSlotMeta | undef
   return normalizeBinding(loadBindings()[ck]).agentMeta[runtime]
 }
 
-
-function recentPeerReplyPointers(runtime: AgentRuntimeKind, roomId?: string, threadId?: string): Array<{ threadId: string; messageId?: string; preview: string; sameThread?: boolean; likelyReference?: boolean }> | undefined {
-  if (!roomId) return undefined
-  const candidates = [...recentAgentReplies.values()]
-    .filter(item => item.runtime === runtime && item.roomId === roomId)
-    .sort((a, b) => {
-      const sameThreadDelta = (b.threadId === threadId ? 1 : 0) - (a.threadId === threadId ? 1 : 0)
-      return sameThreadDelta || b.createdAt - a.createdAt
-    })
-    .slice(0, 5)
-    .map((item, index) => ({
-      threadId: item.threadId,
-      ...(item.messageId ? { messageId: item.messageId } : {}),
-      preview: item.preview,
-      ...(item.threadId === threadId ? { sameThread: true } : {}),
-      ...(index === 0 ? { likelyReference: true } : {}),
-    }))
-  return candidates.length ? candidates : undefined
+function recentPeerReplyPointers(runtime: AgentRuntimeKind, roomId?: string, threadId?: string): NonNullable<AgentPeerPointer['recent']> | undefined {
+  return buildRecentPeerReplyPointers(recentAgentReplies.values(), runtime, roomId, threadId)
 }
 
-function rememberAgentReplyPointer(runtime: AgentRuntimeKind, roomId: string, threadId: string | undefined, messageId: string | undefined, text: string): void {
+function loadRecentAgentReplies(): Map<string, RecentAgentReplyPointer> {
+  const data = readJsonValueFile(RECENT_AGENT_REPLIES_FILE)
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return new Map()
+  const out = new Map<string, RecentAgentReplyPointer>()
+  for (const [key, value] of Object.entries(data)) {
+    const pointer = recentAgentReplyPointerFromJson(value)
+    if (pointer) out.set(key, pointer)
+  }
+  return out
+}
+
+function saveRecentAgentReplies(): void {
+  try {
+    const tmp = RECENT_AGENT_REPLIES_FILE + '.tmp'
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(recentAgentReplies), null, 2) + '\n', { mode: 0o600 })
+    renameSync(tmp, RECENT_AGENT_REPLIES_FILE)
+  } catch (err) {
+    process.stderr.write(`daemon: failed to save recent agent replies: ${errorMessage(err)}\n`)
+  }
+}
+function rememberAgentReplyPointer(runtime: AgentRuntimeKind, roomId: string, threadId: string | undefined, messageId: string | undefined, text: string, kind: RecentAgentReplyKind, source: RecentAgentReplySource): void {
   if (!threadId && !messageId) return
   const key = `${roomId}:${runtime}:${messageId ?? threadId}`
   recentAgentReplies.set(key, {
@@ -559,6 +565,8 @@ function rememberAgentReplyPointer(runtime: AgentRuntimeKind, roomId: string, th
     threadId: threadId ?? messageId ?? '',
     messageId,
     preview: clampLine(text, 220),
+    kind,
+    source,
     createdAt: Date.now(),
   })
   while (recentAgentReplies.size > 200) {
@@ -566,6 +574,7 @@ function rememberAgentReplyPointer(runtime: AgentRuntimeKind, roomId: string, th
     if (!oldest) break
     recentAgentReplies.delete(oldest)
   }
+  saveRecentAgentReplies()
 }
 
 function agentPeerPointers(binding: NormalizedBinding, exclude: AgentRuntimeKind, roomId?: string, threadId?: string): AgentPeerPointer[] {
@@ -1278,14 +1287,14 @@ async function handleAgentEvent(event: AgentEvent): Promise<void> {
       const opts = event.channelKey === ck && event.threadId ? { replyTo: event.threadId, broadcast: true } : undefined
       try {
         const messageId = await adapter.sendMessage(localId(ck), formatAgentReply(event.session.kind, `💭 ${text}`), opts)
-        rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text)
+        rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text, 'midturn', 'event')
         await routeVisiblePeerMentions(event.session.sessionId, ck, text, messageId, event.threadId ?? messageId)
       } catch (err) {
         if (opts?.replyTo) {
           try {
             process.stderr.write(`daemon: agent mid-turn send failed with reply_to=${opts.replyTo} for ${event.session.sessionId.slice(0, 8)} channel=${ck}; retrying main channel: ${errorMessage(err)}\n`)
             const messageId = await adapter.sendMessage(localId(ck), formatAgentReply(event.session.kind, `💭 ${text}`))
-            rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text)
+            rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text, 'midturn', 'event')
             await routeVisiblePeerMentions(event.session.sessionId, ck, text, messageId, event.threadId ?? messageId)
             continue
           } catch (fallbackErr) {
@@ -1318,7 +1327,7 @@ async function handleAgentEvent(event: AgentEvent): Promise<void> {
     try {
       const messageId = await adapter.sendMessage(localId(ck), formatAgentReply(event.session.kind, text), opts)
       delivered = true
-      rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text)
+      rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text, 'final', 'event')
       completeAskPeerInflightFromText(event.session.sessionId, text, messageId, event.threadId)
       await routeVisiblePeerMentions(event.session.sessionId, ck, text, messageId, event.threadId ?? messageId)
     } catch (err) {
@@ -1327,7 +1336,7 @@ async function handleAgentEvent(event: AgentEvent): Promise<void> {
           process.stderr.write(`daemon: agent event send failed with reply_to=${opts.replyTo} for ${event.session.sessionId.slice(0, 8)} channel=${ck}; retrying main channel: ${errorMessage(err)}\n`)
           const messageId = await adapter.sendMessage(localId(ck), formatAgentReply(event.session.kind, text))
           delivered = true
-          rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text)
+          rememberAgentReplyPointer(event.session.kind, ck, event.threadId ?? messageId, messageId, text, 'final', 'event')
           completeAskPeerInflightFromText(event.session.sessionId, text, messageId, event.threadId)
           await routeVisiblePeerMentions(event.session.sessionId, ck, text, messageId, event.threadId ?? messageId)
           continue
@@ -1737,7 +1746,7 @@ const askPeerRateBuckets = new Map<string, number[]>()
 const askPeerInflight = new Map<string, AskPeerInflight>()
 const pendingPeerReplyInjections = new Map<string, PendingPeerReplyInjection[]>()
 const recentAgentHandoffs = new Map<string, AgentHandoffStatus>()
-const recentAgentReplies = new Map<string, { runtime: AgentRuntimeKind; roomId: string; threadId: string; messageId?: string; preview: string; createdAt: number }>()
+const recentAgentReplies = loadRecentAgentReplies()
 
 function pruneAskPeerState(now = Date.now()): void {
   for (const [key, times] of askPeerRateBuckets) {
@@ -2107,7 +2116,7 @@ async function flushTranscriptDelivery(uuid: string, state: TranscriptPollState,
     if (item.isEndOfTurn) {
       completeAskPeerInflightFromText(uuid, item.text, item.key, item.replyTo ?? undefined)
       for (const ck of item.delivered) {
-        rememberAgentReplyPointer(runtimeForUuid(uuid), ck, item.replyTo ?? item.key, item.key, item.text)
+        rememberAgentReplyPointer(runtimeForUuid(uuid), ck, item.replyTo ?? item.key, item.key, item.text, 'poll', 'poll')
         await routeVisiblePeerMentions(uuid, ck, item.text, item.key, item.replyTo ?? item.key)
       }
       await clearAgentTyping(uuid)
@@ -5320,7 +5329,7 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
           broadcast: true,  // Slack: also send to channel when replying in thread
         })
         completeAskPeerInflightFromText(uuid, text, ts, replyTo)
-        rememberAgentReplyPointer(runtimeForUuid(uuid), ck, replyTo ?? ts, ts, text)
+        rememberAgentReplyPointer(runtimeForUuid(uuid), ck, replyTo ?? ts, ts, text, 'reply_tool', 'reply_tool')
         await routeVisiblePeerMentions(uuid, ck, text, ts, replyTo ?? ts)
         await clearAgentTyping(uuid)
         const uploadFailures: string[] = []
