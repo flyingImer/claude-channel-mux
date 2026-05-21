@@ -311,6 +311,7 @@ const mcp = new Server(
       'peer_agents may include recent peer message pointers with previews only, plus kind/source/ageMs/referenceHint metadata. If the user references “刚刚/刚才/上一条/above/previous/原话/逐字” peer output, prefer likelyReference/sameThread and follow referenceHint. For exact repetition, quoting, or evaluating a specific prior peer answer, call fetch_thread(thread_id) for the pointed Slack thread instead of relying on preview.',
       'Do not expect the daemon to push full conversation history. Use fetch_thread with the provided thread_id when you need Slack thread context; Telegram may report history unavailable.',
       'Use ask_peer when another active agent in peer_agents likely has relevant context or you want a second opinion; ask_peer sends a visible same-room async handoff and returns immediately. In a <ccm_collab_context>, include collab_id when available. Peer replies are visible in the room and may also be injected back by the daemon for continuation.',
+      'In a <ccm_collab_context role="observer">, stay quiet unless you have high-signal detail/context to add, missing evidence, a risk, a correction, or a materially better approach. Use chime_in to inject that concise note into the lead/default agent context; do not use reply for routine observer commentary.',
       '',
       'reply accepts file paths (files: ["/abs/path"]) for attachments. Images are shown inline, other files as downloads.',
       'Edits do not trigger push notifications — send a new reply when a long task completes.',
@@ -451,6 +452,20 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           collab_id: { type: 'string', description: 'Current CCM collaboration id if provided in ccm_collab_context (optional)' },
         },
         required: ['chat_id', 'agent', 'question'],
+      },
+    },
+    {
+      name: 'chime_in',
+      description: 'Observer-only collaboration note. Inject concise high-signal detail, context, evidence, risk, correction, or a better approach into the lead/default agent context without taking over the visible room answer.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Channel key for the current CCM room' },
+          collab_id: { type: 'string', description: 'Collaboration id from ccm_collab_context' },
+          summary: { type: 'string', description: 'Concise high-signal detail/context/evidence/correction for the lead/default agent' },
+          thread_id: { type: 'string', description: 'Current thread/message id pointer (optional)' },
+        },
+        required: ['chat_id', 'collab_id', 'summary'],
       },
     },
   ],

@@ -5,11 +5,12 @@ export const AGENT_RUNTIMES = ['claude', 'codex'] as const satisfies readonly Ag
 export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string }
 export type ChannelBinding = string | {
   active?: AgentRuntimeKind
+  observers?: AgentRuntimeKind[]
   sessions?: Partial<Record<AgentRuntimeKind, string>>
   cwd?: string
   agentMeta?: Partial<Record<AgentRuntimeKind, AgentSlotMeta>>
 }
-export type NormalizedBinding = { active: AgentRuntimeKind; sessions: Partial<Record<AgentRuntimeKind, string>>; cwd?: string; agentMeta: Partial<Record<AgentRuntimeKind, AgentSlotMeta>> }
+export type NormalizedBinding = { active: AgentRuntimeKind; observers: AgentRuntimeKind[]; sessions: Partial<Record<AgentRuntimeKind, string>>; cwd?: string; agentMeta: Partial<Record<AgentRuntimeKind, AgentSlotMeta>> }
 export type BindingSessionEntry = { runtime: AgentRuntimeKind; uuid: string; active: boolean }
 
 
@@ -36,6 +37,17 @@ function sessionMap(value: unknown): Partial<Record<AgentRuntimeKind, string>> {
     ...(stringValue(record.claude) ? { claude: stringValue(record.claude) } : {}),
     ...(stringValue(record.codex) ? { codex: stringValue(record.codex) } : {}),
   }
+}
+
+function observerList(value: unknown, active?: AgentRuntimeKind): AgentRuntimeKind[] {
+  if (!Array.isArray(value)) return []
+  const out: AgentRuntimeKind[] = []
+  for (const item of value) {
+    const runtime = runtimeValue(item)
+    if (!runtime || runtime === active || out.includes(runtime)) continue
+    out.push(runtime)
+  }
+  return out
 }
 
 function slotMeta(value: unknown): AgentSlotMeta | undefined {
@@ -71,12 +83,14 @@ export function bindingsFromJson(value: unknown): Record<string, ChannelBinding>
     const binding = recordValue(rawBinding)
     if (!binding) continue
     const active = runtimeValue(binding.active)
+    const observers = observerList(binding.observers, active)
     const sessions = sessionMap(binding.sessions)
     const cwd = stringValue(binding.cwd)
     const agentMeta = agentMetaMap(binding.agentMeta)
-    if (!active && Object.keys(sessions).length === 0 && !cwd && Object.keys(agentMeta).length === 0) continue
+    if (!active && observers.length === 0 && Object.keys(sessions).length === 0 && !cwd && Object.keys(agentMeta).length === 0) continue
     bindings[channelKey] = {
       ...(active ? { active } : {}),
+      ...(observers.length ? { observers } : {}),
       ...(Object.keys(sessions).length ? { sessions } : {}),
       ...(cwd ? { cwd } : {}),
       ...(Object.keys(agentMeta).length ? { agentMeta } : {}),
@@ -86,7 +100,7 @@ export function bindingsFromJson(value: unknown): Record<string, ChannelBinding>
 }
 
 export function normalizeBinding(value: ChannelBinding | undefined, defaultRuntime: AgentRuntimeKind): NormalizedBinding {
-  if (typeof value === 'string') return { active: 'claude', sessions: { claude: value }, agentMeta: {} }
+  if (typeof value === 'string') return { active: 'claude', observers: [], sessions: { claude: value }, agentMeta: {} }
   const sessions = value?.sessions ?? {}
   const explicitActive = value?.active === 'claude' || value?.active === 'codex' ? value.active : undefined
   const active = explicitActive
@@ -103,7 +117,8 @@ export function normalizeBinding(value: ChannelBinding | undefined, defaultRunti
   const agentMeta = typeof value === 'object' && value?.agentMeta && typeof value.agentMeta === 'object'
     ? { ...value.agentMeta }
     : {}
-  return { active, sessions: { ...sessions }, cwd, agentMeta }
+  const observers = typeof value === 'object' ? observerList(value?.observers, active) : []
+  return { active, observers, sessions: { ...sessions }, cwd, agentMeta }
 }
 
 export function bindingSessionEntries(binding: NormalizedBinding): BindingSessionEntry[] {
@@ -125,9 +140,10 @@ export function serializeBinding(binding: NormalizedBinding, defaultRuntime: Age
     if (meta && Object.keys(meta).length > 0) agentMeta[runtime] = meta
   }
   const sessionKeys = Object.keys(sessions)
-  if (sessionKeys.length === 0 && !binding.cwd && binding.active === defaultRuntime) return undefined
+  const observers = binding.observers.filter(runtime => runtime !== binding.active)
+  if (sessionKeys.length === 0 && observers.length === 0 && !binding.cwd && binding.active === defaultRuntime) return undefined
   const active = binding.active
-  return { active, sessions, ...(binding.cwd ? { cwd: binding.cwd } : {}), ...(Object.keys(agentMeta).length > 0 ? { agentMeta } : {}) }
+  return { active, ...(observers.length ? { observers } : {}), sessions, ...(binding.cwd ? { cwd: binding.cwd } : {}), ...(Object.keys(agentMeta).length > 0 ? { agentMeta } : {}) }
 }
 
 

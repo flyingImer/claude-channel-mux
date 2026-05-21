@@ -264,6 +264,7 @@ ccm stop codex
 ```
 
 For plain messages, choose the default with `CHANNEL_DAEMON_DEFAULT_AGENT=claude|codex` or `ccm default claude|codex`.
+When a message cues multiple agents, CCM picks the room default as the lead/default agent and sends the same request to the other cued agents as observers. Observers should stay quiet unless they have high-signal detail/context to add, missing evidence, a risk, a correction, or a materially better approach; they can use `chime_in` to inject that note into the lead context while the lead owns the final room answer.
 
 ## MCP Tools
 
@@ -277,6 +278,7 @@ Claude agent slot sessions get these tools via the MCP bridge (`server.ts`). Cod
 | `download_attachment` | Download file/image to local inbox |
 | `fetch_thread` | Pull full thread history (Slack only) |
 | `ask_peer` | Asynchronously cue another agent in the same room for context/second opinion; answer is visible in the room |
+| `chime_in` | Observer-only collaboration note injected into the lead/default agent context |
 
 ## Configuration
 
