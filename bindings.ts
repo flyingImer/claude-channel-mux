@@ -2,7 +2,7 @@ import type { AgentKind } from './agents/types.js'
 
 export type AgentRuntimeKind = AgentKind
 export const AGENT_RUNTIMES = ['claude', 'codex'] as const satisfies readonly AgentRuntimeKind[]
-export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string }
+export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; appServerUrl?: string; codexHome?: string; tuiTabName?: string }
 export type ChannelBinding = string | {
   active?: AgentRuntimeKind
   observers?: AgentRuntimeKind[]
@@ -54,7 +54,7 @@ function slotMeta(value: unknown): AgentSlotMeta | undefined {
   const record = recordValue(value)
   if (!record) return undefined
   const meta: AgentSlotMeta = {}
-  for (const key of ['transport', 'nativeSessionId', 'cwd', 'model', 'sourceCwd', 'worktreeBranch', 'worktreePath'] as const) {
+  for (const key of ['transport', 'nativeSessionId', 'cwd', 'model', 'sourceCwd', 'worktreeBranch', 'worktreePath', 'appServerUrl', 'codexHome', 'tuiTabName'] as const) {
     const string = stringValue(record[key])
     if (string) meta[key] = string
   }

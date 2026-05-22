@@ -22,9 +22,12 @@ test('bindings preserve room observer agents', () => {
 })
 
 test('normalizeBinding trims cwd and preserves agent metadata', () => {
-  const normalized = normalizeBinding({ active: 'codex', sessions: { codex: 'cx' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt' } } }, 'claude')
+  const normalized = normalizeBinding({ active: 'codex', sessions: { codex: 'cx' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', appServerUrl: 'ws://127.0.0.1:1', codexHome: '/home/me/.codex', tuiTabName: 'ccm:cx:abc' } } }, 'claude')
   expect(normalized.cwd).toBe('/repo')
   expect(normalized.agentMeta.codex?.model).toBe('gpt')
+  expect(normalized.agentMeta.codex?.appServerUrl).toBe('ws://127.0.0.1:1')
+  expect(normalized.agentMeta.codex?.codexHome).toBe('/home/me/.codex')
+  expect(normalized.agentMeta.codex?.tuiTabName).toBe('ccm:cx:abc')
 })
 
 test('serializeBinding omits empty default bindings and empty metadata', () => {

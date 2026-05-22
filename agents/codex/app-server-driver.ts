@@ -8,6 +8,7 @@ export type CodexAppServerDriverOptions = {
   daemonSock: string
   mcpServerPath: string
   baseEnv: NodeJS.ProcessEnv
+  appServerListen?: 'stdio' | 'websocket'
   log?: (line: string) => void
 }
 
@@ -423,6 +424,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         CODEX_CHANNEL_SESSION_UUID: sessionId,
         CC_CHANNEL_DAEMON_SOCK: this.opts.daemonSock,
       },
+      listen: this.opts.appServerListen ?? 'stdio',
       configArgs: this.configArgs(sessionId, modelOverride),
       stderr: line => this.opts.log?.(`[codex:${sessionId.slice(0, 8)}] ${line}`),
       notification: msg => this.handleNotification(msg),
@@ -449,6 +451,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       cwd,
       status: 'idle',
       capabilities: { streaming: true, cancel: true, resume: true, toolCalling: true },
+      meta: { appServerUrl: client.url() },
     }
     this.runtimes.set(sessionId, { session, modelOverride, client, threadId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() })
     this.threadToSession.set(threadId, sessionId)

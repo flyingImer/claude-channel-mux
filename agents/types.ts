@@ -17,6 +17,7 @@ export type AgentSession = {
   cwd: string
   status: AgentSessionStatus
   capabilities: AgentCapabilities
+  meta?: Record<string, string | undefined>
 }
 
 export type AgentPeerPointer = {

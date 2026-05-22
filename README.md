@@ -315,6 +315,8 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CHANNEL_DAEMON_DEFAULT_AGENT` / `CHANNEL_DAEMON_AGENT` / `CCM_AGENT` | `claude` | Default agent for plain messages in new rooms; override per room with `ccm default` |
 | `CLAUDE_BIN` | `claude` | Path to Claude Code binary |
 | `CODEX_BIN` | `codex` | Path to Codex CLI binary |
+| `CODEX_HOME` | `~/.codex` | Codex config/auth home used by the auto-attached remote TUI |
+| `CCM_CODEX_APP_SERVER_LISTEN` / `CHANNEL_DAEMON_CODEX_APP_SERVER_LISTEN` | `websocket` | Codex app-server transport; `websocket` enables native `codex --remote` TUI attachment, `stdio` is retained for tests/fallback |
 | `OPENAI_API_KEY` | Codex config/login | Optional Codex App Server credential; set when `codex app-server` is not already authenticated via Codex config/login |
 | `CCM_CODEX_WORKTREE` / `CHANNEL_DAEMON_CODEX_WORKTREE` | `auto` | Codex App Server slots create a sibling git worktree by default when the room cwd is a git repo; set `off` to run in the room cwd |
 | `CCM_CODEX_MODEL` / `CODEX_MODEL` | config default | Optional model override for Codex App Server turns |

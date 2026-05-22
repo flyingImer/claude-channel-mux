@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { appServerErrorMessage, appServerExitErrorMessage, appServerMalformedLineMessage, jsonObject, parseAppServerMessage } from '../agents/codex/app-server-client.ts'
+import { appServerErrorMessage, appServerExitErrorMessage, appServerListenUrlFromLine, appServerMalformedLineMessage, jsonObject, parseAppServerMessage } from '../agents/codex/app-server-client.ts'
 import { redactSensitiveText } from '../redact.ts'
 
 test('parseAppServerMessage ignores malformed or non-object JSON-RPC lines', () => {
@@ -50,4 +50,10 @@ test('appServerMalformedLineMessage redacts and bounds ignored stdout', () => {
   expect(message).toStartWith('codex app-server ignored malformed stdout line: not-json OPENAI_API_KEY=…redacted')
   expect(message).not.toContain('sk-1234567890abcdef')
   expect(message.length).toBeLessThanOrEqual('codex app-server ignored malformed stdout line: '.length + 500)
+})
+
+test('appServerListenUrlFromLine extracts loopback websocket listener URL', () => {
+  expect(appServerListenUrlFromLine('listening on: ws://127.0.0.1:41821')).toBe('ws://127.0.0.1:41821')
+  expect(appServerListenUrlFromLine('[info] listening on: ws://127.0.0.1:41821/abc')).toBe('ws://127.0.0.1:41821/abc')
+  expect(appServerListenUrlFromLine('listening on: http://127.0.0.1:41821')).toBeUndefined()
 })

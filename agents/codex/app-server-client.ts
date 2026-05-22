@@ -47,6 +47,11 @@ export function appServerMalformedLineMessage(line: string): string {
   return `codex app-server ignored malformed stdout line: ${redactSensitiveText(line).slice(0, 500)}`
 }
 
+export function appServerListenUrlFromLine(line: string): string | undefined {
+  const match = line.match(/\blistening on:\s*(ws:\/\/127\.0\.0\.1:\d+\S*)/i)
+  return match?.[1]
+}
+
 type Pending = {
   resolve: (value: JsonObject) => void
   reject: (err: Error) => void
@@ -57,6 +62,7 @@ export type CodexAppServerClientOptions = {
   codexBin: string
   cwd: string
   env: Record<string, string | undefined>
+  listen?: 'stdio' | 'websocket'
   configArgs?: string[]
   stderr?: (line: string) => void
   notification?: (message: JsonObject) => void
@@ -66,9 +72,11 @@ export type CodexAppServerClientOptions = {
 export class CodexAppServerClient {
   private proc?: ChildProcessWithoutNullStreams
   private rl?: Interface
+  private ws?: WebSocket
   private nextId = 1
   private pending = new Map<number, Pending>()
   private stderrLines: string[] = []
+  private appServerUrl?: string
 
   constructor(private opts: CodexAppServerClientOptions) {}
 
@@ -83,7 +91,8 @@ export class CodexAppServerClient {
 
   async start(): Promise<void> {
     if (this.proc) return
-    const args = ['app-server', '--listen', 'stdio://', ...(this.opts.configArgs ?? [])]
+    const listen = this.opts.listen ?? 'stdio'
+    const args = ['app-server', '--listen', listen === 'websocket' ? 'ws://127.0.0.1:0' : 'stdio://', ...(this.opts.configArgs ?? [])]
     this.proc = spawn(this.opts.codexBin, args, {
       cwd: this.opts.cwd,
       env: this.opts.env,
@@ -96,6 +105,8 @@ export class CodexAppServerClient {
         if (!trimmed) continue
         this.stderrLines.push(trimmed)
         if (this.stderrLines.length > 10) this.stderrLines.splice(0, this.stderrLines.length - 10)
+        const url = appServerListenUrlFromLine(trimmed)
+        if (url) this.appServerUrl = url
         this.opts.stderr?.(trimmed)
       }
     })
@@ -103,8 +114,23 @@ export class CodexAppServerClient {
       this.rejectPending(new Error(appServerExitErrorMessage(code, signal, this.stderrLines)))
       this.proc = undefined
     })
-    this.rl = createInterface({ input: this.proc.stdout })
-    this.rl.on('line', line => this.handleLine(line))
+    if (listen === 'websocket') {
+      this.proc.stdout.setEncoding('utf8')
+      this.proc.stdout.on('data', chunk => {
+        for (const line of String(chunk).split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          const url = appServerListenUrlFromLine(trimmed)
+          if (url) this.appServerUrl = url
+          else this.opts.stderr?.(trimmed)
+        }
+      })
+      await this.connectWebSocket()
+    } else {
+      this.rl = createInterface({ input: this.proc.stdout })
+      this.rl.on('line', line => this.handleLine(line))
+      this.appServerUrl = 'stdio://'
+    }
     await this.request('initialize', {
       clientInfo: { name: 'claude-channel-mux', version: '0.3.0' },
       capabilities: {
@@ -117,12 +143,19 @@ export class CodexAppServerClient {
     this.notify('initialized', {})
   }
 
+  url(): string | undefined {
+    return this.appServerUrl
+  }
+
   async stop(): Promise<void> {
     const proc = this.proc
     this.proc = undefined
     this.rl?.close()
     this.rl = undefined
+    const ws = this.ws
+    this.ws = undefined
     this.rejectPending(new Error('codex app-server stopped'))
+    try { ws?.close() } catch (err) { this.opts.stderr?.(`codex app-server websocket close failed: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`) }
     if (!proc) return
     proc.kill('SIGTERM')
     await new Promise<void>(resolve => {
@@ -166,6 +199,21 @@ export class CodexAppServerClient {
   }
 
   private write(payload: JsonObject, context: string): Error | undefined {
+    if (this.ws) {
+      if (this.ws.readyState !== WebSocket.OPEN) {
+        const err = new Error(`codex app-server write skipped for ${context}: websocket is not open`)
+        this.opts.stderr?.(err.message)
+        return err
+      }
+      try {
+        this.ws.send(JSON.stringify(payload))
+        return undefined
+      } catch (err) {
+        const message = `codex app-server websocket write failed for ${context}: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`
+        this.opts.stderr?.(message)
+        return new Error(message)
+      }
+    }
     const proc = this.proc
     if (!proc?.stdin.writable) {
       const err = new Error(`codex app-server write skipped for ${context}: process is not running`)
@@ -206,5 +254,24 @@ export class CodexAppServerClient {
       return
     }
     this.opts.notification?.(msg)
+  }
+
+  private async connectWebSocket(): Promise<void> {
+    const deadline = Date.now() + 15_000
+    while (!this.appServerUrl && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+    if (!this.appServerUrl) throw new Error(appServerExitErrorMessage(null, null, [...this.stderrLines, 'codex app-server did not report a websocket listening URL']))
+    const ws = new WebSocket(this.appServerUrl)
+    this.ws = ws
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`codex app-server websocket connect timed out: ${this.appServerUrl}`)), 15_000)
+      ws.addEventListener('open', () => { clearTimeout(timer); resolve() }, { once: true })
+      ws.addEventListener('error', () => { clearTimeout(timer); reject(new Error(`codex app-server websocket connect failed: ${this.appServerUrl}`)) }, { once: true })
+    })
+    ws.addEventListener('message', event => this.handleLine(String(event.data)))
+    ws.addEventListener('close', () => {
+      if (this.ws !== ws) return
+      this.ws = undefined
+      this.rejectPending(new Error('codex app-server websocket closed'))
+    })
   }
 }

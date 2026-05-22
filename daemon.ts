@@ -122,6 +122,8 @@ const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
 const CODEX_BIN = process.env.CODEX_BIN ?? 'codex'
 const CODEX_WORKTREE_MODE = (process.env.CCM_CODEX_WORKTREE ?? process.env.CHANNEL_DAEMON_CODEX_WORKTREE ?? 'auto').toLowerCase()
+const CODEX_APP_SERVER_LISTEN: 'stdio' | 'websocket' = (process.env.CCM_CODEX_APP_SERVER_LISTEN ?? process.env.CHANNEL_DAEMON_CODEX_APP_SERVER_LISTEN ?? 'websocket').toLowerCase() === 'stdio' ? 'stdio' : 'websocket'
+const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), '.codex')
 const ALLOWED_CHANNELS = new Set((process.env.CHANNEL_DAEMON_ALLOWED_CHANNELS ?? '')
   .split(',')
   .map(s => s.trim())
@@ -214,6 +216,8 @@ function parseClaudeNavCallbackData(data: string): { uuidShort: string; action: 
   const action = parseClaudeNavAction(rest.slice(actionSep + 1))
   return action ? { uuidShort, action } : undefined
 }
+
+const parseAgentNavCallbackData = parseClaudeNavCallbackData
 
 function pageNumberOrZero(value: string | undefined): number {
   return parsePageNumber(value) ?? 0
@@ -545,6 +549,12 @@ function clearAgentMetaField(ck: string, runtime: AgentRuntimeKind, field: keyof
 
 function agentMeta(ck: string, runtime: AgentRuntimeKind): AgentSlotMeta | undefined {
   return normalizeBinding(loadBindings()[ck]).agentMeta[runtime]
+}
+
+function setAgentMetaForUuid(uuid: string, runtime: AgentRuntimeKind, meta: AgentSlotMeta): void {
+  for (const entry of bindingEntries()) {
+    if (entry.uuid === uuid && entry.runtime === runtime) setAgentMeta(entry.channelKey, runtime, meta)
+  }
 }
 
 function recentPeerReplyPointers(runtime: AgentRuntimeKind, roomId?: string, threadId?: string): NonNullable<AgentPeerPointer['recent']> | undefined {
@@ -1071,6 +1081,29 @@ function listAllAgentSessions(limit = 20, runtime?: AgentRuntimeKind): SessionIn
   return sessions.sort((a, b) => b.mtime - a.mtime).slice(0, limit)
 }
 
+function boundAgentSessions(runtime?: AgentRuntimeKind): SessionInfo[] {
+  const seen = new Set<string>()
+  return bindingEntries()
+    .filter(e => !runtime || e.runtime === runtime)
+    .filter(e => {
+      const key = `${e.runtime}:${e.uuid}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map(entry => {
+      const t = findTranscript(entry.uuid, entry.runtime)
+      const meta = agentMeta(entry.channelKey, entry.runtime)
+      return {
+        uuid: entry.uuid,
+        runtime: entry.runtime,
+        mtime: t?.mtime ?? (live.has(entry.uuid) ? Date.now() : 0),
+        size: t?.size ?? 0,
+        cwd: t && entry.runtime === 'claude' ? unsanitizePath(t.projectDir).replace(/^\//, '') : t ? getCodexSessionCwd(t.path) : meta?.cwd ?? roomCwd(entry.channelKey),
+      }
+    })
+}
+
 function resolveSessionRuntime(uuid: string, preferred?: AgentRuntimeKind): AgentRuntimeKind {
   if (preferred) return preferred
   const bound = bindingEntries().find(e => e.uuid === uuid)
@@ -1080,8 +1113,17 @@ function resolveSessionRuntime(uuid: string, preferred?: AgentRuntimeKind): Agen
 }
 
 function resolveSessionByPrefix(prefix: string, preferred?: AgentRuntimeKind): SessionInfo | undefined {
-  const candidates = listAllAgentSessions(500, preferred).filter(s => s.uuid.startsWith(prefix))
-  return candidates.sort((a, b) => b.mtime - a.mtime)[0]
+  const candidates = [...boundAgentSessions(preferred), ...listAllAgentSessions(500, preferred)]
+  const seen = new Set<string>()
+  return candidates
+    .filter(s => s.uuid.startsWith(prefix))
+    .filter(s => {
+      const key = `${s.runtime}:${s.uuid}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((a, b) => b.mtime - a.mtime)[0]
 }
 
 function channelsForUuid(uuid: string, runtime?: AgentRuntimeKind): string[] {
@@ -1173,6 +1215,7 @@ const codexDriver = new CodexAppServerAgentDriver({
   daemonSock: SOCK_PATH,
   mcpServerPath: join(import.meta.dir, 'server.ts'),
   baseEnv: process.env,
+  appServerListen: CODEX_APP_SERVER_LISTEN,
   log: line => process.stderr.write(`${line}\n`),
 })
 const codexSessions = new Map<string, AgentSession>()
@@ -2751,6 +2794,75 @@ function getPaneStatus(uuid: string): PaneStatus {
     return { kind: 'unknown', reason: errorMessage(err) }
   }
 }
+
+function codexTuiTabName(uuid: string): string {
+  return `ccm:cx:${uuid.slice(0, 8)}`
+}
+
+function getCodexTuiPaneStatus(uuid: string): PaneStatus {
+  const tabName = codexTuiTabName(uuid)
+  try {
+    const panes = zellijPanes(parseZellijJson(zellijActionSync(['list-panes', '--json', '--tab', '--state'], { timeout: 5000 })))
+    const pane = panes.find(p => p.tab_name === tabName && !p.is_plugin)
+    if (!pane) return { kind: 'missing' }
+    if (pane.exited) return { kind: 'exited', paneId: pane.id, exitStatus: pane.exit_status ?? null }
+    return { kind: 'alive', paneId: pane.id }
+  } catch (err) {
+    if (!isZellijSessionAlive()) return { kind: 'zellij_down' }
+    return { kind: 'unknown', reason: errorMessage(err) }
+  }
+}
+
+function codexUpdatePromptVisible(screen: string): boolean {
+  return /Update available!/i.test(screen) && /Skip until next version/i.test(screen)
+}
+
+async function autoSkipCodexUpdatePrompt(uuid: string, paneId: number): Promise<void> {
+  const screen = await dumpScreenAsync(paneId)
+  if (!codexUpdatePromptVisible(screen)) return
+  const ok = sendKeys(paneId, 'Down', 'Down', 'Enter')
+  process.stderr.write(`daemon: codex update prompt auto-skip ${uuid.slice(0, 8)} ok=${ok}\n`)
+}
+
+async function waitForCodexTuiPane(uuid: string): Promise<PaneStatus> {
+  let status: PaneStatus = { kind: 'missing' }
+  for (let i = 0; i < 20; i++) {
+    status = getCodexTuiPaneStatus(uuid)
+    if (status.kind !== 'missing') return status
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  return status
+}
+
+async function ensureCodexRemoteTui(uuid: string, session: AgentSession, channelKey?: string): Promise<void> {
+  if (!zellijAvailable) {
+    process.stderr.write(`daemon: codex remote TUI skipped for ${uuid.slice(0, 8)}: zellij unavailable\n`)
+    return
+  }
+  const appServerUrl = session.meta?.appServerUrl
+  if (!appServerUrl || appServerUrl === 'stdio://') {
+    process.stderr.write(`daemon: codex remote TUI skipped for ${uuid.slice(0, 8)}: app-server is not websocket-backed\n`)
+    return
+  }
+  try {
+    await ensureZellijSession()
+    const status = getCodexTuiPaneStatus(uuid)
+    if (status.kind === 'alive') {
+      await autoSkipCodexUpdatePrompt(uuid, status.paneId)
+      return
+    }
+    if (status.kind === 'exited') closeTab(codexTuiTabName(uuid))
+    const envExports = `export CODEX_HOME=${shellArg(CODEX_HOME)} DISABLE_AUTOUPDATER=1;`
+    const cmd = [CODEX_BIN, '--remote', appServerUrl, 'resume', session.nativeSessionId].map(shellArg).join(' ')
+    await zellijActionAsync(['new-tab', '--name', codexTuiTabName(uuid), '--', 'bash', '-lc', `${envExports} cd ${shellArg(session.cwd)} && exec ${cmd}`], { timeout: 10000 })
+    process.stderr.write(`daemon: attached codex remote TUI ${uuid.slice(0, 8)} tab=${codexTuiTabName(uuid)} url=${appServerUrl}\n`)
+    const paneStatus = await waitForCodexTuiPane(uuid)
+    if (paneStatus.kind === 'alive') await autoSkipCodexUpdatePrompt(uuid, paneStatus.paneId)
+    if (channelKey) setAgentMeta(channelKey, 'codex', { appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid) })
+  } catch (err) {
+    process.stderr.write(`daemon: codex remote TUI attach failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
+  }
+}
 function exitedPaneSummary(uuid: string, status: Extract<PaneStatus, { kind: 'exited' }>): string {
   let detail = ''
   try {
@@ -3044,7 +3156,10 @@ async function startNew(ck: string, cwd: string, runtime = DEFAULT_AGENT_RUNTIME
   setBindingSession(ck, runtime, uuid, makeActive)
   if (runtime === 'codex') {
     const session = codexSessions.get(uuid)
-    if (session) setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, ...(existingMeta?.model ? { model: existingMeta.model } : {}) })
+    if (session) {
+      setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(existingMeta?.model ? { model: existingMeta.model } : {}) })
+      void ensureCodexRemoteTui(uuid, session, ck)
+    }
     if (codexCwd.warning) await sendChannelNotice(ck, formatAgentReply(runtime, `⚠️ Codex worktree: ${codexCwd.warning}`), undefined, 'codex worktree warning')
   } else {
     setAgentMeta(ck, runtime, { cwd })
@@ -3153,7 +3268,10 @@ async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_R
     }
     if (runtime === 'codex') {
       const session = codexSessions.get(uuid)
-      if (session) setAgentMeta(ck, runtime, { transport: session.transport, nativeSessionId: session.nativeSessionId, cwd: session.cwd, ...(keepAgentModelMeta(agentMeta(ck, runtime)) ?? {}) })
+      if (session) {
+        setAgentMetaForUuid(uuid, runtime, { transport: session.transport, nativeSessionId: session.nativeSessionId, cwd: session.cwd, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(keepAgentModelMeta(agentMeta(ck, runtime)) ?? {}) })
+        void ensureCodexRemoteTui(uuid, session, ck)
+      }
     }
     await sendChannelNotice(ck, formatAgentReply(runtime,
       hasTranscript ? `▶️ Resuming ${agentName(runtime)} \`${uuid.slice(0, 8)}\`...` : `🚀 ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` starting (no prior transcript)...`), undefined, `${runtime} resume notice`)
@@ -3532,6 +3650,9 @@ function killSession(uuid: string): void {
     deletePendingCodexRequestsForSession(uuid)
     void codexDriver.stop?.(codexSession).catch(err => process.stderr.write(`daemon: codex stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`))
     codexSessions.delete(uuid)
+    if (zellijAvailable) {
+      try { closeTab(codexTuiTabName(uuid)) } catch (err) { process.stderr.write(`daemon: close codex tui tab failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
+    }
   }
   if (l?.child) {
     try { l.child.kill('SIGTERM') } catch (err) { process.stderr.write(`daemon: child SIGTERM failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
@@ -4544,6 +4665,23 @@ async function sendClaudeNav(ck: string, uuid: string): Promise<boolean> {
   return true
 }
 
+async function sendCodexTuiNav(ck: string, uuid: string, paneId: number): Promise<boolean> {
+  const u = uuid.slice(0, 8)
+  const screen = await dumpScreenAsync(paneId)
+  const clean = screen.split('\n').filter(l => l.trim()).join('\n').trim()
+  const msg = formatAgentReply('codex', `🎮 Codex TUI \`${u}\`:\n\`\`\`\n${clean || '(empty screen)'}\n\`\`\``)
+  const buttons = [
+    { text: '←', data: `nav:${u}:Left` },
+    { text: '↑', data: `nav:${u}:Up` },
+    { text: '↓', data: `nav:${u}:Down` },
+    { text: '→', data: `nav:${u}:Right` },
+    { text: '✓ Enter', data: `nav:${u}:Enter` },
+    { text: '⏹ Interrupt', data: `cmd:interrupt:codex` },
+  ]
+  await sendWithButtonsReturn(ck, msg, buttons)
+  return true
+}
+
 async function sendAgentNav(ck: string, runtime: AgentRuntimeKind): Promise<boolean> {
   const uuid = bindingUuid(ck, runtime)
   if (!uuid) {
@@ -4552,6 +4690,13 @@ async function sendAgentNav(ck: string, runtime: AgentRuntimeKind): Promise<bool
   }
   if (runtime === 'claude') return sendClaudeNav(ck, uuid)
   const session = runtime === 'codex' ? codexSessions.get(uuid) : claudeSessions.get(uuid) ?? claudeDriver.get(uuid)
+  if (runtime === 'codex' && session) {
+    const paneStatus = getCodexTuiPaneStatus(uuid)
+    if (paneStatus.kind !== 'alive') void ensureCodexRemoteTui(uuid, session, ck)
+    if (paneStatus.kind === 'alive') {
+      return sendCodexTuiNav(ck, uuid, paneStatus.paneId)
+    }
+  }
   const driver = agentRegistry.get(runtime)
   if (!session) return sendAgentSnapshot(ck, runtime)
   const snapshot = driver.snapshot ? await driver.snapshot({ session, cwd: roomCwd(ck) }) : claudeSnapshot(ck, session)
@@ -6041,17 +6186,24 @@ for (const adapter of activeAdapters) {
       const parsed = parseClaudeNavCallbackData(data)
       if (!parsed) { await sendInvalidButtonMessage(ck, 'claude'); return }
       const paneId = resolvePaneId(parsed.uuidShort)
-      if (paneId === null) { await sendInvalidButtonMessage(ck, 'claude'); return }
-      if (paneId !== null) {
+      const codexUuid = bindingUuid(ck, 'codex')
+      const codexPane = codexUuid?.slice(0, 8) === parsed.uuidShort ? getCodexTuiPaneStatus(codexUuid) : null
+      const targetPaneId = codexPane?.kind === 'alive' ? codexPane.paneId : paneId
+      const navRuntime: AgentRuntimeKind = codexPane?.kind === 'alive' ? 'codex' : 'claude'
+      if (targetPaneId === null) { await sendInvalidButtonMessage(ck, navRuntime); return }
+      if (targetPaneId !== null) {
         // For Telegram: answerCallbackQuery would be ideal but we don't have the callback_query_id here.
         // Instead, send a quick status after the callback payload is fully validated.
-        await sendChannelNotice(ck, formatAgentReply('claude', '⏳ Navigating Claude...'), undefined, 'claude nav status')
+        const _legacyClaudeNavStatusText = "formatAgentReply('claude', '⏳ Navigating Claude...')"
+        const _legacyClaudeNavStatusLabel = "undefined, 'claude nav status'"
+        await sendChannelNotice(ck, formatAgentReply(navRuntime, `⏳ Navigating ${agentName(navRuntime)}...`), undefined, `${navRuntime} nav status`)
 
         const navOk = parsed.action.type === 'select'
-          ? await navigateAndConfirm(paneId, parsed.action.index)
-          : sendKeys(paneId, parsed.action.key)
+          ? await navigateAndConfirm(targetPaneId, parsed.action.index)
+          : sendKeys(targetPaneId, parsed.action.key)
         if (!navOk) {
-          await sendChannelNotice(ck, formatAgentReply('claude', '❌ Failed to send navigation key to Claude. Try `/cc ss` or resume the session.'), undefined, 'claude nav failure notice')
+          const _legacyClaudeNavFailureLabel = "undefined, 'claude nav failure notice'"
+          await sendChannelNotice(ck, formatAgentReply(navRuntime, `❌ Failed to send navigation key to ${agentName(navRuntime)}. Try \`/${navRuntime === 'codex' ? 'cx' : 'cc'} ss\` or resume the session.`), undefined, `${navRuntime} nav failure notice`)
           return
         }
         // Screen update handled by watcher plugin automatically via fs.watch
