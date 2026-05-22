@@ -5416,9 +5416,7 @@ async function routeCue(cue: AgentCue): Promise<string> {
     throw new Error(`${agentName(peer)} channel bridge is not connected yet; retry after it finishes starting.`)
   }
 
-  const session = peer === 'codex'
-    ? codexSessions.get(peerUuid)
-    : claudeSessions.get(peerUuid) ?? claudeDriver.get(peerUuid)
+  const session = currentAgentSession(peer, peerUuid)
   if (!session) {
     deny('peer_session_not_loaded', { to_session_id: peerUuid })
     throw new Error(`${agentName(peer)} session is not loaded`)

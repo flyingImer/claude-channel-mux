@@ -743,11 +743,24 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       `thread_id="${escapeXmlAttr(turn.threadId)}"`,
     ].join(' ')
     const meta = this.formatMessageMeta(turn.meta)
+    const attachmentInstructions = this.formatAttachmentHandlingInstructions(turn.meta)
     return `<ccm_turn ${attrs}>
 <context_pointers trust="untrusted" platform="${escapeXmlAttr(turn.platform)}" channel_id="${escapeXmlAttr(turn.channelId)}" thread_id="${escapeXmlAttr(turn.threadId)}" peer_agents="${escapeXmlAttr(JSON.stringify(turn.peerAgents))}" />
-${meta ? `<message_meta trust="untrusted">${meta}</message_meta>\n` : ''}<current_message>${escapeXmlText(turn.text)}</current_message>
+${meta ? `<message_meta trust="untrusted">${meta}</message_meta>\n` : ''}${attachmentInstructions ? `<agent_instructions source="claude-channel-mux" priority="internal">${escapeXmlText(attachmentInstructions)}</agent_instructions>\n` : ''}<current_message>${escapeXmlText(turn.text)}</current_message>
 </ccm_turn>`
   }
+
+  private formatAttachmentHandlingInstructions(meta: Record<string, unknown>): string {
+    const summary = attachmentSummary(meta)
+    if (!summary.needsIsolation) return ''
+    return [
+      'The user sent multiple or large attachments. Avoid loading multiple large images/files into this main Codex turn because Codex/SFC can return 429 for large multimodal payloads.',
+      'Use the download_attachment MCP tool to save attachments locally. For images or large files, process each attachment in a fresh isolated worker controlled by the main session, one attachment per worker, then aggregate only the worker text summaries here. Prefer native subagents when available; otherwise run a fresh `codex exec`/isolated Codex session for each attachment.',
+      'If no isolated worker mechanism is available, still avoid batching multiple images in one request; download and inspect attachments sequentially, keeping only concise text notes before moving to the next attachment.',
+      'Do not mention this internal routing strategy unless the user asks about implementation details; just complete the user task.',
+    ].join('\n')
+  }
+
   private formatMessageMeta(meta: Record<string, unknown>): string {
     const allowed = [
       'attachment_file_id',
@@ -770,6 +783,74 @@ ${meta ? `<message_meta trust="untrusted">${meta}</message_meta>\n` : ''}<curren
     }
     return Object.keys(picked).length > 0 ? escapeXmlText(JSON.stringify(picked)) : ''
   }
+}
+
+type AttachmentSummary = {
+  count: number
+  imageCount: number
+  totalSize: number
+  maxSize: number
+  needsIsolation: boolean
+}
+
+const LARGE_ATTACHMENT_BYTES = 1_500_000
+const LARGE_ATTACHMENT_TOTAL_BYTES = 3_000_000
+
+function attachmentSummary(meta: Record<string, unknown>): AttachmentSummary {
+  const attachments = attachmentMetaItems(meta)
+  const count = attachments.length
+  const imageCount = attachments.filter(item => item.mime.startsWith('image/')).length
+  const sizes = attachments.map(item => item.size).filter((size): size is number => typeof size === 'number' && Number.isFinite(size) && size > 0)
+  const totalSize = sizes.reduce((sum, size) => sum + size, 0)
+  const maxSize = sizes.length ? Math.max(...sizes) : 0
+  return {
+    count,
+    imageCount,
+    totalSize,
+    maxSize,
+    needsIsolation: imageCount >= 2 || maxSize >= LARGE_ATTACHMENT_BYTES || totalSize >= LARGE_ATTACHMENT_TOTAL_BYTES,
+  }
+}
+
+function attachmentMetaItems(meta: Record<string, unknown>): Array<{ fileId?: string; name?: string; mime: string; size?: number }> {
+  const fromList = attachmentMetaList(meta.attachment_files)
+  if (fromList.length > 0) return fromList
+  const fileId = stringValue(meta.attachment_file_id)
+  const name = stringValue(meta.attachment_name)
+  const mime = stringValue(meta.attachment_mime) ?? ''
+  const size = numericAttachmentSize(meta.attachment_size)
+  return fileId || name || mime || size != null ? [{ fileId, name, mime, size }] : []
+}
+
+function attachmentMetaList(value: unknown): Array<{ fileId?: string; name?: string; mime: string; size?: number }> {
+  if (typeof value !== 'string' || !value) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  return parsed
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
+    .map(item => ({
+      fileId: stringValue(item.file_id),
+      name: stringValue(item.name),
+      mime: stringValue(item.mime) ?? '',
+      size: numericAttachmentSize(item.size),
+    }))
+    .filter(item => item.fileId || item.name || item.mime || item.size != null)
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
+}
+
+function numericAttachmentSize(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) && value >= 0 ? value : undefined
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined
 }
 
 function escapeXmlAttr(value: unknown): string {

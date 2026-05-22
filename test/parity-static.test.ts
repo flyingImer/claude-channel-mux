@@ -1537,6 +1537,16 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
 })
 
 
+test('peer cues rehydrate resumed sessions before sending turns', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const routeCue = daemon.slice(daemon.indexOf('async function routeCue'), daemon.indexOf('async function sendPeerCue'))
+  expect(routeCue).toContain('if (liveEntryNeedsRespawn(peerUuid))')
+  expect(routeCue).toContain('const ok = await resumeAndBind(ck, peerUuid, peer, false)')
+  expect(routeCue).toContain("if (peer === 'claude' && !await waitForLiveBridge(peerUuid))")
+  expect(routeCue).toContain('const session = currentAgentSession(peer, peerUuid)')
+  expect(routeCue).not.toContain('claudeSessions.get(peerUuid) ?? claudeDriver.get(peerUuid)')
+})
+
 test('visible @peer cues route through the unified cue router', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function peerMentionTargets(text: string, fromRuntime: AgentRuntimeKind): AgentRuntimeKind[]')

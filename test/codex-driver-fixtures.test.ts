@@ -269,6 +269,43 @@ test('Codex snapshot classifies MCP tool approvals from typed _meta or meta only
   expect(snapshot.pending[0].detail).toContain('{\"path\":\"/tmp/a\"}')
 })
 
+test('Codex turn envelope injects internal image isolation instructions for multi-image metadata', () => {
+  const d = driver()
+  const text = d.formatTurn({
+    turnId: 'turn', roomId: 'slack:C', channelKey: 'slack:C', platform: 'slack', channelId: 'C', threadId: 'T', messageId: 'M', cwd: '/tmp', text: 'ocr these',
+    addressedAgent: 'codex', defaultAgent: 'claude', peerAgents: [],
+    meta: { attachment_files: JSON.stringify([
+      { file_id: 'F1', name: 'a.png', mime: 'image/png', size: 2_400_000 },
+      { file_id: 'F2', name: 'b.png', mime: 'image/png', size: 2_000_000 },
+    ]) },
+  })
+  expect(text).toContain('<agent_instructions source="claude-channel-mux" priority="internal">')
+  expect(text).toContain('fresh isolated worker controlled by the main session')
+  expect(text).toContain('Do not mention this internal routing strategy')
+  expect(text).toContain('<current_message>ocr these</current_message>')
+})
+
+test('Codex turn envelope injects internal isolation instructions for a large single attachment', () => {
+  const d = driver()
+  const text = d.formatTurn({
+    turnId: 'turn', roomId: 'telegram:1', channelKey: 'telegram:1', platform: 'telegram', channelId: '1', threadId: 'M', messageId: 'M', cwd: '/tmp', text: 'read this image',
+    addressedAgent: 'codex', defaultAgent: 'claude', peerAgents: [],
+    meta: { attachment_file_id: 'P1', attachment_name: 'photo.jpg', attachment_mime: 'image/jpeg', attachment_size: '2400000' },
+  })
+  expect(text).toContain('<agent_instructions source="claude-channel-mux" priority="internal">')
+  expect(text).toContain('codex exec')
+})
+
+test('Codex turn envelope does not inject attachment strategy for small single attachments', () => {
+  const d = driver()
+  const text = d.formatTurn({
+    turnId: 'turn', roomId: 'slack:C', channelKey: 'slack:C', platform: 'slack', channelId: 'C', threadId: 'T', messageId: 'M', cwd: '/tmp', text: 'read this',
+    addressedAgent: 'codex', defaultAgent: 'claude', peerAgents: [],
+    meta: { attachment_file_id: 'F1', attachment_name: 'small.png', attachment_mime: 'image/png', attachment_size: '120000' },
+  })
+  expect(text).not.toContain('<agent_instructions')
+})
+
 test('Codex turn envelope includes whitelisted message meta but not arbitrary metadata', () => {
   const d = driver()
   const text = d.formatTurn({
