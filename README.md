@@ -326,7 +326,7 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CCM_ASK_PEER_RATE_WINDOW_MS` / `CHANNEL_DAEMON_ASK_PEER_RATE_WINDOW_MS` | `60000` | Rate window for ask_peer handoffs |
 | `CCM_ASK_PEER_MAX_INFLIGHT_PER_ROOM` / `CHANNEL_DAEMON_ASK_PEER_MAX_INFLIGHT_PER_ROOM` | `4` | Max uncorrelated ask_peer handoffs per room before rejecting new ones |
 | `CCM_ASK_PEER_INFLIGHT_TTL_MS` / `CHANNEL_DAEMON_ASK_PEER_INFLIGHT_TTL_MS` | `600000` | TTL for uncorrelated ask_peer handoff ids |
-| `CCM_COLLAB_MAX_HANDOFFS` / `CHANNEL_DAEMON_COLLAB_MAX_HANDOFFS` | `4` | Max peer handoffs per CCM collaboration before the lead must converge or ask the user to continue |
+| `CCM_COLLAB_MAX_HANDOFFS` / `CHANNEL_DAEMON_COLLAB_MAX_HANDOFFS` | `777` | Max peer handoffs per CCM collaboration before the lead must converge or ask the user to continue |
 | `CCM_COLLAB_STALE_TTL_MS` / `CHANNEL_DAEMON_COLLAB_STALE_TTL_MS` | `7200000` | Inactive collaboration TTL before active collabs are marked stale |
 | `CCM_PEER_REPLY_INJECTION_MAX_CHARS` / `CHANNEL_DAEMON_PEER_REPLY_INJECTION_MAX_CHARS` | `2000` | Max inline peer reply chars injected back to the lead; full text remains available through Slack thread pointers |
 | `CCM_AGENT_CONTEXT_TURN_MAX_CHARS` / `CHANNEL_DAEMON_AGENT_CONTEXT_TURN_MAX_CHARS` | `8000` | Hard cap for escaped daemon-generated peer/collaboration current-message text; agents should fetch full context from thread pointers |
