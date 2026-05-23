@@ -3855,12 +3855,6 @@ function parseCmd(text: string): Cmd {
     return { t: 'msg', text: cueMatch[3].trim(), runtime, cue: cueMatch[1] ? 'visible_peer' : 'explicit' }
   }
 
-  const naturalCueMatch = c.match(/^(?:叫|让|喊|請|请|麻烦|找|ask|tell)\s*@?(claude|cc|codex|cx)(?:\s|[:：,，])\s*([\s\S]+)$/i)
-  if (naturalCueMatch && naturalCueMatch[2].trim()) {
-    const runtime = /^(codex|cx)$/i.test(naturalCueMatch[1]) ? 'codex' : 'claude'
-    return { t: 'msg', text: naturalCueMatch[2].trim(), runtime, cue: 'explicit' }
-  }
-
   return { t: 'msg', text: c }
 }
 

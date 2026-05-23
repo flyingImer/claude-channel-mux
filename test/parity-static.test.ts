@@ -1547,13 +1547,6 @@ test('peer cues rehydrate resumed sessions before sending turns', () => {
   expect(routeCue).not.toContain('claudeSessions.get(peerUuid) ?? claudeDriver.get(peerUuid)')
 })
 
-test('natural language agent cues route to the named runtime', () => {
-  const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain('const naturalCueMatch = c.match')
-  expect(daemon).toContain('叫|让|喊|請|请|麻烦|找|ask|tell')
-  expect(daemon).toContain("return { t: 'msg', text: naturalCueMatch[2].trim(), runtime, cue: 'explicit' }")
-})
-
 test('visible @peer cues route through the unified cue router', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function peerMentionTargets(text: string, fromRuntime: AgentRuntimeKind): AgentRuntimeKind[]')
