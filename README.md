@@ -314,7 +314,7 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CHANNEL_DAEMON_FORWARD_ENV` | unset | Comma-separated env var names to explicitly export into Claude zellij tabs when zellij inherited stale environment; invalid shell env names are ignored |
 | `CHANNEL_DAEMON_DEFAULT_AGENT` / `CHANNEL_DAEMON_AGENT` / `CCM_AGENT` | `claude` | Default agent for plain messages in new rooms; override per room with `ccm default` |
 | `CLAUDE_BIN` | `claude` | Path to Claude Code binary |
-| `CODEX_BIN` | `codex` | Path to Codex CLI binary |
+| `CODEX_BIN` | `codex` | Codex CLI command prefix; may be a path or generic wrapper command like `env CODEX_PROFILE=prod codex` |
 | `CODEX_HOME` | `~/.codex` | Codex config/auth home used by the auto-attached remote TUI |
 | `CCM_CODEX_APP_SERVER_LISTEN` / `CHANNEL_DAEMON_CODEX_APP_SERVER_LISTEN` | `websocket` | Codex app-server transport; `websocket` enables native `codex --remote` TUI attachment, `stdio` is retained for tests/fallback |
 | `OPENAI_API_KEY` | Codex config/login | Optional Codex App Server credential; set when `codex app-server` is not already authenticated via Codex config/login |
@@ -327,6 +327,7 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CCM_ASK_PEER_MAX_INFLIGHT_PER_ROOM` / `CHANNEL_DAEMON_ASK_PEER_MAX_INFLIGHT_PER_ROOM` | `4` | Max uncorrelated ask_peer handoffs per room before rejecting new ones |
 | `CCM_ASK_PEER_INFLIGHT_TTL_MS` / `CHANNEL_DAEMON_ASK_PEER_INFLIGHT_TTL_MS` | `600000` | TTL for uncorrelated ask_peer handoff ids |
 | `CCM_COLLAB_MAX_HANDOFFS` / `CHANNEL_DAEMON_COLLAB_MAX_HANDOFFS` | `777` | Max peer handoffs per CCM collaboration before the lead must converge or ask the user to continue |
+| `CCM_COLLAB_INLINE_CONTEXT_MAX_CHARS` / `CHANNEL_DAEMON_COLLAB_INLINE_CONTEXT_MAX_CHARS` | `24000` | Total inline peer-reply chars injected back to the lead per collaboration; once exhausted, CCM injects a pointer-only omitted reply |
 | `CCM_COLLAB_STALE_TTL_MS` / `CHANNEL_DAEMON_COLLAB_STALE_TTL_MS` | `7200000` | Inactive collaboration TTL before active collabs are marked stale |
 | `CCM_PEER_REPLY_INJECTION_MAX_CHARS` / `CHANNEL_DAEMON_PEER_REPLY_INJECTION_MAX_CHARS` | `2000` | Max inline peer reply chars injected back to the lead; full text remains available through Slack thread pointers |
 | `CCM_AGENT_CONTEXT_TURN_MAX_CHARS` / `CHANNEL_DAEMON_AGENT_CONTEXT_TURN_MAX_CHARS` | `8000` | Hard cap for escaped daemon-generated peer/collaboration current-message text; agents should fetch full context from thread pointers |

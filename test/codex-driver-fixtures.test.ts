@@ -49,7 +49,7 @@ function testRuntime(session: AgentSession, client: TestCodexClient = {}): TestC
 
 function driver(): CodexDriverHarness {
   return new CodexAppServerAgentDriver({
-    codexBin: 'codex',
+    codexCommand: ['codex'],
     daemonSock: '/tmp/no.sock',
     mcpServerPath: '/tmp/server.ts',
     baseEnv: {},
@@ -280,7 +280,9 @@ test('Codex turn envelope injects internal image isolation instructions for mult
     ]) },
   })
   expect(text).toContain('<agent_instructions source="claude-channel-mux" priority="internal">')
+  expect(text).toContain('hard safety constraint: do not call view_image')
   expect(text).toContain('fresh isolated worker controlled by the main session')
+  expect(text).toContain('If no isolated worker mechanism is available, stop and ask the user')
   expect(text).toContain('Do not mention this internal routing strategy')
   expect(text).toContain('<current_message>ocr these</current_message>')
 })
@@ -464,4 +466,3 @@ test('Codex completed turn clears latest turn id before cancel', async () => {
   expect(result.display).toBe('No active Codex turn to interrupt.')
   expect(calls.map(call => call.method)).not.toContain('turn/interrupt')
 })
-

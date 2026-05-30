@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { forwardedEnvExports, shellArg, validEnvName } from '../shell.ts'
+import { commandLine, commandPrefix, forwardedEnvExports, shellArg, shellWords, validEnvName } from '../shell.ts'
 
 test('validEnvName accepts only shell-safe environment variable names', () => {
   expect(validEnvName('OPENAI_API_KEY')).toBe(true)
@@ -14,6 +14,13 @@ test('shellArg safely single-quotes shell values', () => {
   expect(shellArg('simple')).toBe("'simple'")
   expect(shellArg("a'b")).toBe("'a'\\''b'")
   expect(shellArg('')).toBe("''")
+})
+
+test('command helpers support wrapper prefixes', () => {
+  expect(shellWords('env CODEX_PROFILE=prod codex')).toEqual(['env', 'CODEX_PROFILE=prod', 'codex'])
+  expect(shellWords('"/opt/Codex CLI/codex" --profile prod')).toEqual(['/opt/Codex CLI/codex', '--profile', 'prod'])
+  expect(commandPrefix('', 'codex')).toEqual(['codex'])
+  expect(commandLine(['env', 'CODEX_PROFILE=prod', 'codex'], ['app-server', '--listen', 'stdio://'])).toBe("'env' 'CODEX_PROFILE=prod' 'codex' 'app-server' '--listen' 'stdio://'")
 })
 
 test('forwardedEnvExports keeps empty values and reports invalid names', () => {

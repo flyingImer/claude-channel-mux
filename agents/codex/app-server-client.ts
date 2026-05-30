@@ -59,7 +59,7 @@ type Pending = {
 }
 
 export type CodexAppServerClientOptions = {
-  codexBin: string
+  codexCommand: string[]
   cwd: string
   env: Record<string, string | undefined>
   listen?: 'stdio' | 'websocket'
@@ -93,7 +93,8 @@ export class CodexAppServerClient {
     if (this.proc) return
     const listen = this.opts.listen ?? 'stdio'
     const args = ['app-server', '--listen', listen === 'websocket' ? 'ws://127.0.0.1:0' : 'stdio://', ...(this.opts.configArgs ?? [])]
-    this.proc = spawn(this.opts.codexBin, args, {
+    const [bin, ...prefixArgs] = this.opts.codexCommand
+    this.proc = spawn(bin, [...prefixArgs, ...args], {
       cwd: this.opts.cwd,
       env: this.opts.env,
       stdio: ['pipe', 'pipe', 'pipe'],

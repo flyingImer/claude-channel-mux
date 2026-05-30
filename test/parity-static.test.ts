@@ -844,7 +844,7 @@ test('forwarded env names are validated before bash export', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const shell = readFileSync('shell.ts', 'utf8')
   const readme = readFileSync('README.md', 'utf8')
-  expect(daemon).toContain("import { forwardedEnvExports, shellArg } from './shell.js'")
+  expect(daemon).toContain("forwardedEnvExports, shellArg } from './shell.js'")
   expect(daemon).toContain('const forwardedExports = forwardedEnvExports(forwardList, process.env, name =>')
   expect(daemon).toContain('ignoring invalid forwarded env name')
   expect(shell).toContain('export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/')
@@ -1438,6 +1438,7 @@ test('ask_peer env numeric knobs fail closed to positive defaults', () => {
   expect(daemon).toContain('const ASK_PEER_INFLIGHT_TTL_MS = positiveFiniteEnv')
   expect(daemon).toContain('const COLLAB_STALE_TTL_MS = positiveFiniteEnv')
   expect(daemon).toContain('const COLLAB_MAX_HANDOFFS = positiveFiniteEnv')
+  expect(daemon).toContain('const COLLAB_INLINE_CONTEXT_MAX_CHARS = positiveFiniteEnv')
   expect(daemon).toContain('const PEER_REPLY_INJECTION_MAX_CHARS = positiveFiniteEnv')
   expect(daemon).toContain('const AGENT_CONTEXT_TURN_MAX_CHARS = positiveFiniteEnv')
   expect(daemon).not.toContain('const ASK_PEER_RATE_WINDOW_MS = Number(process.env')
@@ -2024,6 +2025,7 @@ test('env example covers README-documented operational knobs', () => {
     'CHANNEL_DAEMON_ASK_PEER_MAX_INFLIGHT_PER_ROOM',
     'CHANNEL_DAEMON_ASK_PEER_INFLIGHT_TTL_MS',
     'CHANNEL_DAEMON_COLLAB_MAX_HANDOFFS',
+    'CHANNEL_DAEMON_COLLAB_INLINE_CONTEXT_MAX_CHARS',
     'CHANNEL_DAEMON_COLLAB_STALE_TTL_MS',
     'CHANNEL_DAEMON_PEER_REPLY_INJECTION_MAX_CHARS',
     'CCM_AGENT_CONTEXT_TURN_MAX_CHARS',
@@ -3093,7 +3095,7 @@ test('Codex app-server uses websocket runtime and auto-attaches remote TUI', () 
   expect(daemon).toContain('function codexUpdatePromptVisible(screen: string): boolean')
   expect(daemon).toContain("sendKeys(paneId, 'Down', 'Down', 'Enter')")
   expect(daemon).toContain('async function sendCodexTuiNav')
-  expect(daemon).toContain("[CODEX_BIN, '--remote', appServerUrl, 'resume', session.nativeSessionId]")
+  expect(daemon).toContain("commandLine(CODEX_COMMAND, ['--remote', appServerUrl, 'resume', session.nativeSessionId])")
   expect(daemon).toContain('void ensureCodexRemoteTui(uuid, session, ck)')
   expect(daemon).toContain('closeTab(codexTuiTabName(uuid))')
   expect(bindings).toContain('appServerUrl?: string')

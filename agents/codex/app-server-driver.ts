@@ -4,7 +4,7 @@ import { CodexAppServerClient, jsonObject, parseAppServerMessage, type JsonObjec
 import { errorMessage, redactSensitiveText } from '../../redact.js'
 
 export type CodexAppServerDriverOptions = {
-  codexBin: string
+  codexCommand: string[]
   daemonSock: string
   mcpServerPath: string
   baseEnv: NodeJS.ProcessEnv
@@ -416,7 +416,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     }
 
     const client = new CodexAppServerClient({
-      codexBin: this.opts.codexBin,
+      codexCommand: this.opts.codexCommand,
       cwd,
       env: {
         ...this.opts.baseEnv,
@@ -754,9 +754,9 @@ ${meta ? `<message_meta trust="untrusted">${meta}</message_meta>\n` : ''}${attac
     const summary = attachmentSummary(meta)
     if (!summary.needsIsolation) return ''
     return [
-      'The user sent multiple or large attachments. Avoid loading multiple large images/files into this main Codex turn because Codex/SFC can return 429 for large multimodal payloads.',
-      'Use the download_attachment MCP tool to save attachments locally. For images or large files, process each attachment in a fresh isolated worker controlled by the main session, one attachment per worker, then aggregate only the worker text summaries here. Prefer native subagents when available; otherwise run a fresh `codex exec`/isolated Codex session for each attachment.',
-      'If no isolated worker mechanism is available, still avoid batching multiple images in one request; download and inspect attachments sequentially, keeping only concise text notes before moving to the next attachment.',
+      'The user sent multiple or large attachments. Treat this as a hard safety constraint: do not call view_image, do not inline image bytes, and do not load multiple large images/files into this main Codex turn because Codex/SFC can return 429 for large multimodal payloads.',
+      'Use the download_attachment MCP tool only to save attachments locally in the main session. For images or large files, process each attachment in a fresh isolated worker controlled by the main session, one attachment per worker, then aggregate only the worker text summaries here. Prefer native subagents when available; otherwise run a fresh `codex exec`/isolated Codex session for each attachment.',
+      'If no isolated worker mechanism is available, stop and ask the user to enable one or approve a text-only/manual path; do not fall back to view_image in the main session.',
       'Do not mention this internal routing strategy unless the user asks about implementation details; just complete the user task.',
     ].join('\n')
   }

@@ -1,8 +1,9 @@
 import { CodexAppServerClient, jsonObject } from '../agents/codex/app-server-client.ts'
+import { commandPrefix } from '../shell.ts'
 
 const events: string[] = []
 const client = new CodexAppServerClient({
-  codexBin: process.env.CODEX_BIN ?? 'codex',
+  codexCommand: commandPrefix(process.env.CODEX_BIN, 'codex'),
   cwd: process.cwd(),
   env: process.env,
   stderr: line => { if (/error|warn/i.test(line)) process.stderr.write(line + '\n') },
