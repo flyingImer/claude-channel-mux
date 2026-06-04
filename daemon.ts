@@ -1159,6 +1159,14 @@ function cleanStaleBindings(): void {
     if (!findTranscript(entry.uuid, entry.runtime)) {
       const binding = normalizeBinding(b[entry.channelKey])
       if (binding.sessions[entry.runtime] === entry.uuid) {
+        const meta = binding.agentMeta[entry.runtime]
+        if (entry.runtime === 'codex' && meta?.nativeSessionId) {
+          const nativeTranscript = findCodexTranscript(meta.nativeSessionId)
+          if (nativeTranscript) {
+            rememberCodexTranscriptPath(entry.uuid, nativeTranscript.path)
+            continue
+          }
+        }
         delete binding.sessions[entry.runtime]
         const keptMeta = keepAgentModelMeta(binding.agentMeta[entry.runtime])
         if (keptMeta) binding.agentMeta[entry.runtime] = keptMeta

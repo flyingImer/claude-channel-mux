@@ -1378,6 +1378,15 @@ test('auto-recovered Claude sessions restart screen watching on register', () =>
   expect(registerBlock.indexOf('live.set(uuid, l)')).toBeLessThan(registerBlock.indexOf('if (!screenWatchers.has(uuid)) void startScreenWatch(ch, uuid)'))
 })
 
+test('startup stale-binding cleanup preserves Codex bindings recoverable by native transcript', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const cleanupBlock = daemon.slice(daemon.indexOf('function cleanStaleBindings'), daemon.indexOf('\ncleanStaleBindings()'))
+  expect(cleanupBlock).toContain("if (entry.runtime === 'codex' && meta?.nativeSessionId)")
+  expect(cleanupBlock).toContain('const nativeTranscript = findCodexTranscript(meta.nativeSessionId)')
+  expect(cleanupBlock).toContain('rememberCodexTranscriptPath(entry.uuid, nativeTranscript.path)')
+  expect(cleanupBlock.indexOf('rememberCodexTranscriptPath(entry.uuid, nativeTranscript.path)')).toBeLessThan(cleanupBlock.indexOf('delete binding.sessions[entry.runtime]'))
+})
+
 test('Claude MCP bridge keepalive failures reconnect instead of staying half-open', () => {
   const server = readFileSync('server.ts', 'utf8')
   expect(server).toContain('daemon keepalive failed: ${errorMessage(err)}')
