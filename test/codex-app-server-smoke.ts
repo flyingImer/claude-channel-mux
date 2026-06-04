@@ -1,9 +1,10 @@
 import { CodexAppServerClient, jsonObject } from '../agents/codex/app-server-client.ts'
-import { commandPrefix } from '../shell.ts'
+import { codexResolvedConfigFromEnv } from '../agents/codex/config.ts'
 
 const events: string[] = []
+const codexConfig = codexResolvedConfigFromEnv(process.env)
 const client = new CodexAppServerClient({
-  codexCommand: commandPrefix(process.env.CODEX_BIN, 'codex'),
+  codexCommand: [...codexConfig.command, ...codexConfig.launchArgs],
   cwd: process.cwd(),
   env: process.env,
   stderr: line => { if (/error|warn/i.test(line)) process.stderr.write(line + '\n') },

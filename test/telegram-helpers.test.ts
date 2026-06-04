@@ -2,7 +2,9 @@ import { test, expect } from 'bun:test'
 import { normalizeCommandAliases, normalizeTelegramInboundText, normalizeTelegramReaction, telegramApiResult, telegramApiResultFromResponse, telegramCallbackInteraction, telegramInboundMessage } from '../adapters/telegram.ts'
 
 test('normalizeCommandAliases maps Telegram underscore commands to CCM command text', () => {
+  expect(normalizeCommandAliases('/ccm_new codex')).toBe('/ccm new codex')
   expect(normalizeCommandAliases('/ccm_resume')).toBe('/ccm resume')
+  expect(normalizeCommandAliases('/ccm_stop claude')).toBe('/ccm stop claude')
   expect(normalizeCommandAliases('/cc_ss now')).toBe('/cc ss now')
   expect(normalizeCommandAliases('/cx_nav@MyBot pending')).toBe('/cx nav pending')
   expect(normalizeCommandAliases('/cx_cancel')).toBe('/cx cancel')

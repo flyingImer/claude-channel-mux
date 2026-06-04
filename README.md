@@ -74,9 +74,9 @@ Type in any connected Slack channel or Telegram chat (plain text or `/ccm` slash
 | `@agents ...` / `agents: ...` | Fan out one turn to all agent slots, without recursive auto-rounds |
 | `ccm agents` | Show room cwd, default agent, and agent slot status |
 | `ccm route` | Explain how the next plain message routes |
-| `ccm resume [agent]` | Interactive session picker, optionally scoped to one agent |
-| `ccm stop [agent]` | Unbind/stop one agent slot |
-| `ccm stop <id>` | Stop a specific native session |
+| `ccm new [agent]` / `ccm start [agent]` | Start a fresh agent slot session in this room |
+| `ccm resume [agent\|id]` | Interactive session picker, or resume a specific session into this room |
+| `ccm stop [agent\|id]` | Stop one agent slot session; if other rooms reference it, unbind those rooms first |
 | `ccm find <query>` | Fuzzy search directories |
 | `ccm help` | Status + commands + action buttons |
 
@@ -260,6 +260,7 @@ codex: inspect the adapter boundary
 claude: review Codex's suggestion in this thread
 @agents propose two alternative plans
 ccm agents
+ccm start codex
 ccm stop codex
 ```
 
@@ -314,14 +315,14 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CHANNEL_DAEMON_FORWARD_ENV` | unset | Comma-separated env var names to explicitly export into Claude zellij tabs when zellij inherited stale environment; invalid shell env names are ignored |
 | `CHANNEL_DAEMON_DEFAULT_AGENT` / `CHANNEL_DAEMON_AGENT` / `CCM_AGENT` | `claude` | Default agent for plain messages in new rooms; override per room with `ccm default` |
 | `CLAUDE_BIN` | `claude` | Path to Claude Code binary |
-| `CODEX_BIN` | `codex` | Codex CLI command prefix; may be a path or generic wrapper command like `env CODEX_PROFILE=prod codex` |
+| `CODEX_BIN` | `codex` | Codex CLI command prefix; may include deployment-specific CLI flags before CCM appends runtime args |
 | `CODEX_HOME` | `~/.codex` | Codex config/auth home used by the auto-attached remote TUI |
 | `CCM_CODEX_APP_SERVER_LISTEN` / `CHANNEL_DAEMON_CODEX_APP_SERVER_LISTEN` | `websocket` | Codex app-server transport; `websocket` enables native `codex --remote` TUI attachment, `stdio` is retained for tests/fallback |
 | `OPENAI_API_KEY` | Codex config/login | Optional Codex App Server credential; set when `codex app-server` is not already authenticated via Codex config/login |
-| `CCM_CODEX_WORKTREE` / `CHANNEL_DAEMON_CODEX_WORKTREE` | `auto` | Codex App Server slots create a sibling git worktree by default when the room cwd is a git repo; set `off` to run in the room cwd |
-| `CCM_CODEX_MODEL` / `CODEX_MODEL` | config default | Optional model override for Codex App Server turns |
-| `CCM_CODEX_APPROVAL_POLICY` / `CHANNEL_DAEMON_CODEX_APPROVAL_POLICY` / `CODEX_YOLO=1` | `on-request` | Codex app-server approval policy for CCM turns; set `never`/`yolo` only for trusted production rooms |
-| `CCM_CODEX_SANDBOX` / `CHANNEL_DAEMON_CODEX_SANDBOX` / `CODEX_YOLO=1` | `workspace-write` | Codex app-server sandbox for CCM turns; set `danger-full-access`/`yolo` only for trusted production rooms |
+| `CCM_CODEX_WORKTREE` / `CHANNEL_DAEMON_CODEX_WORKTREE` | `auto` | Codex App Server slots create an in-repo `.codex/worktrees/<short session id>` git worktree by default when the room cwd is a git repo; set `off` to run in the room cwd |
+| `CCM_CODEX_MODEL` / `CODEX_MODEL` | Codex config default | Optional Codex CLI model passed to App Server, remote TUI launches, and new app-server threads |
+| `CCM_CODEX_APPROVAL_POLICY` / `CHANNEL_DAEMON_CODEX_APPROVAL_POLICY` | `on-request` | Codex app-server approval policy for CCM turns; set `never`/`yolo` only for trusted production rooms |
+| `CCM_CODEX_SANDBOX` / `CHANNEL_DAEMON_CODEX_SANDBOX` | `workspace-write` | Codex app-server sandbox for CCM turns; set `danger-full-access`/`yolo` only for trusted production rooms |
 | `CCM_ASK_PEER_RATE_LIMIT` / `CHANNEL_DAEMON_ASK_PEER_RATE_LIMIT` | `12` | Max ask_peer handoffs per room/from-agent/to-agent per rate window |
 | `CCM_ASK_PEER_RATE_WINDOW_MS` / `CHANNEL_DAEMON_ASK_PEER_RATE_WINDOW_MS` | `60000` | Rate window for ask_peer handoffs |
 | `CCM_ASK_PEER_MAX_INFLIGHT_PER_ROOM` / `CHANNEL_DAEMON_ASK_PEER_MAX_INFLIGHT_PER_ROOM` | `4` | Max uncorrelated ask_peer handoffs per room before rejecting new ones |

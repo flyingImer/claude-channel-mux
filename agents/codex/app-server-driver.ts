@@ -2,33 +2,20 @@ import { readFileSync } from 'fs'
 import type { AgentCommandResult, AgentCommandSpec, AgentDriver, AgentEvent, AgentPlanStep, AgentSession, AgentSnapshot, AgentSnapshotPendingItem, AgentTranscript, AgentTurn, GetSnapshotInput, GetTranscriptInput, ResolveServerRequestInput, ResumeAgentInput, SendCommandInput, SendTurnInput, StartAgentInput } from '../types.js'
 import { CodexAppServerClient, jsonObject, parseAppServerMessage, type JsonObject } from './app-server-client.js'
 import { errorMessage, redactSensitiveText } from '../../redact.js'
+import { codexConfigWithModelOverride, codexDangerFullAccess, codexResolvedConfigFromEnv, type CodexResolvedConfig } from './config.js'
 
 export type CodexAppServerDriverOptions = {
   codexCommand: string[]
   daemonSock: string
   mcpServerPath: string
   baseEnv: NodeJS.ProcessEnv
+  codexConfig?: CodexResolvedConfig
   appServerListen?: 'stdio' | 'websocket'
   log?: (line: string) => void
 }
 
-
-type CodexApprovalPolicy = 'never' | 'on-failure' | 'on-request' | 'untrusted'
-
-function codexApprovalPolicyFromEnv(env: NodeJS.ProcessEnv): CodexApprovalPolicy {
-  if (/^(1|true|yes|on|yolo)$/i.test(env.CODEX_YOLO ?? '')) return 'never'
-  const raw = (env.CCM_CODEX_APPROVAL_POLICY ?? env.CHANNEL_DAEMON_CODEX_APPROVAL_POLICY ?? '').trim().toLowerCase()
-  if (raw === 'yolo' || raw === 'never') return 'never'
-  if (raw === 'on-failure' || raw === 'on_failure') return 'on-failure'
-  if (raw === 'on-request' || raw === 'on_request') return 'on-request'
-  if (raw === 'untrusted') return 'untrusted'
-  return 'on-request'
-}
-
-function codexTurnSandboxPolicy(cwd: string, env: NodeJS.ProcessEnv): JsonObject {
-  if (/^(1|true|yes|on|yolo)$/i.test(env.CODEX_YOLO ?? '')) return { type: 'dangerFullAccess' }
-  const raw = (env.CCM_CODEX_SANDBOX ?? env.CHANNEL_DAEMON_CODEX_SANDBOX ?? '').trim().toLowerCase()
-  if (raw === 'danger-full-access' || raw === 'danger_full_access' || raw === 'yolo') return { type: 'dangerFullAccess' }
+function codexTurnSandboxPolicy(cwd: string, config: CodexResolvedConfig): JsonObject {
+  if (codexDangerFullAccess(config)) return { type: 'dangerFullAccess' }
   return {
     type: 'workspaceWrite',
     writableRoots: [cwd],
@@ -38,15 +25,11 @@ function codexTurnSandboxPolicy(cwd: string, env: NodeJS.ProcessEnv): JsonObject
   }
 }
 
-function codexThreadSandbox(env: NodeJS.ProcessEnv): string {
-  if (/^(1|true|yes|on|yolo)$/i.test(env.CODEX_YOLO ?? '')) return 'danger-full-access'
-  const raw = (env.CCM_CODEX_SANDBOX ?? env.CHANNEL_DAEMON_CODEX_SANDBOX ?? '').trim().toLowerCase()
-  return raw === 'danger-full-access' || raw === 'danger_full_access' || raw === 'yolo' ? 'danger-full-access' : 'workspace-write'
-}
-
 type CodexRuntime = {
   session: AgentSession
   modelOverride?: string
+  effectiveModel?: string
+  config: CodexResolvedConfig
   client: CodexAppServerClient
   threadId: string
   activeTurns: Map<string, string>
@@ -165,8 +148,11 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   private runtimes = new Map<string, CodexRuntime>()
   private threadToSession = new Map<string, string>()
   private listeners = new Set<(event: AgentEvent) => void>()
+  private readonly baseConfig: CodexResolvedConfig
 
-  constructor(private opts: CodexAppServerDriverOptions) {}
+  constructor(private opts: CodexAppServerDriverOptions) {
+    this.baseConfig = opts.codexConfig ?? { ...codexResolvedConfigFromEnv(opts.baseEnv), command: opts.codexCommand }
+  }
 
   onEvent(cb: (event: AgentEvent) => void): void {
     this.listeners.add(cb)
@@ -211,8 +197,9 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       threadId: runtime.threadId,
       input: [{ type: 'text', text: this.formatTurn(input.turn), text_elements: [] }],
       cwd: input.turn.cwd,
-      approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv),
-      sandboxPolicy: codexTurnSandboxPolicy(input.turn.cwd, this.opts.baseEnv),
+      ...(runtime.effectiveModel ? { model: runtime.effectiveModel } : {}),
+      approvalPolicy: runtime.config.approvalPolicy,
+      sandboxPolicy: codexTurnSandboxPolicy(input.turn.cwd, runtime.config),
     }, 120_000)
     const nativeTurnId = codexNativeTurnId(response, input.turn.turnId)
     runtime.activeTurns.set(nativeTurnId, input.turn.turnId)
@@ -415,8 +402,10 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       return existing.session
     }
 
+    const runtimeConfig = codexConfigWithModelOverride(this.baseConfig, modelOverride)
+    const effectiveModel = runtimeConfig.model
     const client = new CodexAppServerClient({
-      codexCommand: this.opts.codexCommand,
+      codexCommand: [...runtimeConfig.command, ...runtimeConfig.launchArgs],
       cwd,
       env: {
         ...this.opts.baseEnv,
@@ -424,42 +413,49 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         CODEX_CHANNEL_SESSION_UUID: sessionId,
         CC_CHANNEL_DAEMON_SOCK: this.opts.daemonSock,
       },
-      listen: this.opts.appServerListen ?? 'stdio',
-      configArgs: this.configArgs(sessionId, modelOverride),
+      listen: this.opts.appServerListen ?? runtimeConfig.appServerListen,
+      configArgs: this.configArgs(sessionId),
       stderr: line => this.opts.log?.(`[codex:${sessionId.slice(0, 8)}] ${line}`),
       notification: msg => this.handleNotification(msg),
       serverRequest: msg => this.handleServerRequest(msg),
     })
-    await client.start()
-    const threadResponse = nativeSessionId
-      ? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000).catch(() => null)
-      : null
-    const response = threadResponse ?? await client.request('thread/start', {
-      cwd,
-      ...(modelOverride ? { model: modelOverride } : {}),
-      approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv),
-      sandbox: codexThreadSandbox(this.opts.baseEnv),
-    }, 60_000)
-    const thread = codexResponseObject(response, 'thread')
-    const threadId = typeof thread?.id === 'string' ? thread.id : nativeSessionId
-    if (!threadId) throw new Error('codex app-server did not return a thread id')
-    const session: AgentSession = {
-      kind: 'codex',
-      sessionId,
-      nativeSessionId: threadId,
-      transport: 'codex-app-server',
-      cwd,
-      status: 'idle',
-      capabilities: { streaming: true, cancel: true, resume: true, toolCalling: true },
-      meta: { appServerUrl: client.url() },
+    let started = false
+    try {
+      await client.start()
+      started = true
+      const threadResponse = nativeSessionId && !effectiveModel
+        ? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000).catch(() => null)
+        : null
+      const response = threadResponse ?? await client.request('thread/start', {
+        cwd,
+        ...(effectiveModel ? { model: effectiveModel } : {}),
+        approvalPolicy: runtimeConfig.approvalPolicy,
+        sandbox: runtimeConfig.sandbox,
+      }, 60_000)
+      const thread = codexResponseObject(response, 'thread')
+      const threadId = typeof thread?.id === 'string' ? thread.id : nativeSessionId
+      if (!threadId) throw new Error('codex app-server did not return a thread id')
+      const session: AgentSession = {
+        kind: 'codex',
+        sessionId,
+        nativeSessionId: threadId,
+        transport: 'codex-app-server',
+        cwd,
+        status: 'idle',
+        capabilities: { streaming: true, cancel: true, resume: true, toolCalling: true },
+        meta: { appServerUrl: client.url() },
+      }
+      this.runtimes.set(sessionId, { session, modelOverride, effectiveModel, config: runtimeConfig, client, threadId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() })
+      this.threadToSession.set(threadId, sessionId)
+      this.emit({ type: 'status', session, status: 'idle' })
+      return session
+    } catch (err) {
+      if (started) await client.stop().catch(stopErr => this.opts.log?.(`codex app-server cleanup failed after startup error for ${sessionId.slice(0, 8)}: ${errorMessage(stopErr)}`))
+      throw err
     }
-    this.runtimes.set(sessionId, { session, modelOverride, client, threadId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() })
-    this.threadToSession.set(threadId, sessionId)
-    this.emit({ type: 'status', session, status: 'idle' })
-    return session
   }
 
-  private configArgs(sessionId: string, modelOverride?: string): string[] {
+  private configArgs(sessionId: string): string[] {
     const args = [
       '-c', 'mcp_servers.claude-channel-mux.command="bun"',
       '-c', `mcp_servers.claude-channel-mux.args=${JSON.stringify([this.opts.mcpServerPath])}`,
@@ -467,8 +463,6 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       '-c', `mcp_servers.claude-channel-mux.env.CODEX_CHANNEL_SESSION_UUID=${JSON.stringify(sessionId)}`,
       '-c', `mcp_servers.claude-channel-mux.env.CC_CHANNEL_DAEMON_SOCK=${JSON.stringify(this.opts.daemonSock)}`,
     ]
-    const model = modelOverride || this.opts.baseEnv.CODEX_MODEL || this.opts.baseEnv.CCM_CODEX_MODEL
-    if (model) args.push('-c', `model=${JSON.stringify(model)}`)
     return args
   }
 
@@ -614,8 +608,9 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       threadId: runtime.threadId,
       input: [{ type: 'text', text, text_elements: [] }],
       cwd: command.cwd,
-      approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv),
-      sandboxPolicy: codexTurnSandboxPolicy(command.cwd, this.opts.baseEnv),
+      ...(runtime.effectiveModel ? { model: runtime.effectiveModel } : {}),
+      approvalPolicy: runtime.config.approvalPolicy,
+      sandboxPolicy: codexTurnSandboxPolicy(command.cwd, runtime.config),
     }, 120_000)
     const nativeTurnId = codexNativeTurnId(response, command.commandId)
     runtime.activeTurns.set(nativeTurnId, command.commandId)
@@ -754,7 +749,7 @@ ${meta ? `<message_meta trust="untrusted">${meta}</message_meta>\n` : ''}${attac
     const summary = attachmentSummary(meta)
     if (!summary.needsIsolation) return ''
     return [
-      'The user sent multiple or large attachments. Treat this as a hard safety constraint: do not call view_image, do not inline image bytes, and do not load multiple large images/files into this main Codex turn because Codex/SFC can return 429 for large multimodal payloads.',
+      'The user sent multiple or large attachments. Treat this as a hard safety constraint: do not call view_image, do not inline image bytes, and do not load multiple large images/files into this main Codex turn because providers can return 429 for large multimodal payloads.',
       'Use the download_attachment MCP tool only to save attachments locally in the main session. For images or large files, process each attachment in a fresh isolated worker controlled by the main session, one attachment per worker, then aggregate only the worker text summaries here. Prefer native subagents when available; otherwise run a fresh `codex exec`/isolated Codex session for each attachment.',
       'If no isolated worker mechanism is available, stop and ask the user to enable one or approve a text-only/manual path; do not fall back to view_image in the main session.',
       'Do not mention this internal routing strategy unless the user asks about implementation details; just complete the user task.',

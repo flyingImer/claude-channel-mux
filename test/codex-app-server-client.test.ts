@@ -1,6 +1,21 @@
+import { mkdirSync, readFileSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import { test, expect } from 'bun:test'
-import { appServerErrorMessage, appServerExitErrorMessage, appServerListenUrlFromLine, appServerMalformedLineMessage, jsonObject, parseAppServerMessage } from '../agents/codex/app-server-client.ts'
+import { appServerErrorMessage, appServerExitErrorMessage, appServerListenUrlFromLine, appServerMalformedLineMessage, CodexAppServerClient, jsonObject, parseAppServerMessage } from '../agents/codex/app-server-client.ts'
+import { codexLaunchArgs, codexLaunchArgsFromEnv } from '../agents/codex/launch-args.ts'
 import { redactSensitiveText } from '../redact.ts'
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 
 test('parseAppServerMessage ignores malformed or non-object JSON-RPC lines', () => {
   expect(parseAppServerMessage('not json')).toBeUndefined()
@@ -56,4 +71,86 @@ test('appServerListenUrlFromLine extracts loopback websocket listener URL', () =
   expect(appServerListenUrlFromLine('listening on: ws://127.0.0.1:41821')).toBe('ws://127.0.0.1:41821')
   expect(appServerListenUrlFromLine('[info] listening on: ws://127.0.0.1:41821/abc')).toBe('ws://127.0.0.1:41821/abc')
   expect(appServerListenUrlFromLine('listening on: http://127.0.0.1:41821')).toBeUndefined()
+})
+
+test('codexLaunchArgs are driven by environment instead of private defaults', () => {
+  expect(codexLaunchArgs()).toEqual([])
+  expect(codexLaunchArgsFromEnv({ CCM_CODEX_MODEL: 'custom-model' })).toEqual(['-m', 'custom-model'])
+  expect(codexLaunchArgsFromEnv({ CCM_CODEX_MODEL: 'env-model' }, 'room-model')).toEqual(['-m', 'room-model'])
+})
+
+test('CodexAppServerClient starts app-server after all config args', async () => {
+  const dir = join(tmpdir(), 'ccm-codex-client-argv-' + process.pid + '-' + Date.now())
+  mkdirSync(dir, { recursive: true })
+  const script = join(dir, 'fake-app-server-argv.js')
+  const argvPath = join(dir, 'argv.json')
+  await Bun.write(script, [
+    "const fs = require('fs')",
+    'fs.writeFileSync(' + JSON.stringify(argvPath) + ', JSON.stringify(process.argv.slice(2)))',
+    "process.stdin.setEncoding('utf8')",
+    "process.stdin.on('data', chunk => {",
+    "  for (const line of String(chunk).trim().split(/\\n+/)) {",
+    "    if (!line) continue",
+    "    const msg = JSON.parse(line)",
+    "    if (msg.method === 'initialize') process.stdout.write(JSON.stringify({ id: msg.id, result: {} }) + '\\n')",
+    '  }',
+    '})',
+  ].join('\n'))
+  const launchArgs = codexLaunchArgs()
+  const client = new CodexAppServerClient({
+    codexCommand: [process.execPath, script, ...launchArgs],
+    cwd: dir,
+    env: process.env,
+    configArgs: ['-c', 'mcp_servers.test.command="bun"'],
+  })
+  try {
+    await client.start()
+    expect(JSON.parse(readFileSync(argvPath, 'utf8'))).toEqual([...launchArgs, '-c', 'mcp_servers.test.command="bun"', 'app-server', '--listen', 'stdio://'])
+  } finally {
+    await client.stop().catch(() => {})
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CodexAppServerClient.stop terminates spawned app-server children', async () => {
+  const dir = join(tmpdir(), `ccm-codex-client-${process.pid}-${Date.now()}`)
+  mkdirSync(dir, { recursive: true })
+  const script = join(dir, 'fake-app-server.js')
+  await Bun.write(script, `
+    const { spawn } = require('child_process')
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+    console.error('CHILD_PID=' + child.pid)
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', chunk => {
+      for (const line of String(chunk).trim().split(/\\n+/)) {
+        if (!line) continue
+        const msg = JSON.parse(line)
+        if (msg.method === 'initialize') process.stdout.write(JSON.stringify({ id: msg.id, result: {} }) + '\\n')
+      }
+    })
+  `)
+  let childPid: number | undefined
+  const client = new CodexAppServerClient({
+    codexCommand: [process.execPath, script],
+    cwd: dir,
+    env: process.env,
+    stderr: line => {
+      const match = line.match(/CHILD_PID=(\d+)/)
+      if (match) childPid = Number(match[1])
+    },
+  })
+  try {
+    await client.start()
+    expect(childPid).toBeNumber()
+    expect(processExists(childPid!)).toBe(true)
+    await client.stop()
+    for (let i = 0; i < 20 && processExists(childPid!); i++) await sleep(50)
+    expect(processExists(childPid!)).toBe(false)
+  } finally {
+    if (childPid && processExists(childPid)) {
+      try { process.kill(childPid, 'SIGKILL') } catch {}
+    }
+    await client.stop().catch(() => {})
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

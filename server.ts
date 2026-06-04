@@ -76,6 +76,7 @@ function rejectPendingCalls(err: Error): void {
 let ipcBuffer = ''
 let daemonConn: Socket | null = null
 let registeredChannels: string[] = []
+let lastInboundChannelKey = ''
 let connected = false
 
 function notifyPermission(requestId: string, behavior: 'allow' | 'deny'): void {
@@ -222,6 +223,7 @@ function handleDaemonMessage(data: string): void {
     case 'inbound': {
       const inbound = daemonInboundMessage(msg)
       if (!inbound) break
+      lastInboundChannelKey = inbound.meta.chat_id || inbound.meta.room_id || lastInboundChannelKey
       void mcp.notification({
         method: 'notifications/claude/channel',
         params: {
@@ -363,7 +365,7 @@ mcp.setNotificationHandler(
       daemonConn.write(JSON.stringify({
         type: 'permission_request',
         ...params,
-        channels: registeredChannels,
+        channels: lastInboundChannelKey ? [lastInboundChannelKey] : [],
       }) + '\n')
     } catch (err) {
       process.stderr.write(`claude-channel-mux: failed to send permission request ${params.request_id} to daemon; denying fail-closed: ${errorMessage(err)}\n`)

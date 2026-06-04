@@ -43,7 +43,7 @@ test('Codex model override is room scoped and not global config write', () => {
   const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(driver).toContain('modelOverride')
-  expect(driver).toContain('...(modelOverride ? { model: modelOverride } : {})')
+  expect(driver).toContain('...(effectiveModel ? { model: effectiveModel } : {})')
   expect(daemon).toContain('setAgentMeta(ck, runtime, { model })')
   expect(daemon).toContain('keepAgentModelMeta')
   expect(daemon).toContain('clearAgentMetaField')
@@ -230,7 +230,9 @@ test('binding helpers are shared and behavior-tested', () => {
   expect(state).toContain('export function transcriptDeliveriesFromJson(value: unknown): StoredTranscriptDeliveries')
   expect(state).toContain('const ts = finiteNumber(entry?.ts)')
   expect(daemon).toContain('return transcriptDeliveriesFromJson(readJsonValueFile(TRANSCRIPT_DELIVERY_FILE))')
-  expect(daemon).toContain('return stringRecord(readJsonValueFile(CODEX_SESSION_MAP_FILE))')
+  expect(daemon).toContain('type StoredCodexSession = { transcriptPath?: string; nativeSessionId?: string; cwd?: string; mtime: number }')
+  expect(daemon).toContain('const legacy = stringRecord(raw)')
+  expect(daemon).toContain('return Object.fromEntries(Object.entries(legacy).map')
   expect(daemon).toContain('return codexPendingRequestsFromJson(readJsonValueFile(CODEX_PENDING_REQUESTS_FILE))')
   expect(daemon).not.toContain('as Record<string, PendingCodexRequest>')
   expect(daemon).not.toContain("try { return JSON.parse(readFileSync(TRANSCRIPT_DELIVERY_FILE, 'utf8')) }")
@@ -264,20 +266,47 @@ test('room and slash status messages use agent slot terminology and identity', (
   }
 })
 
+test('successful agent lifecycle starts announce ready-to-use status', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain('function formatAgentReadyNotice(runtime: AgentRuntimeKind, uuid: string): string')
+  expect(daemon).toContain('started and ready to use.')
+  expect(daemon).toContain('await sendChannelNotice(ck, formatAgentReadyNotice(runtime, uuid), undefined, `${runtime} ready notice`)')
+  expect(daemon).toContain('await sendChannelNotice(ck, formatAgentReadyNotice(runtime, uuid), undefined, `${runtime} resume ready notice`)')
+  expect(daemon).toContain('void sendChannelNotice(ch, formatAgentReadyNotice(runtimeForUuid(uuid), uuid), undefined, \'session ready\')')
+  expect(daemon).toContain('announcedReady')
+})
+
 
 test('CCM room command docs, help, and Telegram hints stay aligned', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const telegram = readFileSync('adapters/telegram.ts', 'utf8')
   const readme = readFileSync('README.md', 'utf8')
-  for (const command of ['ccm default claude|codex', 'ccm agents', 'ccm route', 'ccm resume [agent]', 'ccm stop [agent]', 'ccm find <query>', 'ccm help']) {
+  for (const command of ['ccm default claude|codex', 'ccm agents', 'ccm route', 'ccm new [agent]', 'ccm start [agent]', 'ccm find <query>', 'ccm help']) {
     expect(readme).toContain(command)
     expect(daemon).toContain(command)
   }
-  for (const command of ['ccm', 'ccm_agents', 'ccm_route', 'ccm_resume', 'ccm_stop', 'ccm_help', 'ccm_find']) {
+  expect(readme).toContain('ccm resume [agent\\|id]')
+  expect(readme).toContain('ccm stop [agent\\|id]')
+  expect(daemon).toContain('ccm resume [agent\\\\|id]')
+  expect(daemon).toContain('ccm stop [agent\\\\|id]')
+  for (const command of ['ccm', 'ccm_new', 'ccm_agents', 'ccm_route', 'ccm_resume', 'ccm_stop', 'ccm_help', 'ccm_find']) {
     expect(telegram).toContain(`command: '${command}'`)
   }
-  expect(daemon).toContain('Browse & rebind agent sessions')
+  expect(daemon).toContain('Browse or resume agent sessions into this room')
   expect(daemon).not.toContain('Browse & rebind a native session')
+})
+
+test('new-session buttons and explicit commands start sessions instead of reopening the picker', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain("const newRuntimeM = args.match(/^(?:new|start)\\s+(claude|cc|codex|cx)$/i)")
+  expect(daemon).toContain("if (/^(?:new|start)$/i.test(args)) return { t: 'new', cwd: DEFAULT_CWD, runtime, explicitStart: true }")
+  expect(daemon).toContain("if (cmd.explicitStart) {")
+  expect(daemon).toContain('await startNew(ck, roomCwd(ck), runtime)')
+  expect(daemon).toContain("text: 'ccm start'")
+  expect(daemon).toContain('text: `ccm start ${action.slice(4)}`')
+  expect(daemon).toContain('text: `ccm start ${runtime}`')
+  expect(daemon).not.toContain("text: 'ccm', messageId: '', meta: {} })")
+  expect(daemon).not.toContain('text: `ccm ${action.slice(4)}`')
 })
 
 test('Telegram command registration failures are logged', () => {
@@ -290,9 +319,10 @@ test('Telegram command registration failures are logged', () => {
 
 test('Telegram CCM autocomplete uses multi-agent room terminology', () => {
   const telegram = readFileSync('adapters/telegram.ts', 'utf8')
-  for (const command of ['ccm', 'ccm_agents', 'ccm_route', 'ccm_resume', 'ccm_stop', 'ccm_help', 'ccm_find']) {
+  for (const command of ['ccm', 'ccm_new', 'ccm_agents', 'ccm_route', 'ccm_resume', 'ccm_stop', 'ccm_help', 'ccm_find']) {
     expect(telegram).toContain(`command: '${command}'`)
   }
+  expect(telegram).toContain('Start a fresh agent session')
   expect(telegram).toContain('Bind room directory')
   expect(telegram).toContain('Show room agent slots')
   expect(telegram).toContain('Explain default routing')
@@ -394,21 +424,22 @@ test('Agent turns include recent peer context pointers without daemon memory log
   expect(daemon).toContain('function markStaleCollabs')
 })
 
-test('Codex app-server approval and sandbox are configurable for trusted YOLO rooms', () => {
+test('Codex app-server approval and sandbox are configurable for trusted rooms', () => {
   const codex = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
+  const config = readFileSync('agents/codex/config.ts', 'utf8')
   const readme = readFileSync('README.md', 'utf8')
   const env = readFileSync('.env.example', 'utf8')
-  expect(codex).toContain('function codexApprovalPolicyFromEnv')
-  expect(codex).toContain("env.CODEX_YOLO")
-  expect(codex).toContain("raw === 'yolo' || raw === 'never'")
+  expect(config).toContain('export function codexApprovalPolicyFromEnv')
+  expect(config).toContain("raw === 'yolo' || raw === 'never'")
   expect(codex).toContain('function codexTurnSandboxPolicy')
+  expect(config).toContain('export function codexSandboxFromEnv')
   expect(codex).toContain("return { type: 'dangerFullAccess' }")
-  expect(codex).toContain('approvalPolicy: codexApprovalPolicyFromEnv(this.opts.baseEnv)')
+  expect(codex).toContain('approvalPolicy: runtime.config.approvalPolicy')
   expect(readme).toContain('CCM_CODEX_APPROVAL_POLICY')
   expect(readme).toContain('CCM_CODEX_SANDBOX')
   expect(env).toContain('CCM_CODEX_APPROVAL_POLICY=never')
   expect(env).toContain('CCM_CODEX_SANDBOX=danger-full-access')
-  expect(env).toContain('CODEX_YOLO=1')
+  expect(codex).not.toContain('CODEX_' + 'YOLO')
 })
 
 test('Codex interactive request coverage includes approval, input, and MCP elicitation', () => {
@@ -587,6 +618,24 @@ test('Codex app-server stop logs SIGKILL failures through redacted stderr callba
   expect(block).toContain('codex app-server SIGKILL failed: ${redactSensitiveText')
   expect(block).toContain('err instanceof Error ? err.message : String(err)')
   expect(block).not.toContain("try { proc.kill('SIGKILL') } catch {}; resolve()")
+})
+
+test('Codex app-server startup cleans up client if thread creation fails', () => {
+  const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
+  const createRuntime = driver.slice(driver.indexOf('private async createRuntime'), driver.indexOf('private configArgs'))
+  expect(createRuntime).toContain('let started = false')
+  expect(createRuntime).toContain('await client.start()')
+  expect(createRuntime).toContain('started = true')
+  expect(createRuntime).toContain('} catch (err) {')
+  expect(createRuntime).toContain('if (started) await client.stop().catch(stopErr => this.opts.log?.(`')
+  expect(createRuntime).toContain('codex app-server cleanup failed after startup error')
+  expect(createRuntime).toContain('throw err')
+})
+
+test('Codex app-server config args are passed before the app-server subcommand', () => {
+  const client = readFileSync('agents/codex/app-server-client.ts', 'utf8')
+  expect(client).toContain("const args = [...(this.opts.configArgs ?? []), 'app-server', '--listen'")
+  expect(client).not.toContain("'app-server', '--listen', listen === 'websocket' ? 'ws://127.0.0.1:0' : 'stdio://', ...(this.opts.configArgs ?? [])")
 })
 
 test('Codex app-server writes fail visibly instead of leaving requests pending', () => {
@@ -1098,7 +1147,7 @@ test('Claude resume prefers transcript cwd and falls back when stale', () => {
   expect(daemon).toContain('if (pathExists(projectCwd)) return projectCwd')
   expect(daemon).toContain('no longer exists; falling back to ${fallbackCwd}')
   const block = daemon.slice(daemon.indexOf('async function spawnResumeOnce'), daemon.indexOf('async function resumeAndBind'))
-  expect(block).toContain('const fallbackCwd = meta?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD')
+  expect(block).toContain('const fallbackCwd = meta?.cwd ?? sessionInfo?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD')
   expect(block).toContain('? claudeResumeCwd(t, fallbackCwd)')
 })
 
@@ -1115,11 +1164,13 @@ test('Claude resume turn delivery synthesizes session after bridge connects', ()
 
 test('permission callbacks preserve request ids containing colons', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
+  const server = readFileSync('server.ts', 'utf8')
   expect(daemon).toContain('function parsePermissionCallbackData(data: string)')
   expect(daemon).toContain("typeof msg.request_id === 'string' && msg.request_id.length > 0")
   expect(daemon).toContain("typeof msg.tool_name === 'string' && msg.tool_name.length > 0")
   expect(daemon).toContain("typeof msg.description === 'string' && msg.description.length > 0")
-  expect(daemon).toContain('(msg.channels.length > 0 ? msg.channels : routableChannelsForUuid(uuid)).filter(ck => channelAllowed(ck) && !!adapterFor(ck))')
+  expect(daemon).toContain('const channels = msg.channels.filter(ck => channelAllowed(ck) && !!adapterFor(ck))')
+  expect(daemon).not.toContain('msg.channels.length > 0 ? msg.channels : routableChannelsForUuid(uuid)')
   expect(daemon).toContain('has no deliverable channels; denying fail-closed')
   expect(daemon).toContain('failed to deliver to ${channels.length} channel(s); denying fail-closed')
   expect(daemon).toContain('function sendToLive(uuid: string, msg: Record<string, unknown>): boolean')
@@ -1141,6 +1192,10 @@ test('permission callbacks preserve request ids containing colons', () => {
   expect(daemon).toContain("sendToLive(parsed.uuid, { type: 'permission_response', request_id: parsed.requestId, behavior: parsed.behavior })")
   expect(daemon).not.toContain('const requestId = parts[2]')
   expect(daemon).not.toContain('const behavior = permissionBehavior(parts[3])')
+  expect(server).toContain('let lastInboundChannelKey =')
+  expect(server).toContain('lastInboundChannelKey = inbound.meta.chat_id || inbound.meta.room_id || lastInboundChannelKey')
+  expect(server).toContain('channels: lastInboundChannelKey ? [lastInboundChannelKey] : []')
+  expect(server).not.toContain('channels: registeredChannels')
 })
 
 
@@ -1207,6 +1262,7 @@ test('Legacy callback payloads stay Claude-compatible unless runtime is explicit
   expect(daemon).toContain('const { runtime: parsedRuntime, payload } = splitRuntimePayload(value)')
   expect(daemon).toContain('const uuid = parseSessionCallbackUuid(payload)')
   expect(daemon).toContain('const runtime = parsedRuntime ?? resolveSessionRuntime(uuid, undefined)')
+  expect(daemon).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))')
   expect(daemon).toContain('function parseRuntimePayload(value: string, fallback?: AgentRuntimeKind)')
   expect(daemon).toContain('if (firstColon < 0) return fallback ? { runtime: fallback, payload: value } : undefined')
   expect(daemon).toContain('if (!isAgentRuntimeKind(runtimeToken)) return fallback ? { runtime: fallback, payload: value } : undefined')
@@ -1435,6 +1491,35 @@ test('Codex MCP bridge receives per-session daemon environment', () => {
   expect(driver).toContain('mcp_servers.claude-channel-mux.env.CC_CHANNEL_DAEMON_SOCK')
 })
 
+test('Codex app-server and remote TUI share environment-driven launch args', () => {
+  const config = readFileSync('agents/codex/config.ts', 'utf8')
+  const launchArgs = readFileSync('agents/codex/launch-args.ts', 'utf8')
+  const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(config).toContain('export function codexResolvedConfigFromEnv')
+  expect(config).toContain('command: commandPrefix(env.CODEX_BIN, \'codex\')')
+  expect(config).toContain('launchArgs: codexLaunchArgs(model)')
+  expect(config).toContain('appServerListen')
+  expect(config).toContain('worktreeMode')
+  expect(config).toContain('approvalPolicy: codexApprovalPolicyFromEnv(env)')
+  expect(config).toContain('sandbox: codexSandboxFromEnv(env)')
+  expect(launchArgs).not.toMatch(/openai-gpt-5\.[0-9]+/)
+  expect(launchArgs).not.toMatch(/model_providers\.[^.]+\.base_url=/)
+  expect(launchArgs).not.toMatch(/127\.0\.0\.1:[0-9]+/)
+  expect(launchArgs).toContain('export function codexEffectiveModelFromEnv')
+  expect(config).toContain("if (model) args.push('-m', model)")
+  expect(launchArgs).not.toMatch(/--yo[a-z]+/)
+  expect(launchArgs).not.toContain('CODEX_' + 'YOLO')
+  expect(driver).toContain('const runtimeConfig = codexConfigWithModelOverride(this.baseConfig, modelOverride)')
+  expect(driver).toContain('codexCommand: [...runtimeConfig.command, ...runtimeConfig.launchArgs]')
+  expect(driver).toContain('const effectiveModel = runtimeConfig.model')
+  expect(driver).toContain('const threadResponse = nativeSessionId && !effectiveModel')
+  expect(driver).toContain('...(effectiveModel ? { model: effectiveModel } : {})')
+  expect(driver).toContain('...(runtime.effectiveModel ? { model: runtime.effectiveModel } : {})')
+  expect(daemon).toContain('const CODEX_CONFIG = codexResolvedConfigFromEnv(process.env)')
+  expect(daemon).toContain("commandLine(CODEX_COMMAND, [...CODEX_LAUNCH_ARGS, '--remote', appServerUrl, 'resume', session.nativeSessionId])")
+})
+
 test('ask_peer env numeric knobs fail closed to positive defaults', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function positiveFiniteEnv')
@@ -1546,6 +1631,22 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).not.toContain('unreadPeer')
 })
 
+test('tool calls reject stale cross-room chat_id values', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const helper = daemon.slice(daemon.indexOf('function canonicalToolChannelKey'), daemon.indexOf('function roomCwd'))
+  expect(helper).toContain('bindingEntries().filter(e => e.uuid === uuid).map(e => e.channelKey)')
+  expect(helper).toContain('if (boundRooms.includes(requestedCk)) return requestedCk')
+  expect(helper).toContain('if (!requestedCk && boundRooms.length === 1) return boundRooms[0]')
+  expect(helper).toContain("event: 'tool_chat_id_mismatch'")
+  expect(helper).toContain("reason: 'requested_room_not_bound_to_caller'")
+  expect(helper).toContain("throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to session")
+  const handleTool = daemon.slice(daemon.indexOf('async function handleTool'), daemon.indexOf('// ---------------------------------------------------------------------------\n// Permission request'))
+  expect(handleTool).toContain('const requestedCk = stringValue(msg.args.chat_id)')
+  expect(handleTool).toContain('const ck = canonicalToolChannelKey(uuid, requestedCk)')
+  expect(handleTool.indexOf('const ck = canonicalToolChannelKey(uuid, requestedCk)')).toBeLessThan(handleTool.indexOf('const adapter = adapterFor(ck)'))
+  expect(handleTool).not.toContain('const ck = stringValue(msg.args.chat_id)')
+})
+
 
 test('peer cues rehydrate resumed sessions before sending turns', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
@@ -1596,17 +1697,20 @@ test('multi-agent cues use default lead with observer chime-in path', () => {
   expect(server).toContain('<ccm_collab_context role="observer">')
 })
 
-test('Codex slots default to sibling git worktrees when available', () => {
+test('Codex slots default to in-repo .codex worktrees when available', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain("const CODEX_WORKTREE_MODE")
   expect(daemon).toContain("import { safeWorktreeSlug } from './worktree.js'")
   expect(daemon).toContain('function prepareCodexCwd')
+  expect(daemon).toContain("join(root, '.codex', 'worktrees')")
+  expect(daemon).toContain("join(worktreesDir, uuid.slice(0, 8))")
   expect(daemon).toContain("['worktree', 'add', '-b', branch, path, 'HEAD']")
   expect(daemon).toContain("['worktree', 'add', path, branch]")
   expect(daemon).toContain("['status', '--porcelain=v1']")
   expect(daemon).toContain('prepareCodexCwd(cwd, uuid)')
   expect(daemon).toContain('sourceCwd')
   expect(daemon).toContain('worktreeBranch')
+  expect(daemon).not.toContain("join(root, '..', `${basename(root)}__wt__${name}`)")
 })
 
 
@@ -2712,9 +2816,7 @@ test('agent replies are visibly identity-prefixed and idempotent', () => {
     "formatAgentReply(runtimeForUuid(uuid), `🔐 *${tool_name}*",
     "formatAgentReply(runtimeForUuid(uuid), `✅ ${agentName(runtimeForUuid(uuid))} session",
     "formatAgentReply(runtime, `✅ Room directory set to",
-    "formatAgentReply(result.runtime, `⏹ ${agentName(result.runtime)} session",
-    "formatAgentReply(result.runtime, `⏹ Unbound from ${agentName(result.runtime)}",
-    "formatAgentReply(runtime, killed\n        ? `⏹ Stopped ${agentName(runtime)} session",
+    "formatAgentReply(runtime, killed\n          ? `⏹ ${agentName(runtime)} session",
     "formatAgentReply(runtime, killed",
     "? `⏹ ${agentName(runtime)} session",
     ": `⏹ Unbound ${agentName(runtime)} session",
@@ -2728,15 +2830,14 @@ test('agent replies are visibly identity-prefixed and idempotent', () => {
     "formatAgentReply(runtime, `⏳ ${agentName(runtime)} session starting up.`)",
     "formatAgentReply(runtime, `🔍 Found ${results.length} ${agentName(runtime)} director",
     "formatAgentReply(activeRuntime, 'No active agent sessions to stop.')",
-    "formatAgentReply(cmd.runtime ?? bindingRuntime(ck), `❌ No ${agentName(cmd.runtime ?? bindingRuntime(ck))} session matching",
-    "`📋 Browse ${agentName(cmd.runtime ?? bindingRuntime(ck))} sessions`",
+    "formatAgentReply(activeRuntime, detail)",
+    "`📋 Browse ${agentName(activeRuntime)} sessions`",
     "formatAgentReply(runtime, `No ${agentName(runtime)} sessions in",
     "formatAgentReply(runtime, `📂 ${agentName(runtime)} sessions in",
     "formatAgentReply(runtime, `❌ ${agentName(runtime)} directory search failed",
     "formatAgentReply(runtime, `🔍 No ${agentName(runtime)} directories matching",
     "formatAgentReply(activeRuntime, '⏹ Select agent session to stop:')",
     "`⏹ ${s.runtime === 'codex' ? 'CX' : 'CC'} ${s.uuid.slice(0, 8)}",
-    "`🚀 Start ${agentName(result.runtime)}`",
     "`🚀 Start ${agentName(runtime)}`",
     "formatAgentReply(cmd.runtime, `✅ Default agent is now",
     "formatAgentReply(runtime, `✅ Room directory set to",
@@ -2889,7 +2990,7 @@ test('shutdown broadcasts service restart notices before stopping adapters', () 
   expect(daemon).toContain('for (const anchor of activeTypingAnchors.values())')
   expect(daemon).toContain("sendChannelNotice(ck, text, undefined, 'daemon shutdown notice')")
   expect(shutdown.indexOf('await notifyRoomsDaemonShutdown()')).toBeGreaterThan(-1)
-  expect(shutdown.indexOf('await notifyRoomsDaemonShutdown()')).toBeLessThan(shutdown.indexOf('for (const [uuid] of live) killSession(uuid)'))
+  expect(shutdown.indexOf('await notifyRoomsDaemonShutdown()')).toBeLessThan(shutdown.indexOf('for (const [uuid] of live) await killSession(uuid)'))
   expect(shutdown.indexOf('await notifyRoomsDaemonShutdown()')).toBeLessThan(shutdown.indexOf('for (const adapter of activeAdapters)'))
 })
 
@@ -2937,14 +3038,15 @@ test('daemon zellij cleanup and teardown failures are observable', () => {
 test('daemon runtime teardown clears per-session UI state', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function clearPerSessionUiState(uuid: string, opts: { clearPeerInflight?: boolean } = {}): void')
-  expect(daemon).toContain('codexNativeSessionIds.delete(uuid)')
+  expect(daemon).not.toContain('codexNativeSessionIds.delete(uuid)')
+  expect(daemon).toContain('codexSessionMap[uuid]?.nativeSessionId')
   expect(daemon).toContain('codexPlanMessages.delete(uuid)')
   expect(daemon).toContain('announcedReconnect.delete(uuid)')
   expect(daemon).toContain('knownThreadAnchors.delete(uuid)')
   expect(daemon).toContain('recentReplies.delete(uuid)')
   expect(daemon).toContain('pendingPermission.delete(uuid)')
   expect(daemon).toContain('activeTypingAnchors.delete(uuid)')
-  expect(daemon).toContain('function killSession(uuid: string): void')
+  expect(daemon).toContain('async function killSession(uuid: string): Promise<void>')
   expect(daemon).toContain('const l = live.get(uuid)')
   expect(daemon).toContain('if (l?.child)')
   expect(daemon).toContain('child SIGTERM failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}')
@@ -2961,7 +3063,7 @@ test('daemon stop buttons unbind all channels before killing session', () => {
   expect(daemon).toContain('function unbindSessionEverywhere(uuid: string, runtime: AgentRuntimeKind): number')
   expect(daemon).toContain('const channels = routableChannelsForUuid(uuid, runtime)')
   expect(daemon).toContain('for (const c of channels) removeBindingSession(c, runtime)')
-  expect(daemon).toContain('function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind): boolean')
+  expect(daemon).toContain('async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind): Promise<boolean>')
   expect(daemon).toContain('if (channelsForUuid(uuid, runtime).length > 0) return false')
   expect(daemon).toContain('const unboundCount = unbindSessionEverywhere(uuid, runtime)')
   expect((daemon.match(/unbindSessionEverywhere\(uuid, runtime\)/g) ?? []).length).toBeGreaterThanOrEqual(4)
@@ -2970,7 +3072,7 @@ test('daemon stop buttons unbind all channels before killing session', () => {
   expect(daemon).toContain("} else if (action.startsWith('stopnow:')) {")
   const stopCallbackBody = daemon.slice(daemon.indexOf("} else if (action.startsWith('stop:')) {"), daemon.indexOf("} else if (action.startsWith('stopnow:')) {"))
   expect(stopCallbackBody).toContain('unbindSessionEverywhere(uuid, runtime)')
-  expect(stopCallbackBody).toContain('killSessionIfUnboundEverywhere(uuid, runtime)')
+  expect(stopCallbackBody).toContain('await killSessionIfUnboundEverywhere(uuid, runtime)')
   expect(stopCallbackBody).toContain('formatAgentReply(runtime, killed')
   expect(stopCallbackBody).toContain('? `⏹ ${agentName(runtime)} session')
   expect(stopCallbackBody).toContain('stopped.`')
@@ -2981,13 +3083,94 @@ test('daemon stop buttons unbind all channels before killing session', () => {
   expect(daemon).not.toContain('unbind(ck, runtime)\n        killSession(uuid)')
 })
 
+test('room stop owns the runtime lifecycle when this room is the last binding', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const stopCase = daemon.slice(daemon.indexOf("    case 'stop':"), daemon.indexOf("    case 'stop_id':"))
+  expect(stopCase).toContain('const unboundCount = unbindSessionEverywhere(uuid, runtime)')
+  expect(stopCase).toContain('const killed = await killSessionIfUnboundEverywhere(uuid, runtime)')
+  expect(stopCase).toContain('killed')
+  expect(stopCase).toContain('stopped')
+  expect(stopCase).toContain('still active on other channels')
+  expect(stopCase).not.toContain('const result = unbind(ck, cmd.runtime)')
+  expect(stopCase).not.toContain('suspended.')
+})
+
+test('resume by agent id restores the room cwd from the selected session', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain('function cwdForSessionInfo(session: SessionInfo | undefined, fallback: string): string')
+  const resumeIdCase = daemon.slice(daemon.indexOf("    case 'resume_id':"), daemon.indexOf("    case 'screen':"))
+  expect(resumeIdCase).toContain('let selected: SessionInfo | undefined')
+  expect(resumeIdCase).toContain('const resolved = resolveSessionById(uuid, cmd.runtime)')
+  expect(resumeIdCase).toContain('selected = resolved.session')
+  expect(resumeIdCase).toContain('const runtime = selected.runtime')
+  expect(resumeIdCase).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))')
+  const resumeCallback = daemon.slice(daemon.indexOf("} else if (data.startsWith('ccr:')) {"), daemon.indexOf("} else if (data.startsWith('ccp:')) {"))
+  expect(resumeCallback).toContain('const selected = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid) ?? boundAgentSessions(runtime).find(s => s.uuid === uuid)')
+  expect(resumeCallback).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))')
+})
+
+test('resume and stop ids reject malformed, unknown, and ambiguous matches', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain('function resolveSessionById(input: string, preferred?: AgentRuntimeKind): SessionIdResolution')
+  expect(daemon).toContain("type SessionIdResolution = { ok: true; session: SessionInfo } | { ok: false; reason: 'invalid' | 'unknown' | 'ambiguous'; matches?: SessionInfo[] }")
+  const resolver = daemon.slice(daemon.indexOf('function resolveSessionById'), daemon.indexOf('function channelsForUuid'))
+  expect(resolver).toContain('if (!/^[0-9a-f]{8}(?:[0-9a-f]{4}){0,7}$/i.test(input) && !parseSessionCallbackUuid(input)) return { ok: false, reason: \'invalid\' }')
+  expect(resolver).toContain('if (input.length >= 36)')
+  expect(resolver).toContain('if (!parseSessionCallbackUuid(input)) return { ok: false, reason: \'invalid\' }')
+  expect(resolver).toContain('return exact ? { ok: true, session: exact } : { ok: false, reason: \'unknown\' }')
+  expect(resolver).toContain('return matches.length === 1 ? { ok: true, session: matches[0] } : { ok: false, reason: \'ambiguous\', matches }')
+  const resumeIdCase = daemon.slice(daemon.indexOf("    case 'resume_id':"), daemon.indexOf("    case 'screen':"))
+  expect(resumeIdCase).toContain('const resolved = resolveSessionById(uuid, cmd.runtime)')
+  expect(resumeIdCase).toContain('await sendSessionIdResolutionFailure(ck, uuid, resolved, cmd.runtime)')
+  expect(resumeIdCase).not.toContain('resolveSessionRuntime(uuid, cmd.runtime)')
+  const stopIdCase = daemon.slice(daemon.indexOf("    case 'stop_id':"), daemon.indexOf("    case 'agent_command':"))
+  expect(stopIdCase).toContain('const resolved = resolveSessionById(uuid, cmd.runtime)')
+  expect(stopIdCase).toContain('await sendSessionIdResolutionFailure(ck, uuid, resolved, cmd.runtime)')
+  expect(stopIdCase).not.toContain('resolveSessionRuntime(uuid, cmd.runtime)')
+})
+
+test('runtime-scoped resume and stop accept verb-first id commands', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const parseCmd = daemon.slice(daemon.indexOf('function parseCmd'), daemon.indexOf('// ---------------------------------------------------------------------------\n// Session picker'))
+  expect(parseCmd).toContain('const resumeRuntimeIdM = args.match(/^resume\\s+(claude|cc|codex|cx)\\s+([0-9a-f-]{8,36})$/i)')
+  expect(parseCmd).toContain("if (resumeRuntimeIdM) return { t: 'resume_id', uuid: resumeRuntimeIdM[2], runtime: /^(codex|cx)$/i.test(resumeRuntimeIdM[1]) ? 'codex' : 'claude' }")
+  expect(parseCmd).toContain('const stopRuntimeIdM = args.match(/^stop\\s+(claude|cc|codex|cx)\\s+([0-9a-f-]{8,36})$/i)')
+  expect(parseCmd).toContain("if (stopRuntimeIdM) return { t: 'stop_id', uuid: stopRuntimeIdM[2], runtime: /^(codex|cx)$/i.test(stopRuntimeIdM[1]) ? 'codex' : 'claude' }")
+  expect(parseCmd.indexOf('const resumeRuntimeIdM')).toBeLessThan(parseCmd.indexOf('const resumeRuntimeM'))
+  expect(parseCmd.indexOf('const stopRuntimeIdM')).toBeLessThan(parseCmd.indexOf('const stopRuntimeM'))
+})
+
+test('resume failure rolls back transient room binding changes', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain('function restoreBindingSnapshot(ck: string, snapshot: ChannelBinding | undefined): void')
+  const resumeBody = daemon.slice(daemon.indexOf('async function resumeAndBind'), daemon.indexOf('// ---------------------------------------------------------------------------', daemon.indexOf('async function resumeAndBind')))
+  expect(resumeBody).toContain('const before = loadBindings()[ck]')
+  expect(resumeBody).toContain('let boundForResume = false')
+  expect(resumeBody).toContain('setBindingSession(ck, runtime, uuid, makeActive)')
+  expect(resumeBody).toContain('boundForResume = true')
+  expect(resumeBody).toContain('if (boundForResume) restoreBindingSnapshot(ck, before)')
+  expect(resumeBody).toContain("formatAgentStartFailure(runtime, 'resume', error)")
+})
+
+test('Codex resume uses transcript cwd and native id without prior room metadata', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const spawnBody = daemon.slice(daemon.indexOf('async function spawnResumeOnce'), daemon.indexOf('async function resumeAndBind'))
+  expect(spawnBody).toContain('const sessionInfo = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid)')
+  expect(spawnBody).toContain('const fallbackCwd = meta?.cwd ?? sessionInfo?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD')
+  expect(spawnBody).toContain('normalizeCodexResumeCwd(uuid, fallbackCwd, meta?.sourceCwd)')
+  expect(daemon).toContain('function normalizeCodexResumeCwd(uuid: string, cwd: string, sourceCwd?: string): string')
+  expect(daemon).toContain("join(sourceRoot, '.codex', 'worktrees', uuid.slice(0, 8))")
+  expect(daemon).toContain("execFileSync('git', ['worktree', 'move', cwd, target]")
+  expect(spawnBody).toContain("if (runtime === 'codex') codexNativeSessionIds.set(uuid, meta?.nativeSessionId ?? codexSessionMap[uuid]?.nativeSessionId ?? uuid)")
+})
+
 test('Codex explicit stop clears pending requests while stale panels remain restart-only', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function deletePendingCodexRequestsForSession(sessionId: string): void')
   expect(daemon).toContain('function deletePendingCodexRequestsForRequest(sessionId: string, requestId: string): void')
   expect(daemon).toContain('if (req.sessionId !== sessionId) continue')
   expect(daemon).toContain('deletePendingCodexRequestsForSession(uuid)')
-  const killSessionBody = daemon.slice(daemon.indexOf('function killSession(uuid: string): void'), daemon.indexOf('function unbind(ck: string'))
+  const killSessionBody = daemon.slice(daemon.indexOf('async function killSession(uuid: string): Promise<void>'), daemon.indexOf('function unbind(ck: string'))
   expect(killSessionBody).toContain('deletePendingCodexRequestsForSession(uuid)')
   const clearRuntimeBody = daemon.slice(daemon.indexOf('function clearRuntimeState(uuid: string'), daemon.indexOf('function liveEntryNeedsRespawn'))
   expect(clearRuntimeBody).not.toContain('deletePendingCodexRequestsForSession(uuid)')
@@ -3094,17 +3277,19 @@ test('Codex app-server uses websocket runtime and auto-attaches remote TUI', () 
   expect(client).toContain("'ws://127.0.0.1:0'")
   expect(client).toContain('appServerListenUrlFromLine')
   expect(client).toContain('new WebSocket(this.appServerUrl)')
-  expect(driver).toContain('listen: this.opts.appServerListen')
+  expect(driver).toContain('listen: this.opts.appServerListen ?? runtimeConfig.appServerListen')
   expect(driver).toContain("meta: { appServerUrl: client.url() }")
-  expect(daemon).toContain("const CODEX_APP_SERVER_LISTEN: 'stdio' | 'websocket'")
-  expect(daemon).toContain('appServerListen: CODEX_APP_SERVER_LISTEN')
+  expect(daemon).toContain('codexConfig: CODEX_CONFIG')
   expect(daemon).toContain('function codexTuiTabName(uuid: string): string')
   expect(daemon).toContain("return `ccm:cx:${uuid.slice(0, 8)}`")
   expect(daemon).toContain('async function ensureCodexRemoteTui')
+  expect(daemon).toContain('function codexTuiPaneMatchesAppServer')
+  expect(daemon).toContain("[status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl))")
+  expect(daemon).toContain('closing stale codex remote TUI')
   expect(daemon).toContain('function codexUpdatePromptVisible(screen: string): boolean')
   expect(daemon).toContain("sendKeys(paneId, 'Down', 'Down', 'Enter')")
   expect(daemon).toContain('async function sendCodexTuiNav')
-  expect(daemon).toContain("commandLine(CODEX_COMMAND, ['--remote', appServerUrl, 'resume', session.nativeSessionId])")
+  expect(daemon).toContain("commandLine(CODEX_COMMAND, [...CODEX_LAUNCH_ARGS, '--remote', appServerUrl, 'resume', session.nativeSessionId])")
   expect(daemon).toContain('void ensureCodexRemoteTui(uuid, session, ck)')
   expect(daemon).toContain('closeTab(codexTuiTabName(uuid))')
   expect(bindings).toContain('appServerUrl?: string')
@@ -3222,4 +3407,39 @@ test('live E2E result helper is documented and guarded', () => {
   expect(plan).toContain('scripts/e2e-result.sh check <result-file>')
   expect(preflight).toContain('scripts/e2e-result.sh new <run-name>')
   expect(preflight).toContain('scripts/e2e-result.sh check <result-file>')
+})
+
+
+test('Codex app-server stop owns process-group and awaited stop semantics', () => {
+  const client = readFileSync('agents/codex/app-server-client.ts', 'utf8')
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(client).toContain('detached: true')
+  expect(client).toContain('function signalProcessGroup')
+  expect(client).toContain("signalProcessGroup(pid, 'SIGTERM')")
+  expect(client).toContain("signalProcessGroup(pid, 'SIGKILL')")
+  expect(daemon).toContain('async function killSession(uuid: string): Promise<void>')
+  expect(daemon).toContain('await codexDriver.stop?.(codexSession)')
+  expect(daemon).toContain('async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind): Promise<boolean>')
+  expect(daemon).toContain('const killed = await killSessionIfUnboundEverywhere(uuid, runtime)')
+  const killSessionBody = daemon.slice(daemon.indexOf('async function killSession(uuid: string): Promise<void>'), daemon.indexOf('function unbind(ck: string'))
+  expect(killSessionBody).not.toContain('void codexDriver.stop?.(codexSession).catch')
+})
+
+
+test('stopped Codex sessions remain resolvable for resume by ccm id', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain('type StoredCodexSession = { transcriptPath?: string; nativeSessionId?: string; cwd?: string; mtime: number }')
+  expect(daemon).toContain('function rememberCodexSession(session: AgentSession): void')
+  expect(daemon).toContain('rememberCodexSession(session)')
+  expect(daemon).toContain('const storedCodexSessions = (): SessionInfo[] => Object.entries(codexSessionMap).map')
+  expect(daemon).toContain('codexSessionMap[uuid]?.nativeSessionId')
+  expect(daemon).not.toContain('codexNativeSessionIds.delete(uuid)')
+})
+
+
+test('Codex remote TUI attaches to the app-server native thread id', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const body = daemon.slice(daemon.indexOf('async function ensureCodexRemoteTui'), daemon.indexOf('function exitedPaneSummary'))
+  expect(body).toContain("commandLine(CODEX_COMMAND, [...CODEX_LAUNCH_ARGS, '--remote', appServerUrl, 'resume', session.nativeSessionId])")
+  expect(body).toContain('codexTuiPaneMatchesAppServer(status, appServerUrl)')
 })

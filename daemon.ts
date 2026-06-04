@@ -8,7 +8,7 @@
  *
  * Responsibilities:
  *   - Load and start all configured adapters
- *   - Parse magic words (ccm, ccm agents, ccm default, ccm stop)
+ *   - Parse magic words (ccm, ccm agents, ccm default, ccm new, ccm stop)
  *   - Maintain lightweight CCM rooms: cwd, default agent, lazy agent slots
  *   - Spawn Claude/Codex agent sessions only when cued
  *   - Route messages between channels and agent sessions via Agent SPI
@@ -21,7 +21,8 @@
  *   codex: ...          → cue Codex slot
  *   @agents ...         → fan out one turn to all agents
  *   ccm agents          → show room/agent slots
- *   ccm stop [agent]    → unbind/stop one agent slot
+ *   ccm new [agent]     → start a fresh agent slot session in this room
+ *   ccm stop [agent]    → stop one agent slot session
  */
 
 import {
@@ -41,6 +42,7 @@ import { closeTab, findPaneByTabName, sendKeys, dumpScreen, dumpScreenAsync } fr
 import { watch as fsWatch, readFileSync as fsReadSync } from 'fs'
 import { ClaudeChannelAgentDriver } from './agents/claude/channel-driver.js'
 import { CodexAppServerAgentDriver } from './agents/codex/app-server-driver.js'
+import { codexResolvedConfigFromEnv } from './agents/codex/config.js'
 import { AgentRegistry } from './agents/registry.js'
 import { recentAgentReplyPointerFromJson, recentPeerReplyPointers as buildRecentPeerReplyPointers, type RecentAgentReplyKind, type RecentAgentReplyPointer, type RecentAgentReplySource } from './agents/peer-pointers.js'
 import { agentLabel, agentName, formatAgentReply } from './agents/identity.js'
@@ -48,7 +50,7 @@ import { truncateAgentContextTurnText as truncateAgentContextTurnTextToMax } fro
 import { chimeInTurnText, collabRoutingPlan } from './agents/collab-routing.js'
 import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanStep, AgentServerRequest, AgentSession, AgentSnapshot, AgentTranscript, AgentTurn } from './agents/types.js'
 import { findZellijSessionLine } from './zellij.js'
-import { commandLine, commandPrefix, forwardedEnvExports, shellArg } from './shell.js'
+import { commandLine, forwardedEnvExports, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
 import { AGENT_RUNTIMES, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
@@ -120,10 +122,11 @@ const PID_FILE = join(STATE_DIR, 'daemon.pid')
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
-const CODEX_COMMAND = commandPrefix(process.env.CODEX_BIN, 'codex')
-const CODEX_WORKTREE_MODE = (process.env.CCM_CODEX_WORKTREE ?? process.env.CHANNEL_DAEMON_CODEX_WORKTREE ?? 'auto').toLowerCase()
-const CODEX_APP_SERVER_LISTEN: 'stdio' | 'websocket' = (process.env.CCM_CODEX_APP_SERVER_LISTEN ?? process.env.CHANNEL_DAEMON_CODEX_APP_SERVER_LISTEN ?? 'websocket').toLowerCase() === 'stdio' ? 'stdio' : 'websocket'
-const CODEX_HOME = process.env.CODEX_HOME ?? join(homedir(), '.codex')
+const CODEX_CONFIG = codexResolvedConfigFromEnv(process.env)
+const CODEX_COMMAND = CODEX_CONFIG.command
+const CODEX_LAUNCH_ARGS = CODEX_CONFIG.launchArgs
+const CODEX_WORKTREE_MODE = CODEX_CONFIG.worktreeMode
+const CODEX_HOME = CODEX_CONFIG.home
 const ALLOWED_CHANNELS = new Set((process.env.CHANNEL_DAEMON_ALLOWED_CHANNELS ?? '')
   .split(',')
   .map(s => s.trim())
@@ -392,6 +395,13 @@ function saveBindings(b: Bindings): void {
   renameSync(tmp, BINDINGS_FILE)
 }
 
+function restoreBindingSnapshot(ck: string, snapshot: ChannelBinding | undefined): void {
+  const b = loadBindings()
+  if (snapshot === undefined) delete b[ck]
+  else b[ck] = snapshot
+  saveBindings(b)
+}
+
 function bindingUuid(ck: string, runtime?: AgentRuntimeKind): string | undefined {
   const binding = normalizeBinding(loadBindings()[ck])
   return binding.sessions[runtime ?? binding.active]
@@ -448,6 +458,18 @@ function bindingEntries(): Array<{ channelKey: string; runtime: AgentRuntimeKind
   return entries
 }
 
+function canonicalToolChannelKey(uuid: string, requestedCk: string): string {
+  const boundRooms = [...new Set(bindingEntries().filter(e => e.uuid === uuid).map(e => e.channelKey))]
+  if (boundRooms.length === 0) {
+    auditEvent({ event: 'tool_chat_id_mismatch', reason: 'caller_not_bound', requested_room_id: requestedCk, from_session_id: uuid, from_agent: runtimeForUuid(uuid) })
+    throw new Error(`Session ${uuid.slice(0, 8)} is not bound to any CCM room`)
+  }
+  if (boundRooms.includes(requestedCk)) return requestedCk
+  if (!requestedCk && boundRooms.length === 1) return boundRooms[0]
+  auditEvent({ event: 'tool_chat_id_mismatch', reason: 'requested_room_not_bound_to_caller', requested_room_id: requestedCk, bound_room_ids: boundRooms, from_session_id: uuid, from_agent: runtimeForUuid(uuid) })
+  throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to session ${uuid.slice(0, 8)}; bound room(s): ${boundRooms.join(', ')}`)
+}
+
 function roomCwd(ck: string): string {
   return normalizeBinding(loadBindings()[ck]).cwd ?? DEFAULT_CWD
 }
@@ -477,14 +499,16 @@ function prepareCodexCwd(sourceCwd: string, uuid: string): { cwd: string; meta: 
   const gitDir = gitOutput(root, ['rev-parse', '--git-dir'])
   const commonDir = gitOutput(root, ['rev-parse', '--git-common-dir'])
   if (gitDir && commonDir && gitDir !== commonDir) return { cwd: root, meta: { cwd: root, sourceCwd: sourceCwd, worktreePath: root }, warning: 'room directory is already a linked worktree; Codex will run there' }
-  const name = safeWorktreeSlug(`${new Date().toISOString().slice(5, 16).replace(/[-:T]/g, '')}-${uuid.slice(0, 8)}`)
+  const name = safeWorktreeSlug(uuid.slice(0, 8))
   const branch = `codex/${name}`
-  const path = join(root, '..', `${basename(root)}__wt__${name}`)
+  const worktreesDir = join(root, '.codex', 'worktrees')
+  const path = join(worktreesDir, uuid.slice(0, 8))
   if (existsSync(path)) return { cwd: sourceCwd, meta: { cwd: sourceCwd }, warning: `worktree path already exists (${path}); Codex will run in the room directory` }
   const dirty = gitOutput(root, ['status', '--porcelain=v1'])
   const dirtyWarning = dirty ? 'source checkout has uncommitted changes; Codex worktree starts from HEAD and will not include them' : undefined
   try {
     const branchExists = gitSucceeds(root, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`])
+    mkdirSync(worktreesDir, { recursive: true })
     const args = branchExists ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, 'HEAD']
     execFileSync('git', args, { cwd: root, stdio: ['ignore', 'ignore', 'pipe'] })
     return { cwd: path, meta: { cwd: path, sourceCwd, worktreeBranch: branch, worktreePath: path }, warning: dirtyWarning }
@@ -645,8 +669,26 @@ function loadTranscriptDeliveries(): StoredTranscriptDeliveries {
 
 const transcriptDeliveries = loadTranscriptDeliveries()
 
-function loadCodexSessionMap(): Record<string, string> {
-  return stringRecord(readJsonValueFile(CODEX_SESSION_MAP_FILE))
+type StoredCodexSession = { transcriptPath?: string; nativeSessionId?: string; cwd?: string; mtime: number }
+
+function loadCodexSessionMap(): Record<string, StoredCodexSession> {
+  const raw = readJsonValueFile(CODEX_SESSION_MAP_FILE)
+  const legacy = stringRecord(raw)
+  if (Object.keys(legacy).length) {
+    return Object.fromEntries(Object.entries(legacy).map(([uuid, transcriptPath]) => [uuid, { transcriptPath, mtime: 0 }]))
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const sessions: Record<string, StoredCodexSession> = {}
+  for (const [uuid, value] of Object.entries(raw)) {
+    if (!parseSessionCallbackUuid(uuid) || !value || typeof value !== 'object' || Array.isArray(value)) continue
+    const record = value as Record<string, unknown>
+    const transcriptPath = typeof record.transcriptPath === 'string' && record.transcriptPath ? record.transcriptPath : undefined
+    const nativeSessionId = typeof record.nativeSessionId === 'string' && record.nativeSessionId ? record.nativeSessionId : undefined
+    const cwd = typeof record.cwd === 'string' && record.cwd ? record.cwd : undefined
+    const mtime = typeof record.mtime === 'number' && Number.isFinite(record.mtime) ? record.mtime : 0
+    sessions[uuid] = { ...(transcriptPath ? { transcriptPath } : {}), ...(nativeSessionId ? { nativeSessionId } : {}), ...(cwd ? { cwd } : {}), mtime }
+  }
+  return sessions
 }
 
 const codexSessionMap = loadCodexSessionMap()
@@ -658,8 +700,15 @@ function saveCodexSessionMap(): void {
 }
 
 function rememberCodexTranscriptPath(uuid: string, path: string): void {
-  codexSessionMap[uuid] = path
+  codexSessionMap[uuid] = { ...(codexSessionMap[uuid] ?? { mtime: 0 }), transcriptPath: path, mtime: Date.now() }
   codexTranscriptByLogicalId.set(uuid, path)
+  try { saveCodexSessionMap() } catch (err) { process.stderr.write(`daemon: codex session map save failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
+}
+
+function rememberCodexSession(session: AgentSession): void {
+  const uuid = session.sessionId
+  codexSessionMap[uuid] = { ...(codexSessionMap[uuid] ?? { mtime: 0 }), nativeSessionId: session.nativeSessionId, cwd: session.cwd, mtime: Date.now() }
+  codexNativeSessionIds.set(uuid, session.nativeSessionId)
   try { saveCodexSessionMap() } catch (err) { process.stderr.write(`daemon: codex session map save failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
 }
 
@@ -845,7 +894,7 @@ function claudeResumeCwd(transcript: TranscriptInfo | null, fallbackCwd: string)
 }
 
 function findCodexTranscript(uuid: string): TranscriptInfo | null {
-  const cached = codexTranscriptByLogicalId.get(uuid) ?? codexSessionMap[uuid]
+  const cached = codexTranscriptByLogicalId.get(uuid) ?? codexSessionMap[uuid]?.transcriptPath
   if (cached) {
     try {
       const st = statSync(cached)
@@ -890,6 +939,7 @@ function findTranscript(uuid: string, runtime: AgentRuntimeKind): TranscriptInfo
 
 type SessionInfo = { uuid: string; runtime: AgentRuntimeKind; mtime: number; size: number; cwd?: string; title?: string }
 type SpawnResult = { ok: boolean; uuid: string; error?: string }
+type SessionIdResolution = { ok: true; session: SessionInfo } | { ok: false; reason: 'invalid' | 'unknown' | 'ambiguous'; matches?: SessionInfo[] }
 
 /** Extract session title (slug) from transcript JSONL — reads first few lines only */
 /**
@@ -1074,12 +1124,41 @@ function listAllCodexSessions(limit = 20): SessionInfo[] {
 }
 
 function listAllAgentSessions(limit = 20, runtime?: AgentRuntimeKind): SessionInfo[] {
+  const storedCodexSessions = (): SessionInfo[] => Object.entries(codexSessionMap).map(([uuid, session]) => ({
+    uuid,
+    runtime: 'codex' as const,
+    mtime: session.mtime,
+    size: 0,
+    cwd: session.cwd,
+  }))
+  const codexSessions = (): SessionInfo[] => [...listAllCodexSessions(limit), ...storedCodexSessions()]
   const sessions = runtime === 'claude'
     ? listAllClaudeSessions(limit)
     : runtime === 'codex'
-      ? listAllCodexSessions(limit)
-      : [...listAllClaudeSessions(limit), ...listAllCodexSessions(limit)]
+      ? codexSessions()
+      : [...listAllClaudeSessions(limit), ...codexSessions()]
   return sessions.sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+}
+
+function cwdForSessionInfo(session: SessionInfo | undefined, fallback: string): string {
+  return session?.cwd || fallback
+}
+
+function normalizeCodexResumeCwd(uuid: string, cwd: string, sourceCwd?: string): string {
+  const sourceRoot = sourceCwd ? gitOutput(sourceCwd, ['rev-parse', '--show-toplevel']) : undefined
+  if (!sourceRoot) return cwd
+  const target = join(sourceRoot, '.codex', 'worktrees', uuid.slice(0, 8))
+  if (isReadableDirectory(target)) return target
+  if (!cwd.includes('__wt__') || !isReadableDirectory(cwd)) return cwd
+  try {
+    mkdirSync(join(sourceRoot, '.codex', 'worktrees'), { recursive: true })
+    execFileSync('git', ['worktree', 'move', cwd, target], { cwd: sourceRoot, stdio: ['ignore', 'ignore', 'pipe'] })
+    process.stderr.write('daemon: moved legacy Codex worktree ' + uuid.slice(0, 8) + ' to ' + target + '\n')
+    return target
+  } catch (err) {
+    process.stderr.write('daemon: failed to move legacy Codex worktree ' + uuid.slice(0, 8) + ': ' + errorMessage(err) + '\n')
+    return cwd
+  }
 }
 
 function boundAgentSessions(runtime?: AgentRuntimeKind): SessionInfo[] {
@@ -1125,6 +1204,26 @@ function resolveSessionByPrefix(prefix: string, preferred?: AgentRuntimeKind): S
       return true
     })
     .sort((a, b) => b.mtime - a.mtime)[0]
+}
+
+function resolveSessionById(input: string, preferred?: AgentRuntimeKind): SessionIdResolution {
+  if (!/^[0-9a-f]{8}(?:[0-9a-f]{4}){0,7}$/i.test(input) && !parseSessionCallbackUuid(input)) return { ok: false, reason: 'invalid' }
+  const candidates = [...boundAgentSessions(preferred), ...listAllAgentSessions(500, preferred)]
+  const seen = new Set<string>()
+  const unique = candidates.filter(session => {
+    const key = `${session.runtime}:${session.uuid}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  if (input.length >= 36) {
+    if (!parseSessionCallbackUuid(input)) return { ok: false, reason: 'invalid' }
+    const exact = unique.find(session => session.uuid === input)
+    return exact ? { ok: true, session: exact } : { ok: false, reason: 'unknown' }
+  }
+  const matches = unique.filter(session => session.uuid.startsWith(input)).sort((a, b) => b.mtime - a.mtime)
+  if (matches.length === 0) return { ok: false, reason: 'unknown' }
+  return matches.length === 1 ? { ok: true, session: matches[0] } : { ok: false, reason: 'ambiguous', matches }
 }
 
 function channelsForUuid(uuid: string, runtime?: AgentRuntimeKind): string[] {
@@ -1224,7 +1323,7 @@ const codexDriver = new CodexAppServerAgentDriver({
   daemonSock: SOCK_PATH,
   mcpServerPath: join(import.meta.dir, 'server.ts'),
   baseEnv: process.env,
-  appServerListen: CODEX_APP_SERVER_LISTEN,
+  codexConfig: CODEX_CONFIG,
   log: line => process.stderr.write(`${line}\n`),
 })
 const codexSessions = new Map<string, AgentSession>()
@@ -1237,6 +1336,10 @@ const agentRegistry = new AgentRegistry()
 agentRegistry.register(claudeDriver)
 agentRegistry.register(codexDriver)
 agentRegistry.all().forEach(driver => driver.onEvent(event => { void handleAgentEvent(event) }))
+
+function formatAgentReadyNotice(runtime: AgentRuntimeKind, uuid: string): string {
+  return formatAgentReply(runtime, `✅ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` started and ready to use.`)
+}
 
 
 function formatCodexPlanSnapshot(uuid: string, explanation: string | undefined, plan: AgentPlanStep[]): string {
@@ -1296,9 +1399,11 @@ async function clearAgentTyping(sessionId: string): Promise<void> {
 }
 
 function clearPerSessionUiState(uuid: string, opts: { clearPeerInflight?: boolean } = {}): void {
-  codexNativeSessionIds.delete(uuid)
   codexPlanMessages.delete(uuid)
   announcedReconnect.delete(uuid)
+  for (const key of Array.from(announcedReady)) {
+    if (key.startsWith(uuid + ':')) announcedReady.delete(key)
+  }
   knownThreadAnchors.delete(uuid)
   recentReplies.delete(uuid)
   pendingPermission.delete(uuid)
@@ -1427,6 +1532,7 @@ async function handleAgentEvent(event: AgentEvent): Promise<void> {
 // Prevents spamming the channel when CC subagents (which inherit the session
 // UUID via env) each spawn their own server.ts and register independently.
 const announcedReconnect = new Set<string>()
+const announcedReady = new Set<string>()
 
 // Test if a pid is alive (no signal delivered). Throws ESRCH if dead,
 // EPERM if alive-but-not-signalable (still alive).
@@ -2794,7 +2900,7 @@ async function ensureZellijSession(): Promise<void> {
 const zellijAvailable = hasZellij()
 
 type PaneStatus =
-  | { kind: 'alive'; paneId: number }
+  | { kind: 'alive'; paneId: number; terminalCommand?: string; paneCommand?: string }
   | { kind: 'exited'; paneId: number; exitStatus: number | null }
   | { kind: 'missing' }
   | { kind: 'zellij_down' }
@@ -2818,7 +2924,7 @@ function getPaneStatus(uuid: string): PaneStatus {
     const pane = panes.find(p => p.tab_name === tabName && !p.is_plugin)
     if (!pane) return { kind: 'missing' }
     if (pane.exited) return { kind: 'exited', paneId: pane.id, exitStatus: pane.exit_status ?? null }
-    return { kind: 'alive', paneId: pane.id }
+    return { kind: 'alive', paneId: pane.id, terminalCommand: pane.terminal_command, paneCommand: pane.pane_command }
   } catch (err) {
     if (!isZellijSessionAlive()) return { kind: 'zellij_down' }
     return { kind: 'unknown', reason: errorMessage(err) }
@@ -2836,7 +2942,7 @@ function getCodexTuiPaneStatus(uuid: string): PaneStatus {
     const pane = panes.find(p => p.tab_name === tabName && !p.is_plugin)
     if (!pane) return { kind: 'missing' }
     if (pane.exited) return { kind: 'exited', paneId: pane.id, exitStatus: pane.exit_status ?? null }
-    return { kind: 'alive', paneId: pane.id }
+    return { kind: 'alive', paneId: pane.id, terminalCommand: pane.terminal_command, paneCommand: pane.pane_command }
   } catch (err) {
     if (!isZellijSessionAlive()) return { kind: 'zellij_down' }
     return { kind: 'unknown', reason: errorMessage(err) }
@@ -2864,6 +2970,10 @@ async function waitForCodexTuiPane(uuid: string): Promise<PaneStatus> {
   return status
 }
 
+function codexTuiPaneMatchesAppServer(status: PaneStatus, appServerUrl: string): boolean {
+  return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl))
+}
+
 async function ensureCodexRemoteTui(uuid: string, session: AgentSession, channelKey?: string): Promise<void> {
   if (!zellijAvailable) {
     process.stderr.write(`daemon: codex remote TUI skipped for ${uuid.slice(0, 8)}: zellij unavailable\n`)
@@ -2878,12 +2988,16 @@ async function ensureCodexRemoteTui(uuid: string, session: AgentSession, channel
     await ensureZellijSession()
     const status = getCodexTuiPaneStatus(uuid)
     if (status.kind === 'alive') {
-      await autoSkipCodexUpdatePrompt(uuid, status.paneId)
-      return
+      if (codexTuiPaneMatchesAppServer(status, appServerUrl)) {
+        await autoSkipCodexUpdatePrompt(uuid, status.paneId)
+        return
+      }
+      process.stderr.write('daemon: closing stale codex remote TUI ' + uuid.slice(0, 8) + ' tab=' + codexTuiTabName(uuid) + ' expected=' + appServerUrl + '\n')
+      closeTab(codexTuiTabName(uuid))
     }
     if (status.kind === 'exited') closeTab(codexTuiTabName(uuid))
     const envExports = `export CODEX_HOME=${shellArg(CODEX_HOME)} DISABLE_AUTOUPDATER=1;`
-    const cmd = commandLine(CODEX_COMMAND, ['--remote', appServerUrl, 'resume', session.nativeSessionId])
+    const cmd = commandLine(CODEX_COMMAND, [...CODEX_LAUNCH_ARGS, '--remote', appServerUrl, 'resume', session.nativeSessionId])
     await zellijActionAsync(['new-tab', '--name', codexTuiTabName(uuid), '--', 'bash', '-lc', `${envExports} cd ${shellArg(session.cwd)} && exec ${cmd}`], { timeout: 10000 })
     process.stderr.write(`daemon: attached codex remote TUI ${uuid.slice(0, 8)} tab=${codexTuiTabName(uuid)} url=${appServerUrl}\n`)
     const paneStatus = await waitForCodexTuiPane(uuid)
@@ -2920,7 +3034,7 @@ function unbindUnresumableClaudeSession(ck: string, uuid: string, status: Extrac
   if (!isUnresumableClaudeExit(status)) return
   const result = removeBindingSession(ck, 'claude')
   if (!result || result.uuid !== uuid) return
-  killSessionIfUnboundEverywhere(uuid, 'claude')
+  void killSessionIfUnboundEverywhere(uuid, 'claude')
   process.stderr.write('daemon: unbound unresumable Claude session ' + uuid.slice(0, 8) + ' for ' + ck + '\n')
 }
 
@@ -3141,7 +3255,7 @@ async function spawnCodexAppServer(uuid: string, cwd: string, resumeMode: boolea
       ? await codexDriver.resume({ sessionId: uuid, cwd, nativeSessionId, options })
       : await codexDriver.start({ sessionId: uuid, cwd, options })
     codexSessions.set(uuid, session)
-    codexNativeSessionIds.set(uuid, session.nativeSessionId)
+    rememberCodexSession(session)
     live.set(uuid, { runtime: 'codex', ipcConn: null, child: null })
     process.stderr.write(`daemon: started codex app-server session ${uuid.slice(0, 8)} thread=${session.nativeSessionId}\n`)
     return { ok: true, uuid }
@@ -3195,6 +3309,7 @@ async function startNew(ck: string, cwd: string, runtime = DEFAULT_AGENT_RUNTIME
     setAgentMeta(ck, runtime, { cwd })
   }
   if (announce) await sendChannelNotice(ck, formatAgentReply(runtime, `🚀 ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` starting...`), undefined, `${runtime} start notice`)
+  if (runtime === 'codex') await sendChannelNotice(ck, formatAgentReadyNotice(runtime, uuid), undefined, `${runtime} ready notice`)
   process.stderr.write(`daemon: new ${runtime} ${uuid.slice(0, 8)} for ${ck}\n`)
 
   if (runtime !== 'codex') {
@@ -3272,11 +3387,12 @@ async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string): Promise
   const hasTranscript = !!t
   const bound = bindingEntries().find(e => e.uuid === uuid && e.runtime === runtime)
   const meta = bound ? agentMeta(bound.channelKey, runtime) : undefined
-  const fallbackCwd = meta?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD
+  const sessionInfo = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid)
+  const fallbackCwd = meta?.cwd ?? sessionInfo?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD
   const cwd = runtime === 'claude'
     ? claudeResumeCwd(t, fallbackCwd)
-    : fallbackCwd
-  if (runtime === 'codex' && meta?.nativeSessionId) codexNativeSessionIds.set(uuid, meta.nativeSessionId)
+    : runtime === 'codex' ? normalizeCodexResumeCwd(uuid, fallbackCwd, meta?.sourceCwd) : fallbackCwd
+  if (runtime === 'codex') codexNativeSessionIds.set(uuid, meta?.nativeSessionId ?? codexSessionMap[uuid]?.nativeSessionId ?? uuid)
   const promise = spawnAgent(runtime, uuid, cwd, hasTranscript || !!meta?.nativeSessionId, { model: meta?.model })
   resumeInFlight.set(key, promise)
   try {
@@ -3287,12 +3403,17 @@ async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string): Promise
   }
 }
 
-async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_RUNTIME, makeActive = true): Promise<boolean> {
+async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_RUNTIME, makeActive = true, cwd?: string): Promise<boolean> {
+  const before = loadBindings()[ck]
+  let boundForResume = false
+  if (cwd) setRoom(ck, cwd, runtime)
   setBindingSession(ck, runtime, uuid, makeActive)
+  boundForResume = true
 
   if (liveEntryNeedsRespawn(uuid)) {
     const { ok, hasTranscript, error } = await spawnResumeOnce(runtime, uuid)
     if (!ok) {
+      if (boundForResume) restoreBindingSnapshot(ck, before)
       await sendChannelNotice(ck, formatAgentReply(runtime, formatAgentStartFailure(runtime, 'resume', error)), undefined, `${runtime} resume failure`)
       return false
     }
@@ -3305,6 +3426,7 @@ async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_R
     }
     await sendChannelNotice(ck, formatAgentReply(runtime,
       hasTranscript ? `▶️ Resuming ${agentName(runtime)} \`${uuid.slice(0, 8)}\`...` : `🚀 ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` starting (no prior transcript)...`), undefined, `${runtime} resume notice`)
+    if (runtime === 'codex') await sendChannelNotice(ck, formatAgentReadyNotice(runtime, uuid), undefined, `${runtime} resume ready notice`)
     if (runtime !== 'codex') void startScreenWatch(ck, uuid)
   } else {
     await sendChannelNotice(ck, formatAgentReply(runtime, `✅ Bound to ${agentName(runtime)} \`${uuid.slice(0, 8)}\``), undefined, `${runtime} bind notice`)
@@ -3666,20 +3788,20 @@ async function sendDialogButtons(
 // Session cleanup
 // ---------------------------------------------------------------------------
 
-function killSession(uuid: string): void {
+async function killSession(uuid: string): Promise<void> {
   stopScreenWatch(uuid)
   stopTranscriptPoll(uuid)
   const l = live.get(uuid)
   const claudeSession = claudeSessions.get(uuid)
   if (claudeSession) {
-    void claudeDriver.stop?.(claudeSession).catch(err => process.stderr.write(`daemon: claude stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`))
     claudeSessions.delete(uuid)
+    try { await claudeDriver.stop?.(claudeSession) } catch (err) { process.stderr.write(`daemon: claude stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
   }
   const codexSession = codexSessions.get(uuid)
   if (codexSession) {
     deletePendingCodexRequestsForSession(uuid)
-    void codexDriver.stop?.(codexSession).catch(err => process.stderr.write(`daemon: codex stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`))
     codexSessions.delete(uuid)
+    try { await codexDriver.stop?.(codexSession) } catch (err) { process.stderr.write(`daemon: codex stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
     if (zellijAvailable) {
       try { closeTab(codexTuiTabName(uuid)) } catch (err) { process.stderr.write(`daemon: close codex tui tab failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
     }
@@ -3707,7 +3829,7 @@ function killSession(uuid: string): void {
 function unbind(ck: string, runtime?: AgentRuntimeKind): { uuid: string; runtime: AgentRuntimeKind; remaining: number } | null {
   const result = removeBindingSession(ck, runtime)
   if (!result) return null
-  if (channelsForUuid(result.uuid, result.runtime).length === 0) killSession(result.uuid)
+  if (channelsForUuid(result.uuid, result.runtime).length === 0) void killSession(result.uuid)
   return result
 }
 
@@ -3717,9 +3839,9 @@ function unbindSessionEverywhere(uuid: string, runtime: AgentRuntimeKind): numbe
   return channels.length
 }
 
-function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind): boolean {
+async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind): Promise<boolean> {
   if (channelsForUuid(uuid, runtime).length > 0) return false
-  killSession(uuid)
+  await killSession(uuid)
   return true
 }
 
@@ -3728,7 +3850,7 @@ function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind)
 // ---------------------------------------------------------------------------
 
 type Cmd =
-  | { t: 'new'; cwd: string; runtime?: AgentRuntimeKind }
+  | { t: 'new'; cwd: string; runtime?: AgentRuntimeKind; explicitStart?: boolean }
   | { t: 'use'; runtime: AgentRuntimeKind }
   | { t: 'agents' }
   | { t: 'route' }
@@ -3818,6 +3940,9 @@ function parseCmd(text: string): Cmd {
     const args = parsed.rest
     if (!args) return { t: 'new', cwd: DEFAULT_CWD, runtime }
     if (/^help$/i.test(args)) return { t: 'help' }
+    const newRuntimeM = args.match(/^(?:new|start)\s+(claude|cc|codex|cx)$/i)
+    if (newRuntimeM) return { t: 'new', cwd: DEFAULT_CWD, runtime: /^(codex|cx)$/i.test(newRuntimeM[1]) ? 'codex' : 'claude', explicitStart: true }
+    if (/^(?:new|start)$/i.test(args)) return { t: 'new', cwd: DEFAULT_CWD, runtime, explicitStart: true }
     if (/^(agents|status)$/i.test(args)) return { t: 'agents' }
     if (/^collab(?:\s+(?:ss|status))?$/i.test(args)) return { t: 'collab_status' }
     if (/^collab\s+(?:cancel|stop)$/i.test(args)) return { t: 'collab_cancel' }
@@ -3831,6 +3956,8 @@ function parseCmd(text: string): Cmd {
     if (useM) return { t: 'use', runtime: /^(codex|cx)$/i.test(useM[1]) ? 'codex' : 'claude' }
     const findM = args.match(/^find\s+(.+)$/i)
     if (findM) return { t: 'find', query: findM[1].trim(), runtime }
+    const stopRuntimeIdM = args.match(/^stop\s+(claude|cc|codex|cx)\s+([0-9a-f-]{8,36})$/i)
+    if (stopRuntimeIdM) return { t: 'stop_id', uuid: stopRuntimeIdM[2], runtime: /^(codex|cx)$/i.test(stopRuntimeIdM[1]) ? 'codex' : 'claude' }
     const stopIdM = args.match(/^stop\s+([0-9a-f-]{8,36})$/i)
     if (stopIdM) return { t: 'stop_id', uuid: stopIdM[1], runtime }
     const stopRuntimeM = args.match(/^stop\s+(claude|cc|codex|cx)$/i)
@@ -3838,6 +3965,8 @@ function parseCmd(text: string): Cmd {
     if (/^stop$/i.test(args)) return { t: 'stop', runtime }
     if (/^(screen|ss)$/i.test(args)) return { t: 'screen', runtime }
     if (/^nav$/i.test(args)) return { t: 'nav', runtime }
+    const resumeRuntimeIdM = args.match(/^resume\s+(claude|cc|codex|cx)\s+([0-9a-f-]{8,36})$/i)
+    if (resumeRuntimeIdM) return { t: 'resume_id', uuid: resumeRuntimeIdM[2], runtime: /^(codex|cx)$/i.test(resumeRuntimeIdM[1]) ? 'codex' : 'claude' }
     const resumeIdM = args.match(/^resume\s+([0-9a-f-]{8,36})$/i)
     if (resumeIdM) return { t: 'resume_id', uuid: resumeIdM[1], runtime }
     const resumeRuntimeM = args.match(/^resume\s+(claude|cc|codex|cx)$/i)
@@ -3902,6 +4031,19 @@ function formatAge(ms: number): string {
 
 async function sendInvalidButtonMessage(ck: string, runtime: AgentRuntimeKind = bindingRuntime(ck)): Promise<void> {
   await sendChannelNotice(ck, formatAgentReply(runtime, '⚠️ This button is stale or malformed. Please rerun the command to refresh it.'), undefined, 'invalid button')
+}
+
+async function sendSessionIdResolutionFailure(ck: string, input: string, resolution: Exclude<SessionIdResolution, { ok: true }>, runtime?: AgentRuntimeKind): Promise<void> {
+  const activeRuntime = runtime ?? bindingRuntime(ck)
+  const detail = resolution.reason === 'invalid'
+    ? `❌ Invalid session id \`${input}\`. Use an 8-character prefix or full UUID.`
+    : resolution.reason === 'unknown'
+      ? `❌ No ${agentName(activeRuntime)} session matching \`${input}\`.`
+      : `⚠️ Session id \`${input}\` is ambiguous: ${resolution.matches?.slice(0, 5).map(s => `${s.runtime}:${s.uuid.slice(0, 8)}`).join(', ')}. Use a longer id.`
+  await sendWithButtons(ck, formatAgentReply(activeRuntime, detail), [
+    { text: `📋 Browse ${agentName(activeRuntime)} sessions`, data: `cmd:resume${runtime ? `:${runtime}` : ''}` },
+    { text: `🚀 Start ${agentName(activeRuntime)}`, data: `cmd:new:${activeRuntime}` },
+  ])
 }
 
 /** Send a message with inline action buttons (cross-platform via adapter) */
@@ -4890,7 +5032,7 @@ async function handleAgentNavCommand(ck: string, runtime: AgentRuntimeKind, args
 
 
 function configuredCodexModel(ck: string): string {
-  return agentMeta(ck, 'codex')?.model ?? process.env.CCM_CODEX_MODEL ?? process.env.CODEX_MODEL ?? 'config default'
+  return agentMeta(ck, 'codex')?.model ?? CODEX_CONFIG.model ?? 'config default'
 }
 
 async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: AgentRuntimeKind, rawCommand: string): Promise<boolean> {
@@ -5070,8 +5212,9 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         '`ccm default claude|codex` — Set the plain-message default agent',
         '`ccm agents` — Show agent slots and active sessions',
         '`ccm route` — Explain how the next plain message routes',
-        '`ccm resume [agent]` — Browse & rebind agent sessions',
-        '`ccm stop [agent]` — Disconnect / stop one agent slot',
+        '`ccm new [agent]` / `ccm start [agent]` — Start a fresh agent slot session in this room',
+        '`ccm resume [agent\\|id]` — Browse or resume agent sessions into this room',
+        '`ccm stop [agent\\|id]` — Stop an agent slot session; if other rooms still reference it, unbind those rooms first',
         '`ccm find <query>` — Search directories',
         '`ccm help` — Show room status and commands',
       )
@@ -5190,6 +5333,15 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         ])
         return
       }
+      if (cmd.explicitStart) {
+        if (!roomHasExplicitCwd(ck)) {
+          await sendDirPicker(ck, runtime)
+          await sendChannelNotice(ck, formatAgentReply(runtime, `📂 Choose a working directory for ${agentName(runtime)} first, or send \`ccm /path/to/repo\`.`), undefined, `${runtime} cwd required notice`)
+          return
+        }
+        await startNew(ck, roomCwd(ck), runtime)
+        return
+      }
       if (cmd.cwd === DEFAULT_CWD) {
         // Bare ccm → show recent directories + browse
         await sendDirPicker(ck, runtime)
@@ -5204,18 +5356,16 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       return
     case 'resume_id': {
       let uuid = cmd.uuid
-      if (uuid.length < 36) {
-        const match = resolveSessionByPrefix(uuid, cmd.runtime)
-        if (!match) {
-          await sendWithButtons(ck, formatAgentReply(cmd.runtime ?? bindingRuntime(ck), `❌ No ${agentName(cmd.runtime ?? bindingRuntime(ck))} session matching \`${uuid}\`.`), [
-            { text: `📋 Browse ${agentName(cmd.runtime ?? bindingRuntime(ck))} sessions`, data: `cmd:resume${cmd.runtime ? `:${cmd.runtime}` : ''}` },
-            { text: `🚀 Start ${agentName(cmd.runtime ?? bindingRuntime(ck))}`, data: `cmd:new:${cmd.runtime ?? bindingRuntime(ck)}` },
-          ])
-          return
-        }
-        uuid = match.uuid
+      let selected: SessionInfo | undefined
+      const resolved = resolveSessionById(uuid, cmd.runtime)
+      if (resolved.ok === false) {
+        await sendSessionIdResolutionFailure(ck, uuid, resolved, cmd.runtime)
+        return
       }
-      await resumeAndBind(ck, uuid, resolveSessionRuntime(uuid, cmd.runtime))
+      selected = resolved.session
+      uuid = selected.uuid
+      const runtime = selected.runtime
+      await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))
       return
     }
     case 'screen': {
@@ -5229,21 +5379,17 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       return
     }
     case 'stop': {
-      const uuid = bindingUuid(ck, cmd.runtime)
+      const runtime = cmd.runtime ?? bindingRuntime(ck)
+      const uuid = bindingUuid(ck, runtime)
       if (uuid) {
-        const result = unbind(ck, cmd.runtime)
-        if (result) {
-          if (result.remaining === 0) {
-            await sendWithButtons(ck, formatAgentReply(result.runtime, `⏹ ${agentName(result.runtime)} session \`${result.uuid.slice(0, 8)}\` suspended.`), [
-              { text: `▶️ Resume`, data: `ccr:${result.runtime}:${result.uuid}` },
-              { text: `🚀 Start ${agentName(result.runtime)}`, data: `cmd:new:${result.runtime}` },
-            ])
-          } else {
-            await sendWithButtons(ck, formatAgentReply(result.runtime, `⏹ Unbound from ${agentName(result.runtime)} \`${result.uuid.slice(0, 8)}\` (still active on other channels).`), [
-              { text: `▶️ Reconnect`, data: `ccr:${result.runtime}:${result.uuid}` },
-            ])
-          }
-        }
+        const unboundCount = unbindSessionEverywhere(uuid, runtime)
+        const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
+        await sendWithButtons(ck, formatAgentReply(runtime, killed
+          ? `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`
+          : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
+          { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
+          { text: `🚀 Start ${agentName(runtime)}`, data: `cmd:new:${runtime}` },
+        ])
       } else {
         await sendStopPicker(ck)
       }
@@ -5251,19 +5397,15 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
     }
     case 'stop_id': {
       let uuid = cmd.uuid
-      if (uuid.length < 36) {
-        const match = resolveSessionByPrefix(uuid, cmd.runtime)
-        if (!match) {
-          await sendWithButtons(ck, formatAgentReply(cmd.runtime ?? bindingRuntime(ck), `❌ No ${agentName(cmd.runtime ?? bindingRuntime(ck))} session matching \`${uuid}\`.`), [
-            { text: `📋 Browse ${agentName(cmd.runtime ?? bindingRuntime(ck))} sessions`, data: `cmd:resume${cmd.runtime ? `:${cmd.runtime}` : ''}` },
-          ])
-          return
-        }
-        uuid = match.uuid
+      const resolved = resolveSessionById(uuid, cmd.runtime)
+      if (resolved.ok === false) {
+        await sendSessionIdResolutionFailure(ck, uuid, resolved, cmd.runtime)
+        return
       }
-      const runtime = resolveSessionRuntime(uuid, cmd.runtime)
+      uuid = resolved.session.uuid
+      const runtime = resolved.session.runtime
       const unboundCount = unbindSessionEverywhere(uuid, runtime)
-      const killed = killSessionIfUnboundEverywhere(uuid, runtime)
+      const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
       await sendWithButtons(ck, formatAgentReply(runtime, killed
         ? `⏹ Stopped ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` (${unboundCount} channel(s) unbound).`
         : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
@@ -5595,7 +5737,8 @@ function isPermissionRequestMessage(msg: Record<string, unknown>): msg is { type
 async function handleTool(msg: { tool: string; args: Record<string, unknown>; callId: string }, uuid: string): Promise<void> {
   try {
     let result: string
-    const ck = stringValue(msg.args.chat_id)
+    const requestedCk = stringValue(msg.args.chat_id)
+    const ck = canonicalToolChannelKey(uuid, requestedCk)
     const adapter = adapterFor(ck)
     const id = localId(ck)
     if (!adapter) throw new Error(`No adapter for ${ck}`)
@@ -5728,7 +5871,7 @@ async function handlePermissionRequest(
   uuid: string,
 ): Promise<void> {
   const { request_id, tool_name, description, input_preview } = msg
-  const channels = (msg.channels.length > 0 ? msg.channels : routableChannelsForUuid(uuid)).filter(ck => channelAllowed(ck) && !!adapterFor(ck))
+  const channels = msg.channels.filter(ck => channelAllowed(ck) && !!adapterFor(ck))
   if (channels.length === 0) {
     process.stderr.write(`daemon: permission request ${request_id} for ${uuid.slice(0, 8)} has no deliverable channels; denying fail-closed\n`)
     if (!sendToLive(uuid, { type: 'permission_response', request_id, behavior: 'deny' })) {
@@ -6074,7 +6217,11 @@ const ipc: NetServer = createServer((conn: Socket) => {
             `daemon: IPC registered ${uuid.slice(0, 8)}${peerPid ? ` (pid ${peerPid})` : ''}\n`,
           )
           for (const ch of routableChannelsForUuid(uuid)) {
-            if (firstEver) {
+            const readyKey = uuid + ':' + ch
+            if (!announcedReady.has(readyKey)) {
+              announcedReady.add(readyKey)
+              void sendChannelNotice(ch, formatAgentReadyNotice(runtimeForUuid(uuid), uuid), undefined, 'session ready')
+            } else if (firstEver) {
               void sendChannelNotice(ch, formatAgentReply(runtimeForUuid(uuid), `✅ ${agentName(runtimeForUuid(uuid))} session \`${uuid.slice(0, 8)}\` reconnected.`), undefined, 'session reconnect')
             }
             if (!screenWatchers.has(uuid)) void startScreenWatch(ch, uuid)
@@ -6198,7 +6345,8 @@ for (const adapter of activeAdapters) {
       const uuid = parseSessionCallbackUuid(payload)
       if (!uuid) { await sendInvalidButtonMessage(ck, parsedRuntime ?? bindingRuntime(ck)); return }
       const runtime = parsedRuntime ?? resolveSessionRuntime(uuid, undefined)
-      await resumeAndBind(ck, uuid, runtime)
+      const selected = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid) ?? boundAgentSessions(runtime).find(s => s.uuid === uuid)
+      await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))
     } else if (data.startsWith('ccp:')) {
       const page = parsePageNumber(data.slice(4))
       if (page == null) { await sendInvalidButtonMessage(ck); return }
@@ -6288,9 +6436,9 @@ for (const adapter of activeAdapters) {
     } else if (data.startsWith('cmd:')) {
       const action = data.slice(4)
       if (action === 'new') {
-        await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: 'ccm', messageId: '', meta: {} })
+        await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: 'ccm start', messageId: '', meta: {} })
       } else if (action === 'new:claude' || action === 'new:codex') {
-        await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: `ccm ${action.slice(4)}`, messageId: '', meta: {} })
+        await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: `ccm start ${action.slice(4)}`, messageId: '', meta: {} })
       } else if (action === 'stop') {
         await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: 'ccm stop', messageId: '', meta: {} })
       } else if (action === 'interrupt' || action.startsWith('interrupt:')) {
@@ -6322,8 +6470,8 @@ for (const adapter of activeAdapters) {
         if (!uuid) { await sendInvalidButtonMessage(ck); return }
         const runtime = bindingEntries().find(e => e.uuid === uuid)?.runtime ?? bindingRuntime(ck)
         unbindSessionEverywhere(uuid, runtime)
-        killSessionIfUnboundEverywhere(uuid, runtime)
-        await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: 'ccm', messageId: '', meta: {} })
+        await killSessionIfUnboundEverywhere(uuid, runtime)
+        await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: `ccm start ${runtime}`, messageId: '', meta: {} })
       } else if (action.startsWith('retry:')) {
         const uuid = parseSessionCallbackUuid(action.slice(6))
         if (!uuid) { await sendInvalidButtonMessage(ck); return }
@@ -6334,7 +6482,7 @@ for (const adapter of activeAdapters) {
         if (!uuid) { await sendInvalidButtonMessage(ck); return }
         const runtime = bindingEntries().find(e => e.uuid === uuid)?.runtime ?? resolveSessionRuntime(uuid)
         const unboundCount = unbindSessionEverywhere(uuid, runtime)
-        const killed = killSessionIfUnboundEverywhere(uuid, runtime)
+        const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
         await sendWithButtons(ck, formatAgentReply(runtime, killed
           ? `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`
           : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
@@ -6347,7 +6495,7 @@ for (const adapter of activeAdapters) {
         if (!uuid) { await sendInvalidButtonMessage(ck); return }
         const runtime = bindingEntries().find(e => e.uuid === uuid)?.runtime ?? bindingRuntime(ck)
         const unboundCount = unbindSessionEverywhere(uuid, runtime)
-        const killed = killSessionIfUnboundEverywhere(uuid, runtime)
+        const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
         await sendWithButtons(ck, formatAgentReply(runtime, killed
           ? `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`
           : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
@@ -6401,7 +6549,7 @@ async function shutdown(): Promise<void> {
   shuttingDown = true
   process.stderr.write('daemon: shutting down\n')
   await notifyRoomsDaemonShutdown()
-  for (const [uuid] of live) killSession(uuid)
+  for (const [uuid] of live) await killSession(uuid)
   shutdownZellijSession()
   for (const adapter of activeAdapters) {
     try {

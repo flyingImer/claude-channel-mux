@@ -310,6 +310,7 @@ export class TelegramAdapter implements ChannelAdapter {
       await this.api('setMyCommands', {
         commands: [
           { command: 'ccm', description: 'Bind room directory' },
+          { command: 'ccm_new', description: 'Start a fresh agent session' },
           { command: 'ccm_agents', description: 'Show room agent slots' },
           { command: 'ccm_route', description: 'Explain default routing' },
           { command: 'ccm_resume', description: 'Browse & resume agent sessions' },

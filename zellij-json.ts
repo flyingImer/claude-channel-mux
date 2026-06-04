@@ -2,6 +2,8 @@ export type ZellijPane = {
   id: number
   tab_id?: number
   tab_name?: string
+  terminal_command?: string
+  pane_command?: string
   is_plugin?: boolean
   exited?: boolean
   exit_status?: number | null
@@ -32,6 +34,8 @@ export function zellijPanes(value: unknown): ZellijPane[] {
       id: record.id,
       tab_id: typeof record.tab_id === 'number' ? record.tab_id : undefined,
       tab_name: typeof record.tab_name === 'string' ? record.tab_name : undefined,
+      terminal_command: typeof record.terminal_command === 'string' ? record.terminal_command : undefined,
+      pane_command: typeof record.pane_command === 'string' ? record.pane_command : undefined,
       is_plugin: typeof record.is_plugin === 'boolean' ? record.is_plugin : undefined,
       exited: typeof record.exited === 'boolean' ? record.exited : undefined,
       exit_status: exitStatus,

@@ -4,6 +4,7 @@ import { join } from 'path'
 import { test, expect } from 'bun:test'
 import { CodexAppServerAgentDriver, codexEntriesFromTurns, codexNativeTurnId, codexResponseArray, codexResponseObject, codexTranscriptEntryFromItem } from '../agents/codex/app-server-driver.ts'
 import type { JsonObject } from '../agents/codex/app-server-client.ts'
+import { codexResolvedConfigFromEnv, type CodexResolvedConfig } from '../agents/codex/config.ts'
 import type { AgentCommand, AgentCommandResult, AgentEvent, AgentSession, AgentSnapshotPendingItem, AgentTurn } from '../agents/types.ts'
 
 type TestCodexClient = {
@@ -13,6 +14,8 @@ type TestCodexClient = {
 type TestCodexRuntime = {
   session: AgentSession
   modelOverride?: string
+  effectiveModel?: string
+  config: CodexResolvedConfig
   client: TestCodexClient
   threadId: string
   activeTurns: Map<string, string>
@@ -33,6 +36,7 @@ type CodexDriverHarness = {
   handleServerRequest(msg: JsonObject): void
   readTranscriptRecent(path: string, limit: number): Array<{ role: string; text: string }>
   formatTurn(turn: AgentTurn): string
+  sendTurn(input: { session: AgentSession; turn: AgentTurn }): Promise<string>
   sendCommand(input: { session: AgentSession; command: AgentCommand }): Promise<AgentCommandResult>
   snapshot(input: { session: AgentSession; cwd: string }): Promise<{ health: string[]; source: string; recent: Array<{ role: string; text: string }>; pending: AgentSnapshotPendingItem[] }>
 }
@@ -44,7 +48,11 @@ function codexSession(sessionId: string, nativeSessionId: string): AgentSession 
 }
 
 function testRuntime(session: AgentSession, client: TestCodexClient = {}): TestCodexRuntime {
-  return { session, client, threadId: session.nativeSessionId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() }
+  return { session, config: codexResolvedConfigFromEnv({}), client, threadId: session.nativeSessionId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() }
+}
+
+function testRuntimeWithModel(session: AgentSession, model: string, client: TestCodexClient): TestCodexRuntime {
+  return { ...testRuntime(session, client), effectiveModel: model }
 }
 
 function driver(): CodexDriverHarness {
@@ -157,6 +165,22 @@ test('Codex sendCommand fails closed for unknown commands and only raw starts a 
   expect(calls[0].params.input[0].text).toBe('/goal create x')
   const runtime = d.runtimes.get('s2')
   expect(runtime?.turnChannels.get('native')).toBe('test:room')
+})
+
+test('Codex turn/start carries effective model from runtime', async () => {
+  const d = driver()
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const session = codexSession('model-turn-session', 'model-thread')
+  const client = { request: async (method: string, params: JsonObject) => { calls.push({ method, params }); return { result: { turn: { id: 'native-model-turn' } } } } }
+  d.runtimes.set('model-turn-session', testRuntimeWithModel(session, 'test-model-5.5', client))
+  const turn: AgentTurn = { turnId: 'turn', roomId: 'room', channelKey: 'test:room', platform: 'test', channelId: 'room', threadId: 'msg', messageId: 'msg', cwd: '/tmp', text: 'hello', addressedAgent: 'codex', defaultAgent: 'codex', peerAgents: [], meta: {} }
+
+  await d.sendTurn({ session, turn })
+  await d.sendCommand({ session, command: { ...turn, commandId: 'cmd', command: '/raw /status' } })
+
+  expect(calls).toHaveLength(2)
+  expect(calls[0]).toMatchObject({ method: 'turn/start', params: { model: 'test-model-5.5' } })
+  expect(calls[1]).toMatchObject({ method: 'turn/start', params: { model: 'test-model-5.5' } })
 })
 
 test('Codex goal command interrupts active turn and starts replacement goal turn', async () => {

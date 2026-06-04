@@ -69,6 +69,26 @@ export type CodexAppServerClientOptions = {
   serverRequest?: (message: JsonObject) => void
 }
 
+function signalProcessGroup(pid: number | undefined, signal: NodeJS.Signals): boolean {
+  if (!pid) return false
+  try {
+    process.kill(-pid, signal)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH'
+  }
+}
+
+function processGroupExists(pid: number | undefined): boolean {
+  if (!pid) return false
+  try {
+    process.kill(-pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
 export class CodexAppServerClient {
   private proc?: ChildProcessWithoutNullStreams
   private rl?: Interface
@@ -92,11 +112,12 @@ export class CodexAppServerClient {
   async start(): Promise<void> {
     if (this.proc) return
     const listen = this.opts.listen ?? 'stdio'
-    const args = ['app-server', '--listen', listen === 'websocket' ? 'ws://127.0.0.1:0' : 'stdio://', ...(this.opts.configArgs ?? [])]
+    const args = [...(this.opts.configArgs ?? []), 'app-server', '--listen', listen === 'websocket' ? 'ws://127.0.0.1:0' : 'stdio://']
     const [bin, ...prefixArgs] = this.opts.codexCommand
     this.proc = spawn(bin, [...prefixArgs, ...args], {
       cwd: this.opts.cwd,
       env: this.opts.env,
+      detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     this.proc.stderr.setEncoding('utf8')
@@ -158,17 +179,29 @@ export class CodexAppServerClient {
     this.rejectPending(new Error('codex app-server stopped'))
     try { ws?.close() } catch (err) { this.opts.stderr?.(`codex app-server websocket close failed: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`) }
     if (!proc) return
-    proc.kill('SIGTERM')
+    const pid = proc.pid
+    if (!signalProcessGroup(pid, 'SIGTERM')) proc.kill('SIGTERM')
     await new Promise<void>(resolve => {
       const timer = setTimeout(() => {
         try {
-          proc.kill('SIGKILL')
+          if (!signalProcessGroup(pid, 'SIGKILL')) proc.kill('SIGKILL')
         } catch (err) {
           this.opts.stderr?.(`codex app-server SIGKILL failed: ${redactSensitiveText(err instanceof Error ? err.message : String(err))}`)
         }
         resolve()
       }, 3000)
-      proc.once('exit', () => { clearTimeout(timer); resolve() })
+      const poll = setInterval(() => {
+        if (processGroupExists(pid)) return
+        clearInterval(poll)
+        clearTimeout(timer)
+        resolve()
+      }, 50)
+      proc.once('exit', () => {
+        if (processGroupExists(pid)) return
+        clearInterval(poll)
+        clearTimeout(timer)
+        resolve()
+      })
     })
   }
 
