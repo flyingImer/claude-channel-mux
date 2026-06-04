@@ -46,8 +46,8 @@ Manual equivalent:
 3. Edit the unit for the candidate window only:
 
    ```ini
-   WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux__wt__0514-0730-bright-spark
-   Environment=CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:C0B3V2ZSLER,telegram:-1003714310865
+   WorkingDirectory=<CANDIDATE_CWD>
+   Environment=CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:<SLACK_CHANNEL_ID>,telegram:<TELEGRAM_GROUP_ID>
    ```
 
    Keep the existing token, proxy, path, spawn-mode, and forward-env settings. Do not set `CHANNEL_DAEMON_SELF_TEST_PREFIX` for manual E2E.
@@ -76,7 +76,7 @@ Manual equivalent:
    readlink /proc/$pid/cwd
    ```
 
-   The final cwd should be `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux` unless the user explicitly requests a different production version.
+   The final cwd should be `<PRODUCTION_CWD>` unless the user explicitly requests a different production version.
 
 ## Slack Smoke
 

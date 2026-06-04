@@ -5,8 +5,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 unit="${CCM_E2E_SYSTEMD_UNIT:-$HOME/.config/systemd/user/ccm-daemon.service}"
 backup="$unit.before-cx-e2e"
 service="${CCM_E2E_SERVICE:-ccm-daemon.service}"
-allow="${CHANNEL_DAEMON_ALLOWED_CHANNELS:-slack:C0B3V2ZSLER,telegram:-1003714310865}"
-prod_cwd="${CCM_E2E_PROD_CWD:-/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux}"
+allow="${CHANNEL_DAEMON_ALLOWED_CHANNELS:-slack:<SLACK_CHANNEL_ID>,telegram:<TELEGRAM_GROUP_ID>}"
+prod_cwd="${CCM_E2E_PROD_CWD:-<PRODUCTION_CWD>}"
 proc_root="${CCM_E2E_PROC_ROOT:-/proc}"
 
 usage() {

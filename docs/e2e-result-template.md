@@ -6,10 +6,10 @@ Copy this file or fill it in during the live Slack/Telegram test window. Do not 
 
 - Date/time UTC:
 - Tester:
-- Candidate cwd: `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux__wt__0514-0730-bright-spark`
-- Restored production cwd: `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux`
-- Slack channel: `C0B3V2ZSLER`
-- Telegram group: `-1003714310865`
+- Candidate cwd: `<CANDIDATE_CWD>`
+- Restored production cwd: `<PRODUCTION_CWD>`
+- Slack channel: `<SLACK_CHANNEL_ID>`
+- Telegram group: `<TELEGRAM_GROUP_ID>`
 - Preflight command/output:
 - Cutover command/output:
 - Restore command/output:

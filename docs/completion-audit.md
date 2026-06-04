@@ -10,7 +10,7 @@ Deliver a production-safe CCM candidate where Claude Code (`/cc`) and Codex (`/c
 
 | Requirement | Evidence | Current Status |
 | --- | --- | --- |
-| Keep production usable unless a test window is explicitly granted | `systemctl --user` checks show `ccm-daemon.service` cwd at `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux`; `docs/e2e-parity-plan.md` has a reversible cutover runbook | Locally verified; live cutover not active |
+| Keep production usable unless a test window is explicitly granted | `systemctl --user` checks show `ccm-daemon.service` cwd at `<PRODUCTION_CWD>`; `docs/e2e-parity-plan.md` has a reversible cutover runbook | Locally verified; live cutover not active |
 | Support both Claude and Codex as first-class agent slots | `agents/`, `agents/registry.ts`, `daemon.ts`, `server.ts`, `.claude-plugin/plugin.json`, `.codex-plugin/`; `test/parity-static.test.ts` checks metadata and runtime routing | Covered by static/type tests |
 | Preserve original Claude use cases | `docs/legacy-parity-audit.md` maps every pre-Codex commit through `547033c`; `test/parity-static.test.ts` guards legacy coverage | Covered locally; needs live Claude smoke |
 | Make `/cc` and `/cx` command UX shape consistent | README command tables, `commands.ts`, `daemon.ts` command handlers, Telegram command hints, `test/commands.test.ts`, `test/parity-static.test.ts` | Covered locally; needs live slash smoke |
@@ -26,7 +26,7 @@ Deliver a production-safe CCM candidate where Claude Code (`/cc`) and Codex (`/c
 | Support safe E2E cutover using same Slack/Telegram tokens | `scripts/e2e-preflight.sh`, `scripts/e2e-cutover.sh`, `docs/e2e-parity-plan.md`, `test/e2e-preflight.test.ts`, `test/e2e-cutover.test.ts`, reversible cutover runbook with auto-restore and backup overwrite guard | Covered locally; needs user-granted window |
 | Keep production old version after testing unless user requests otherwise | E2E runbook restore step and current systemd cwd check | Currently true |
 | Type/test/diff quality gate | `bun run validate` | Passing locally |
-| E2E readiness gate | `CHANNEL_DAEMON_ALLOWED_CHANNELS='slack:C0B3V2ZSLER,telegram:-1003714310865' bun run e2e:preflight` | Passing locally |
+| E2E readiness gate | `CHANNEL_DAEMON_ALLOWED_CHANNELS='slack:<SLACK_CHANNEL_ID>,telegram:<TELEGRAM_GROUP_ID>' bun run e2e:preflight` | Passing locally |
 | Final live Slack/Telegram E2E | `docs/e2e-parity-plan.md` Slack, Claude, Telegram smoke sections; `docs/e2e-result-template.md`; `scripts/e2e-result.sh new/check`; `test/e2e-result.test.ts` | Missing; required before 100% |
 
 ## Completion Decision

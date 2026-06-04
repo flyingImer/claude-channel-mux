@@ -77,7 +77,7 @@ If any of gates 1-3 fail, keep App Server as the production driver and prefer th
 - Codex CLI source tree: turn submission, TUI event loop, session persistence, approval handling, slash command dispatch, goal/memory feature implementation, and app-server harness boundary.
 - Current CCM Codex driver: `agents/codex/app-server-driver.ts`.
 - Current CCM Agent SPI: `agents/types.ts` and `daemon.ts` command/event routing.
-- Claude Code reference package: `/home/yijwang/ws-cc-study/2.1.88.tgz`, especially channel/inbound behavior and how CCM's Claude path maps it into zellij.
+- Claude Code reference package: `<LOCAL_CLAUDE_CODE_TARBALL>`, especially channel/inbound behavior and how CCM's Claude path maps it into zellij.
 
 ## Required Spike Output
 

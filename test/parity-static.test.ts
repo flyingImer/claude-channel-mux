@@ -3303,11 +3303,11 @@ test('E2E parity plan includes reversible production cutover runbook', () => {
   expect(plan).toContain('before-cx-e2e')
   expect(plan).toContain('systemctl --user stop ccm-daemon.service')
   expect(plan).toContain('systemctl --user daemon-reload')
-  expect(plan).toContain('CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:C0B3V2ZSLER,telegram:-1003714310865')
+  expect(plan).toContain('CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:<SLACK_CHANNEL_ID>,telegram:<TELEGRAM_GROUP_ID>')
   expect(plan).toContain('CHANNEL_DAEMON_SELF_TEST_PREFIX')
   expect(plan).toContain('readlink /proc/$pid/cwd')
-  expect(plan).toContain('/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux__wt__0514-0730-bright-spark')
-  expect(plan).toContain('/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux` unless the user explicitly requests')
+  expect(plan).toContain('WorkingDirectory=<CANDIDATE_CWD>')
+  expect(plan).toContain('The final cwd should be `<PRODUCTION_CWD>` unless the user explicitly requests')
 })
 
 test('completion audit maps objective to concrete evidence and keeps live E2E open', () => {
@@ -3368,8 +3368,8 @@ test('live E2E result template captures auditable completion evidence', () => {
   for (const required of [
     'Candidate cwd',
     'Restored production cwd',
-    'Slack channel: `C0B3V2ZSLER`',
-    'Telegram group: `-1003714310865`',
+    'Slack channel: `<SLACK_CHANNEL_ID>`',
+    'Telegram group: `<TELEGRAM_GROUP_ID>`',
     '`bun run validate` passed before cutover',
     '`scripts/e2e-cutover.sh start-candidate` landed in candidate cwd',
     '`/cx help` shows `🟢 Codex`',

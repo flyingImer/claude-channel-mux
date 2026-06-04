@@ -2,7 +2,7 @@
 
 You are working in the CCM repo at:
 
-`/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux__wt__0514-0730-bright-spark`
+`<CANDIDATE_CWD>`
 
 Goal: determine whether CCM should add a Codex CLI-native driver, or stay App Server-first and build a zellij observer panel.
 
@@ -13,8 +13,8 @@ Read first:
 - `agents/types.ts`
 - `agents/codex/app-server-driver.ts`
 - Relevant `daemon.ts` command/event routing paths
-- Claude Code reference tarball: `/home/yijwang/ws-cc-study/2.1.88.tgz`
-- Local Codex install/source entrypoints under `/home/yijwang/.codex_install/node_modules/@openai/codex*`
+- Claude Code reference tarball: `<LOCAL_CLAUDE_CODE_TARBALL>`
+- Local Codex install/source entrypoints under `<LOCAL_CODEX_INSTALL>/node_modules/@openai/codex*`
 - If needed, inspect the upstream Codex repo/source matching local version.
 
 Deliverable:

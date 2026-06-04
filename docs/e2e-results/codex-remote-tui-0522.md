@@ -6,20 +6,20 @@ Copy this file or fill it in during the live Slack/Telegram test window. Do not 
 
 - Date/time UTC: 2026-05-22T02:03:57.785771+00:00
 - Tester:
-- Candidate cwd: `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux__wt__0521-2241-neat-bird`
-- Restored production cwd: `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux`
-- Slack channel: `C0B3V2ZSLER`
-- Telegram group: `-1003714310865`
+- Candidate cwd: `<CANDIDATE_CWD>`
+- Restored production cwd: `<PRODUCTION_CWD>`
+- Slack channel: `<SLACK_CHANNEL_ID>`
+- Telegram group: `<TELEGRAM_GROUP_ID>`
 - Preflight command/output:
 - Cutover command/output:
-- Restore command/output: Manual restore to production unit, explicit `WorkingDirectory=/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux`; `systemctl --user restart ccm-daemon.service`; MainPID cwd and git HEAD verified.
+- Restore command/output: Manual restore to production unit, explicit `WorkingDirectory=<PRODUCTION_CWD>`; `systemctl --user restart ccm-daemon.service`; MainPID cwd and git HEAD verified.
 
 ## Required Checks
 
 | Area | Check | Status | Evidence / message links / notes |
 | --- | --- | --- | --- |
 | Preflight | `bun run validate` passed before cutover | PASS | `bun test` 372 pass, `bun run typecheck`, `bun run check:diff` passed before/while cutover. |
-| Preflight | `bun run e2e:preflight` passed with allowlist | PASS | `CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:C0B3V2ZSLER,telegram:-1003714310865 scripts/e2e-preflight.sh` passed. |
+| Preflight | `bun run e2e:preflight` passed with allowlist | PASS | `CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:<SLACK_CHANNEL_ID>,telegram:<TELEGRAM_GROUP_ID> scripts/e2e-preflight.sh` passed. |
 | Cutover | `scripts/e2e-cutover.sh start-candidate` landed in candidate cwd | PASS | Manual equivalent used because existing backup had `%h`; systemd MainPID cwd confirmed candidate path. |
 | Slack Codex | `/cx help` shows `🟢 Codex` and does not spawn a session | PASS | Slack history `1779416981.074879` `/cx help` → bot `1779416982.633139` with `🟢 Codex` command help. |
 | Slack Codex | `/cx model test-model-for-display` is room-scoped | WARN | User confirmed remaining tests complete before production cutover; earlier daemon evidence showed the room model override path is exercised, but invalid display model can fail Codex startup if left active, so no persistent override is kept for production. |
@@ -36,9 +36,9 @@ Copy this file or fill it in during the live Slack/Telegram test window. Do not 
 | Slack Claude | `/cc nav` handles Claude prompt when prompted | WARN | No active Claude prompt was available during final smoke; accepted as covered by unchanged Claude nav path plus existing static parity tests. |
 | Slack Claude | Thread reply `claude: reply exactly CC_THREAD_OK` stays threaded and broadcasts | WARN | User confirmed remaining live tests complete; Slack Claude thread delivery was partially covered by `CC_READY` thread `1779417272.723789`, which replied in-thread with Claude identity. |
 | Telegram Codex | Repeat Codex smoke in Telegram group; reply anchors preserved where Telegram allows | PASS | Telegram first started independent `ca86ec24` and returned `TG_CX_REMOTE_TUI_READY`; after resume-prefix fix, `ccm resume 54fe5f50` bound Telegram to Slack Codex `54fe5f50` / native thread `019e2fc8-a201-7f61-8727-549ba42f6246`, then returned `TG_SAME_SESSION_READY` in the same remote TUI. |
-| Telegram Claude | Repeat Claude smoke in Telegram group; reply anchors preserved where Telegram allows | PASS | Telegram Claude smoke returned `TG_CC_READY` in group `-1003714310865` with Claude identity. |
-| Restore | `scripts/e2e-cutover.sh restore-old` restored old production cwd | PASS | Manual equivalent used because original backup used `%h`; systemd unit restored to production cwd `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux`. |
-| Restore | `scripts/e2e-cutover.sh status` confirms old production cwd | PASS | `ccm-daemon.service` active with MainPID cwd `/home/repo/ejwang/.claude/plugins/marketplaces/claude-channel-mux`; production git HEAD `a1788f8fc4ce733a421f3c4c21c8a0ce75341e52`. |
+| Telegram Claude | Repeat Claude smoke in Telegram group; reply anchors preserved where Telegram allows | PASS | Telegram Claude smoke returned `TG_CC_READY` in group `<TELEGRAM_GROUP_ID>` with Claude identity. |
+| Restore | `scripts/e2e-cutover.sh restore-old` restored old production cwd | PASS | Manual equivalent used because original backup used `%h`; systemd unit restored to production cwd `<PRODUCTION_CWD>`. |
+| Restore | `scripts/e2e-cutover.sh status` confirms old production cwd | PASS | `ccm-daemon.service` active with MainPID cwd `<PRODUCTION_CWD>`; production git HEAD `a1788f8fc4ce733a421f3c4c21c8a0ce75341e52`. |
 
 ## Issues / Follow-Ups
 

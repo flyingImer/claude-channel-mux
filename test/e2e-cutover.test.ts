@@ -7,6 +7,7 @@ import { test, expect } from 'bun:test'
 const script = join(process.cwd(), 'scripts/e2e-cutover.sh')
 const repoRoot = process.cwd()
 const prodCwd = `${repoRoot}__prod`
+const allowedChannels = 'slack:<SLACK_CHANNEL_ID>,telegram:<TELEGRAM_GROUP_ID>'
 
 type Harness = { dir: string; bin: string; unit: string; cwdFile: string; log: string; procRoot: string; failStartFile: string; prodCwd: string }
 
@@ -75,7 +76,7 @@ function runCutover(args: string[], harness: Harness, extraEnv: Record<string, s
         PATH: `${harness.bin}:${process.env.PATH ?? ''}`,
         HOME: harness.dir,
         CCM_E2E_SYSTEMD_UNIT: harness.unit,
-        CHANNEL_DAEMON_ALLOWED_CHANNELS: 'slack:C0B3V2ZSLER,telegram:-1003714310865',
+        CHANNEL_DAEMON_ALLOWED_CHANNELS: allowedChannels,
         SLACK_BOT_TOKEN: 'x',
         SLACK_APP_TOKEN: 'y',
         CCM_E2E_PROC_ROOT: harness.procRoot,
@@ -98,7 +99,7 @@ test('e2e cutover helper starts candidate and rewrites only the test unit', () =
   expect(result.output).toContain('Candidate running')
   const unit = readFileSync(harness.unit, 'utf8')
   expect(unit).toContain(`WorkingDirectory=${repoRoot}`)
-  expect(unit).toContain('Environment=CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:C0B3V2ZSLER,telegram:-1003714310865')
+  expect(unit).toContain(`Environment=CHANNEL_DAEMON_ALLOWED_CHANNELS=${allowedChannels}`)
   expect(readFileSync(`${harness.unit}.before-cx-e2e`, 'utf8')).toContain(`WorkingDirectory=${harness.prodCwd}`)
   expect(readFileSync(harness.log, 'utf8')).toContain('--user stop ccm-daemon.service')
   expect(readFileSync(harness.log, 'utf8')).toContain('--user daemon-reload')
@@ -138,7 +139,7 @@ test('e2e cutover helper adds candidate cwd when unit lacks WorkingDirectory', (
   expect(result.ok).toBe(true)
   const unit = readFileSync(harness.unit, 'utf8')
   expect(unit).toContain(`WorkingDirectory=${repoRoot}`)
-  expect(unit).toContain('Environment=CHANNEL_DAEMON_ALLOWED_CHANNELS=slack:C0B3V2ZSLER,telegram:-1003714310865')
+  expect(unit).toContain(`Environment=CHANNEL_DAEMON_ALLOWED_CHANNELS=${allowedChannels}`)
 })
 
 
