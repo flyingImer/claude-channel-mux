@@ -111,7 +111,9 @@ test('Codex remote TUI launch details stay behind the lifecycle seam', async () 
   expect(tui.ensured).toBe(1)
   expect(tui.tabs).toEqual(['ccm:cx:019e94e5'])
   expect(tui.commands[0]).toContain('CODEX_HOME=')
-  expect(tui.commands[0]).toContain("'--remote' 'ws://127.0.0.1:0' 'resume' 'thread-1'")
+  expect(tui.commands[0]).toContain("'--remote' 'ws://127.0.0.1:0'")
+  expect(tui.commands[0]).not.toContain("'resume'")
+  expect(tui.commands[0]).not.toContain("'thread-1'")
 })
 
 test('Codex remote TUI reuses matching app-server pane and closes stale panes', async () => {

@@ -1521,7 +1521,10 @@ test('Codex app-server and remote TUI share environment-driven launch args', () 
   expect(driver).toContain('...(runtime.effectiveModel ? { model: runtime.effectiveModel } : {})')
   expect(daemon).toContain('const CODEX_CONFIG = codexResolvedConfigFromEnv(process.env)')
   expect(daemon).toContain('const codexSessionLifecycle = new CodexAppServerSession')
-  expect(lifecycle).toContain("commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId])")
+  expect(lifecycle).toContain("commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl])")
+  const commandBody = lifecycle.slice(lifecycle.indexOf('function codexRemoteTuiCommand'), lifecycle.indexOf('export class CodexAppServerSession'))
+  expect(commandBody).not.toContain("'resume'")
+  expect(commandBody).not.toContain('session.nativeSessionId')
 })
 
 test('ask_peer env numeric knobs fail closed to positive defaults', () => {
@@ -3296,7 +3299,10 @@ test('Codex app-server uses websocket runtime and auto-attaches remote TUI', () 
   expect(daemon).toContain('function codexUpdatePromptVisible(screen: string): boolean')
   expect(daemon).toContain("sendKeys(paneId, 'Down', 'Down', 'Enter')")
   expect(daemon).toContain('async function sendCodexTuiNav')
-  expect(lifecycle).toContain("commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId])")
+  expect(lifecycle).toContain("commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl])")
+  const commandBody = lifecycle.slice(lifecycle.indexOf('function codexRemoteTuiCommand'), lifecycle.indexOf('export class CodexAppServerSession'))
+  expect(commandBody).not.toContain("'resume'")
+  expect(commandBody).not.toContain('session.nativeSessionId')
   expect(daemon).toContain('void ensureCodexRemoteTui(uuid, session, ck)')
   expect(lifecycle).toContain('this.tui.closeTab(this.tabName(sessionId))')
   expect(bindings).toContain('appServerUrl?: string')
@@ -3446,10 +3452,12 @@ test('stopped Codex sessions remain resolvable for resume by ccm id', () => {
 })
 
 
-test('Codex remote TUI attaches to the app-server native thread id', () => {
+test('Codex remote TUI attaches to the app-server without replaying resume', () => {
   const lifecycle = readFileSync('agents/codex/session.ts', 'utf8')
   const commandBody = lifecycle.slice(lifecycle.indexOf('function codexRemoteTuiCommand'), lifecycle.indexOf('export class CodexAppServerSession'))
   const classBody = lifecycle.slice(lifecycle.indexOf('export class CodexAppServerSession'))
-  expect(commandBody).toContain("commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId])")
+  expect(commandBody).toContain("commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl])")
+  expect(commandBody).not.toContain("'resume'")
+  expect(commandBody).not.toContain('session.nativeSessionId')
   expect(classBody).toContain('codexTuiPaneMatchesAppServer(status, appServerUrl)')
 })
