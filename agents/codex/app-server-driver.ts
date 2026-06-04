@@ -409,6 +409,8 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       cwd,
       env: {
         ...this.opts.baseEnv,
+        CODEX_HOME: runtimeConfig.home,
+        DISABLE_AUTOUPDATER: '1',
         CC_CHANNEL_SESSION_UUID: sessionId,
         CODEX_CHANNEL_SESSION_UUID: sessionId,
         CC_CHANNEL_DAEMON_SOCK: this.opts.daemonSock,

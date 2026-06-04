@@ -43,6 +43,7 @@ import { watch as fsWatch, readFileSync as fsReadSync } from 'fs'
 import { ClaudeChannelAgentDriver } from './agents/claude/channel-driver.js'
 import { CodexAppServerAgentDriver } from './agents/codex/app-server-driver.js'
 import { codexResolvedConfigFromEnv } from './agents/codex/config.js'
+import { CodexAppServerSession, codexTuiTabName, type CodexRemoteTuiStatus } from './agents/codex/session.js'
 import { AgentRegistry } from './agents/registry.js'
 import { recentAgentReplyPointerFromJson, recentPeerReplyPointers as buildRecentPeerReplyPointers, type RecentAgentReplyKind, type RecentAgentReplyPointer, type RecentAgentReplySource } from './agents/peer-pointers.js'
 import { agentLabel, agentName, formatAgentReply } from './agents/identity.js'
@@ -124,7 +125,6 @@ const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
 const CODEX_CONFIG = codexResolvedConfigFromEnv(process.env)
 const CODEX_COMMAND = CODEX_CONFIG.command
-const CODEX_LAUNCH_ARGS = CODEX_CONFIG.launchArgs
 const CODEX_WORKTREE_MODE = CODEX_CONFIG.worktreeMode
 const CODEX_HOME = CODEX_CONFIG.home
 const ALLOWED_CHANNELS = new Set((process.env.CHANNEL_DAEMON_ALLOWED_CHANNELS ?? '')
@@ -2931,12 +2931,7 @@ function getPaneStatus(uuid: string): PaneStatus {
   }
 }
 
-function codexTuiTabName(uuid: string): string {
-  return `ccm:cx:${uuid.slice(0, 8)}`
-}
-
-function getCodexTuiPaneStatus(uuid: string): PaneStatus {
-  const tabName = codexTuiTabName(uuid)
+function getCodexTuiPaneStatusByTabName(tabName: string): PaneStatus {
   try {
     const panes = zellijPanes(parseZellijJson(zellijActionSync(['list-panes', '--json', '--tab', '--state'], { timeout: 5000 })))
     const pane = panes.find(p => p.tab_name === tabName && !p.is_plugin)
@@ -2947,6 +2942,10 @@ function getCodexTuiPaneStatus(uuid: string): PaneStatus {
     if (!isZellijSessionAlive()) return { kind: 'zellij_down' }
     return { kind: 'unknown', reason: errorMessage(err) }
   }
+}
+
+function getCodexTuiPaneStatus(uuid: string): PaneStatus {
+  return getCodexTuiPaneStatusByTabName(codexTuiTabName(uuid))
 }
 
 function codexUpdatePromptVisible(screen: string): boolean {
@@ -2960,49 +2959,43 @@ async function autoSkipCodexUpdatePrompt(uuid: string, paneId: number): Promise<
   process.stderr.write(`daemon: codex update prompt auto-skip ${uuid.slice(0, 8)} ok=${ok}\n`)
 }
 
-async function waitForCodexTuiPane(uuid: string): Promise<PaneStatus> {
-  let status: PaneStatus = { kind: 'missing' }
-  for (let i = 0; i < 20; i++) {
-    status = getCodexTuiPaneStatus(uuid)
-    if (status.kind !== 'missing') return status
-    await new Promise(resolve => setTimeout(resolve, 250))
-  }
-  return status
-}
-
-function codexTuiPaneMatchesAppServer(status: PaneStatus, appServerUrl: string): boolean {
-  return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl))
-}
+const codexSessionLifecycle = new CodexAppServerSession({
+  config: CODEX_CONFIG,
+  driver: codexDriver,
+  remember: session => {
+    codexSessions.set(session.sessionId, session)
+    rememberCodexSession(session)
+    live.set(session.sessionId, { runtime: 'codex', ipcConn: null, child: null })
+  },
+  forget: sessionId => codexSessions.delete(sessionId),
+  session: sessionId => codexSessions.get(sessionId),
+  log: line => process.stderr.write(`${line}\n`),
+  tui: {
+    available: () => zellijAvailable,
+    ensureSession: () => ensureZellijSession(),
+    status: (tabName: string) => getCodexTuiPaneStatusByTabName(tabName) as CodexRemoteTuiStatus,
+    closeTab,
+    newTab: async (tabName: string, command: string) => {
+      await zellijActionAsync(['new-tab', '--name', tabName, '--', 'bash', '-lc', command], { timeout: 10000 })
+    },
+    waitForPane: async (tabName: string) => {
+      let status: PaneStatus = { kind: 'missing' }
+      for (let i = 0; i < 20; i++) {
+        status = getCodexTuiPaneStatusByTabName(tabName)
+        if (status.kind !== 'missing') return status as CodexRemoteTuiStatus
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+      return status as CodexRemoteTuiStatus
+    },
+    autoSkipUpdatePrompt: autoSkipCodexUpdatePrompt,
+    log: line => process.stderr.write(`${line}\n`),
+  },
+})
 
 async function ensureCodexRemoteTui(uuid: string, session: AgentSession, channelKey?: string): Promise<void> {
-  if (!zellijAvailable) {
-    process.stderr.write(`daemon: codex remote TUI skipped for ${uuid.slice(0, 8)}: zellij unavailable\n`)
-    return
-  }
-  const appServerUrl = session.meta?.appServerUrl
-  if (!appServerUrl || appServerUrl === 'stdio://') {
-    process.stderr.write(`daemon: codex remote TUI skipped for ${uuid.slice(0, 8)}: app-server is not websocket-backed\n`)
-    return
-  }
   try {
-    await ensureZellijSession()
-    const status = getCodexTuiPaneStatus(uuid)
-    if (status.kind === 'alive') {
-      if (codexTuiPaneMatchesAppServer(status, appServerUrl)) {
-        await autoSkipCodexUpdatePrompt(uuid, status.paneId)
-        return
-      }
-      process.stderr.write('daemon: closing stale codex remote TUI ' + uuid.slice(0, 8) + ' tab=' + codexTuiTabName(uuid) + ' expected=' + appServerUrl + '\n')
-      closeTab(codexTuiTabName(uuid))
-    }
-    if (status.kind === 'exited') closeTab(codexTuiTabName(uuid))
-    const envExports = `export CODEX_HOME=${shellArg(CODEX_HOME)} DISABLE_AUTOUPDATER=1;`
-    const cmd = commandLine(CODEX_COMMAND, [...CODEX_LAUNCH_ARGS, '--remote', appServerUrl, 'resume', session.nativeSessionId])
-    await zellijActionAsync(['new-tab', '--name', codexTuiTabName(uuid), '--', 'bash', '-lc', `${envExports} cd ${shellArg(session.cwd)} && exec ${cmd}`], { timeout: 10000 })
-    process.stderr.write(`daemon: attached codex remote TUI ${uuid.slice(0, 8)} tab=${codexTuiTabName(uuid)} url=${appServerUrl}\n`)
-    const paneStatus = await waitForCodexTuiPane(uuid)
-    if (paneStatus.kind === 'alive') await autoSkipCodexUpdatePrompt(uuid, paneStatus.paneId)
-    if (channelKey) setAgentMeta(channelKey, 'codex', { appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid) })
+    const meta = await codexSessionLifecycle.attachTui(uuid, session)
+    if (channelKey && meta) setAgentMeta(channelKey, 'codex', meta)
   } catch (err) {
     process.stderr.write(`daemon: codex remote TUI attach failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
   }
@@ -3251,13 +3244,8 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
 async function spawnCodexAppServer(uuid: string, cwd: string, resumeMode: boolean, options: { model?: string } = {}): Promise<SpawnResult> {
   try {
     const nativeSessionId = resumeMode ? codexNativeSessionIds.get(uuid) : undefined
-    const session = resumeMode
-      ? await codexDriver.resume({ sessionId: uuid, cwd, nativeSessionId, options })
-      : await codexDriver.start({ sessionId: uuid, cwd, options })
-    codexSessions.set(uuid, session)
-    rememberCodexSession(session)
-    live.set(uuid, { runtime: 'codex', ipcConn: null, child: null })
-    process.stderr.write(`daemon: started codex app-server session ${uuid.slice(0, 8)} thread=${session.nativeSessionId}\n`)
+    if (resumeMode) await codexSessionLifecycle.resume(uuid, cwd, nativeSessionId, options)
+    else await codexSessionLifecycle.start(uuid, cwd, options)
     return { ok: true, uuid }
   } catch (err) {
     process.stderr.write(`daemon: codex app-server start failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
@@ -3339,8 +3327,7 @@ function clearRuntimeState(uuid: string, reason: string, opts: { closePane?: boo
   }
   const codexSession = codexSessions.get(uuid)
   if (codexSession) {
-    void codexDriver.stop?.(codexSession).catch(err => process.stderr.write(`daemon: codex stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`))
-    codexSessions.delete(uuid)
+    void codexSessionLifecycle.stop(uuid).catch(err => process.stderr.write(`daemon: codex stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`))
   }
   live.delete(uuid)
   socketToUuid.forEach((u, s) => { if (u === uuid) socketToUuid.delete(s) })
@@ -3800,11 +3787,7 @@ async function killSession(uuid: string): Promise<void> {
   const codexSession = codexSessions.get(uuid)
   if (codexSession) {
     deletePendingCodexRequestsForSession(uuid)
-    codexSessions.delete(uuid)
-    try { await codexDriver.stop?.(codexSession) } catch (err) { process.stderr.write(`daemon: codex stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
-    if (zellijAvailable) {
-      try { closeTab(codexTuiTabName(uuid)) } catch (err) { process.stderr.write(`daemon: close codex tui tab failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
-    }
+    try { await codexSessionLifecycle.stop(uuid) } catch (err) { process.stderr.write(`daemon: codex stop failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
   }
   if (l?.child) {
     try { l.child.kill('SIGTERM') } catch (err) { process.stderr.write(`daemon: child SIGTERM failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
