@@ -60,6 +60,8 @@ function codexRemoteTuiCommand(config: CodexResolvedConfig, session: AgentSessio
 }
 
 export class CodexAppServerSession {
+  private readonly attachInFlight = new Map<string, Promise<{ appServerUrl?: string; codexHome: string; tuiTabName: string } | undefined>>()
+
   constructor(private readonly opts: CodexSessionLifecycleOptions) {}
 
   private get config(): CodexResolvedConfig { return this.opts.config }
@@ -71,6 +73,18 @@ export class CodexAppServerSession {
 
   async attachTui(sessionId: string, session: AgentSession): Promise<{ appServerUrl?: string; codexHome: string; tuiTabName: string } | undefined> {
     const tabName = this.tabName(sessionId)
+    const existing = this.attachInFlight.get(tabName)
+    if (existing) return existing
+    const promise = this.attachTuiOnce(sessionId, session, tabName)
+    this.attachInFlight.set(tabName, promise)
+    try {
+      return await promise
+    } finally {
+      if (this.attachInFlight.get(tabName) === promise) this.attachInFlight.delete(tabName)
+    }
+  }
+
+  private async attachTuiOnce(sessionId: string, session: AgentSession, tabName: string): Promise<{ appServerUrl?: string; codexHome: string; tuiTabName: string } | undefined> {
     if (!this.tui.available()) {
       this.tui.log(`daemon: codex remote TUI skipped for ${sessionId.slice(0, 8)}: zellij unavailable`)
       return undefined

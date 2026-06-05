@@ -133,6 +133,34 @@ test('Codex remote TUI launch details stay behind the lifecycle seam', async () 
   expect(tui.commands[0]).toContain("'resume' 'thread-1'")
 })
 
+test('Codex remote TUI attach coalesces concurrent launches for the same session', async () => {
+  let releaseNewTab: (() => void) | undefined
+  let enteredNewTab: (() => void) | undefined
+  const newTabEntered = new Promise<void>(resolve => { enteredNewTab = resolve })
+  const tui = fakeTui()
+  const originalNewTab = tui.newTab
+  tui.newTab = async (tabName: string, command: string) => {
+    enteredNewTab?.()
+    await new Promise<void>(resolve => { releaseNewTab = resolve })
+    await originalNewTab(tabName, command)
+  }
+  const lifecycle = lifecycleWith({ tui, driver: {} })
+
+  const first = lifecycle.attachTui('ccm-session', session('ccm-session', 'thread-1'))
+  await newTabEntered
+  const second = lifecycle.attachTui('ccm-session', session('ccm-session', 'thread-1'))
+  releaseNewTab?.()
+  const results = await Promise.all([first, second])
+
+  expect(results).toEqual([
+    { appServerUrl: 'ws://127.0.0.1:0', codexHome: '/codex-home', tuiTabName: 'ccm:cx:ccm-sess' },
+    { appServerUrl: 'ws://127.0.0.1:0', codexHome: '/codex-home', tuiTabName: 'ccm:cx:ccm-sess' },
+  ])
+  expect(tui.tabs).toEqual(['ccm:cx:ccm-sess'])
+  expect(tui.commands).toHaveLength(1)
+  expect(tui.skipped).toEqual(['ccm-session'])
+})
+
 test('Codex remote TUI reuses matching app-server pane and closes stale panes', async () => {
   const matchingTui = fakeTui({ kind: 'alive', paneId: 7, terminalCommand: 'codex --remote ws://127.0.0.1:0' })
   const matching = await lifecycleWith({ tui: matchingTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1'))
