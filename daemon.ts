@@ -712,6 +712,12 @@ function rememberCodexSession(session: AgentSession): void {
   try { saveCodexSessionMap() } catch (err) { process.stderr.write(`daemon: codex session map save failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
 }
 
+function codexNativeSessionIdForResume(uuid: string, meta?: AgentSlotMeta, transcript?: TranscriptInfo | null): string | undefined {
+  return meta?.nativeSessionId
+    ?? codexSessionMap[uuid]?.nativeSessionId
+    ?? (transcript ? codexTranscriptSessionId(transcript.path) ?? undefined : undefined)
+}
+
 function saveTranscriptDeliveries(): void {
   const tmp = TRANSCRIPT_DELIVERY_FILE + '.tmp'
   writeFileSync(tmp, JSON.stringify(transcriptDeliveries) + '\n', { mode: 0o600 })
@@ -3379,8 +3385,9 @@ async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string): Promise
   const cwd = runtime === 'claude'
     ? claudeResumeCwd(t, fallbackCwd)
     : runtime === 'codex' ? normalizeCodexResumeCwd(uuid, fallbackCwd, meta?.sourceCwd) : fallbackCwd
-  if (runtime === 'codex') codexNativeSessionIds.set(uuid, meta?.nativeSessionId ?? codexSessionMap[uuid]?.nativeSessionId ?? uuid)
-  const promise = spawnAgent(runtime, uuid, cwd, hasTranscript || !!meta?.nativeSessionId, { model: meta?.model })
+  const nativeSessionId = runtime === 'codex' ? codexNativeSessionIdForResume(uuid, meta, t) : undefined
+  if (nativeSessionId) codexNativeSessionIds.set(uuid, nativeSessionId)
+  const promise = spawnAgent(runtime, uuid, cwd, runtime === 'codex' ? !!nativeSessionId : hasTranscript, { model: meta?.model })
   resumeInFlight.set(key, promise)
   try {
     const result = await promise
@@ -4476,6 +4483,7 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
       ], turnNoticeOpts)
       return false
     }
+    void ensureCodexRemoteTui(uuid, session, ck)
     const turn: AgentTurn = {
       turnId: randomUUID(),
       roomId: ck,
@@ -4706,10 +4714,11 @@ function staleCodexPendingSnapshot(ck: string, sessionId: string): AgentSnapshot
   prunePendingCodexRequests()
   const pending = [...pendingCodexRequests.values()].filter(req => req.channelKey === ck && req.sessionId === sessionId)
   if (!pending.length) return null
+  const nativeSessionId = codexNativeSessionIdForResume(sessionId, agentMeta(ck, 'codex'))
   const session: AgentSession = {
     kind: 'codex',
     sessionId,
-    nativeSessionId: agentMeta(ck, 'codex')?.nativeSessionId ?? sessionId,
+    nativeSessionId: nativeSessionId ?? '',
     transport: 'codex-app-server',
     cwd: roomCwd(ck),
     status: 'missing',
@@ -5132,6 +5141,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     ], commandNoticeOpts)
     return false
   }
+  if (runtime === 'codex') void ensureCodexRemoteTui(uuid, session, ck)
 
   if (!driver.sendCommand) {
     await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} command proxy is not available.`), commandNoticeOpts, `${runtime} command proxy unavailable notice`)
@@ -5577,6 +5587,7 @@ async function routeCue(cue: AgentCue): Promise<string> {
     deny('peer_session_not_loaded', { to_session_id: peerUuid })
     throw new Error(`${agentName(peer)} session is not loaded`)
   }
+  if (peer === 'codex') void ensureCodexRemoteTui(peerUuid, session, ck)
 
   const rateLimitError = checkAskPeerRate(ck, fromRuntime, peer)
   if (rateLimitError) {

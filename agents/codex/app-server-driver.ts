@@ -425,10 +425,9 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     try {
       await client.start()
       started = true
-      const threadResponse = nativeSessionId && !effectiveModel
-        ? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000).catch(() => null)
-        : null
-      const response = threadResponse ?? await client.request('thread/start', {
+      const response = nativeSessionId && !effectiveModel
+        ? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000)
+        : await client.request('thread/start', {
         cwd,
         ...(effectiveModel ? { model: effectiveModel } : {}),
         approvalPolicy: runtimeConfig.approvalPolicy,

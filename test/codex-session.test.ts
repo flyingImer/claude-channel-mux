@@ -86,6 +86,21 @@ test('Codex session lifecycle owns app-server resume only when caller supplies n
   expect(calls).toEqual([{ sessionId: 'ccm-session', cwd: '/work', nativeSessionId: 'app-server-thread', options: { model: 'room-model' } }])
 })
 
+test('Codex session lifecycle does not substitute CCM uuid for missing native id', async () => {
+  const calls: Array<{ sessionId: string; cwd: string; nativeSessionId?: string; options?: { model?: string } }> = []
+  const lifecycle = lifecycleWith({
+    driver: {
+      resume: async input => {
+        calls.push(input)
+        return session(input.sessionId, input.nativeSessionId ?? 'new-thread')
+      },
+    },
+  })
+
+  await lifecycle.resume('ccm-session', '/work', undefined, { model: 'room-model' })
+  expect(calls).toEqual([{ sessionId: 'ccm-session', cwd: '/work', nativeSessionId: undefined, options: { model: 'room-model' } }])
+})
+
 test('Codex session lifecycle owns app-server stop and closes remote TUI tab', async () => {
   const stored = new Map<string, AgentSession>([['ccm-session', session('ccm-session', 'thread-1')]])
   const stopped: string[] = []
