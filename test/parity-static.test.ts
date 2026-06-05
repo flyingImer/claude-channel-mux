@@ -35,8 +35,8 @@ test('Codex slash commands fail closed unless raw is explicit', () => {
   expect(block).toContain('const commandAllowed = driver.commandSpec?.().capabilities.some')
   expect(block).toContain("runtime === 'codex' && !commandAllowed")
   expect(block).toContain("'codex unsupported command notice'")
-  expect(block.indexOf("runtime === 'codex' && !commandAllowed")).toBeLessThan(block.indexOf('let uuid = bindingUuid(ck, runtime)'))
-  expect(block.indexOf("runtime === 'codex' && !commandAllowed")).toBeLessThan(block.indexOf('startNew(ck, roomCwd(ck), runtime'))
+  expect(block.indexOf("runtime === 'codex' && !commandAllowed")).toBeLessThan(block.indexOf('const uuid = await ensureRoomAgentReady'))
+  expect(block).not.toContain('startNew(ck, roomCwd(ck), runtime')
 })
 
 test('Codex model override is room scoped and not global config write', () => {
@@ -150,7 +150,7 @@ test('Codex startup failures are surfaced with actionable room-visible detail', 
 test('Codex help and model preference do not require starting a slot', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const modelFastPath = daemon.indexOf("runtime === 'codex' && commandVerb === 'model'")
-  const startPath = daemon.indexOf('let uuid = bindingUuid(ck, runtime)', daemon.indexOf('async function deliverAgentCommand'))
+  const startPath = daemon.indexOf('const uuid = await ensureRoomAgentReady', daemon.indexOf('async function deliverAgentCommand'))
   expect(modelFastPath).toBeGreaterThan(-1)
   expect(startPath).toBeGreaterThan(-1)
   expect(modelFastPath).toBeLessThan(startPath)
@@ -1569,10 +1569,10 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).toContain('return routeCue(cue)')
   expect(daemon).toContain("reason: 'self_ask'")
   expect(daemon).toContain("throw new Error('ask_peer target must be a different agent')")
-  expect(daemon).toContain('let peerUuid = binding.sessions[peer]')
+  expect(daemon).toContain('let peerUuid = await ensureRoomAgentReady(ck, peer, false)')
   expect(daemon).toContain('waitForLiveBridge(peerUuid)')
   expect(daemon).toContain('roomCwd(bound.channelKey)')
-  expect(daemon).toContain('setAgentMeta(ck, runtime, { cwd })')
+  expect(daemon).toContain('setAgentMeta(ck, runtime, { cwd, desiredRunning: true })')
   expect(daemon).toContain('channel_bridge_not_connected_after_resume')
   expect(daemon).toContain('let nativeTurnId = await agentRegistry.get(peer).sendTurn({ session, turn })')
   expect(daemon).toContain('waitForClaudeTranscriptReceipt(peerUuid, [handoffId, messageId])')
@@ -1657,8 +1657,7 @@ test('tool calls reject stale cross-room chat_id values', () => {
 test('peer cues rehydrate resumed sessions before sending turns', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const routeCue = daemon.slice(daemon.indexOf('async function routeCue'), daemon.indexOf('async function sendPeerCue'))
-  expect(routeCue).toContain('if (liveEntryNeedsRespawn(peerUuid))')
-  expect(routeCue).toContain('const ok = await resumeAndBind(ck, peerUuid, peer, false)')
+  expect(routeCue).toContain('let peerUuid = await ensureRoomAgentReady(ck, peer, false)')
   expect(routeCue).toContain("if (peer === 'claude' && !await waitForLiveBridge(peerUuid))")
   expect(routeCue).toContain('const session = currentAgentSession(peer, peerUuid)')
   expect(routeCue).not.toContain('claudeSessions.get(peerUuid) ?? claudeDriver.get(peerUuid)')
@@ -1922,7 +1921,7 @@ test('agent read-only commands are pure queries before start or passthrough', ()
   const snapshotIdx = block.indexOf('if (/^(ss|screen)$/i.test(commandName))')
   const transcriptIdx = block.indexOf('const transcriptMatch = commandName.match')
   const navIdx = block.indexOf('const navMatch = commandName.match')
-  const startIdx = block.indexOf('let uuid = bindingUuid(ck, runtime)')
+  const startIdx = block.indexOf('const uuid = await ensureRoomAgentReady')
   expect(statusIdx).toBeGreaterThan(-1)
   expect(snapshotIdx).toBeGreaterThan(statusIdx)
   expect(transcriptIdx).toBeGreaterThan(snapshotIdx)
@@ -1933,35 +1932,31 @@ test('agent read-only commands are pure queries before start or passthrough', ()
   expect(block).toContain('`${runtime} status not loaded notice`')
   for (const idx of [statusIdx, snapshotIdx, transcriptIdx, navIdx]) {
     expect(idx).toBeLessThan(startIdx)
-    expect(idx).toBeLessThan(block.indexOf('startNew(ck, roomCwd(ck), runtime'))
     expect(idx).toBeLessThan(block.indexOf('if (!driver.sendCommand)'))
   }
 })
 
-test('agent control commands do not lazy-start unloaded sessions', () => {
+test('agent control commands share lifecycle gate except interrupt aliases', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const block = daemon.slice(daemon.indexOf('async function deliverAgentCommand'), daemon.indexOf('async function onMessage'))
-  const guardIdx = block.indexOf('const requiresLoadedSessionCommand =')
-  const startIdx = block.indexOf('let uuid = bindingUuid(ck, runtime)')
-  expect(guardIdx).toBeGreaterThan(-1)
-  expect(guardIdx).toBeLessThan(startIdx)
-  expect(guardIdx).toBeLessThan(block.indexOf('startNew(ck, roomCwd(ck), runtime'))
-  expect(guardIdx).toBeLessThan(block.indexOf('if (!driver.sendCommand)'))
-  expect(block).toContain("['cancel', 'stop', 'interrupt', 'compact', 'mcp', 'goal'].includes(commandVerb)")
-  expect(block).toContain("runtime === 'claude' && commandVerb === 'model'")
-  expect(block).toContain('`${runtime} command not started notice`')
-  expect(block).toContain('`${runtime} command not loaded notice`')
+  const interruptIdx = block.indexOf("['cancel', 'stop', 'interrupt'].includes(commandVerb)")
+  const gateIdx = block.indexOf('const uuid = await ensureRoomAgentReady(ck, runtime, false)')
+  expect(interruptIdx).toBeGreaterThan(-1)
+  expect(gateIdx).toBeGreaterThan(interruptIdx)
+  expect(gateIdx).toBeLessThan(block.indexOf('if (!driver.sendCommand)'))
+  expect(block).toContain('if (!uuid) return false')
+  expect(block).not.toContain('const requiresLoadedSessionCommand =')
+  expect(block).not.toContain('`${runtime} command not loaded notice`')
 })
 
 test('agent command help and model notices use observable channel notice helper', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
-  const body = daemon.slice(daemon.indexOf('async function deliverAgentCommand'), daemon.indexOf('  if (liveEntryNeedsRespawn(uuid))', daemon.indexOf('async function deliverAgentCommand')))
+  const body = daemon.slice(daemon.indexOf('async function deliverAgentCommand'), daemon.indexOf('const uuid = await ensureRoomAgentReady', daemon.indexOf('async function deliverAgentCommand')))
   expect(body).toContain('`${runtime} command help`')
   expect(body).toContain("'codex model reset notice'")
   expect(body).toContain("'codex model set notice'")
   expect(body).toContain("'codex model status'")
-  expect(body).toContain('`${runtime} cwd required notice`')
-  expect(body).toContain('`${runtime} joined notice`')
+  expect(body).not.toContain('ensureRoomAgentReady')
   expect(body).not.toContain('adapter?.sendMessage(id')
 })
 
@@ -2822,10 +2817,6 @@ test('agent replies are visibly identity-prefixed and idempotent', () => {
     "formatAgentReply(runtimeForUuid(uuid), `🔐 *${tool_name}*",
     "formatAgentReply(runtimeForUuid(uuid), `✅ ${agentName(runtimeForUuid(uuid))} session",
     "formatAgentReply(runtime, `✅ Room directory set to",
-    "formatAgentReply(runtime, killed\n          ? `⏹ ${agentName(runtime)} session",
-    "formatAgentReply(runtime, killed",
-    "? `⏹ ${agentName(runtime)} session",
-    ": `⏹ Unbound ${agentName(runtime)} session",
     "formatAgentReply(runtime, `📂 Choose working directory for ${agentName(runtime)}:`)",
     "formatAgentReply(runtime, `⏱ Recent directories for ${agentName(runtime)}:`)",
     "formatAgentReply(runtime, `📂 ${agentName(runtime)} working directory browser",
@@ -2833,7 +2824,6 @@ test('agent replies are visibly identity-prefixed and idempotent', () => {
     "formatAgentReply(runtime, `${agentName(runtime)} session",
     "`⏳ ${agentName(runtime)} agent slot session starting up.`",
     "formatAgentReply(runtime, message)",
-    "formatAgentReply(runtime, `⏳ ${agentName(runtime)} session starting up.`)",
     "formatAgentReply(runtime, `🔍 Found ${results.length} ${agentName(runtime)} director",
     "formatAgentReply(activeRuntime, 'No active agent sessions to stop.')",
     "formatAgentReply(activeRuntime, detail)",
@@ -3064,40 +3054,28 @@ test('daemon runtime teardown clears per-session UI state', () => {
   expect(daemon).toContain('clearPerSessionUiState(uuid, { clearPeerInflight: true })')
 })
 
-test('daemon stop buttons unbind all channels before killing session', () => {
+test('daemon stop buttons preserve room mappings before killing runtime', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain('function unbindSessionEverywhere(uuid: string, runtime: AgentRuntimeKind): number')
-  expect(daemon).toContain('const channels = routableChannelsForUuid(uuid, runtime)')
-  expect(daemon).toContain('for (const c of channels) removeBindingSession(c, runtime)')
-  expect(daemon).toContain('async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind): Promise<boolean>')
-  expect(daemon).toContain('if (channelsForUuid(uuid, runtime).length > 0) return false')
-  expect(daemon).toContain('const unboundCount = unbindSessionEverywhere(uuid, runtime)')
-  expect((daemon.match(/unbindSessionEverywhere\(uuid, runtime\)/g) ?? []).length).toBeGreaterThanOrEqual(4)
+  expect(daemon).toContain('async function stopRoomMappedSession(ck: string, runtime: AgentRuntimeKind, uuid: string): Promise<void>')
+  expect(daemon).toContain('setAgentDesiredRunning(ck, runtime, false)')
   expect(daemon).toContain("} else if (action.startsWith('stopnew:')) {")
   expect(daemon).toContain("} else if (action.startsWith('stop:')) {")
   expect(daemon).toContain("} else if (action.startsWith('stopnow:')) {")
   const stopCallbackBody = daemon.slice(daemon.indexOf("} else if (action.startsWith('stop:')) {"), daemon.indexOf("} else if (action.startsWith('stopnow:')) {"))
+  expect(stopCallbackBody).toContain('if (bindingUuid(ck, runtime) === uuid) await stopRoomMappedSession(ck, runtime, uuid)')
   expect(stopCallbackBody).toContain('unbindSessionEverywhere(uuid, runtime)')
   expect(stopCallbackBody).toContain('await killSessionIfUnboundEverywhere(uuid, runtime)')
-  expect(stopCallbackBody).toContain('formatAgentReply(runtime, killed')
-  expect(stopCallbackBody).toContain('? `⏹ ${agentName(runtime)} session')
-  expect(stopCallbackBody).toContain('stopped.`')
-  expect(stopCallbackBody).toContain('still active on other channels.`')
   expect(stopCallbackBody).toContain('{ text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` }')
   expect(stopCallbackBody).toContain('{ text: `🚀 Start ${agentName(runtime)}`, data: `cmd:new:${runtime}` }')
-  expect(daemon).not.toContain("} else if (action.startsWith('stop:')) {\n        const uuid = action.slice(5)\n        killSession(uuid)\n        live.delete(uuid)")
-  expect(daemon).not.toContain('unbind(ck, runtime)\n        killSession(uuid)')
 })
 
-test('room stop owns the runtime lifecycle when this room is the last binding', () => {
+test('room stop owns runtime lifecycle while preserving the room mapping', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const stopCase = daemon.slice(daemon.indexOf("    case 'stop':"), daemon.indexOf("    case 'stop_id':"))
-  expect(stopCase).toContain('const unboundCount = unbindSessionEverywhere(uuid, runtime)')
-  expect(stopCase).toContain('const killed = await killSessionIfUnboundEverywhere(uuid, runtime)')
-  expect(stopCase).toContain('killed')
-  expect(stopCase).toContain('stopped')
-  expect(stopCase).toContain('still active on other channels')
-  expect(stopCase).not.toContain('const result = unbind(ck, cmd.runtime)')
+  expect(stopCase).toContain('await stopRoomMappedSession(ck, runtime, uuid)')
+  expect(stopCase).toContain('Room mapping was kept for resume.')
+  expect(stopCase).not.toContain('unbindSessionEverywhere')
+  expect(stopCase).not.toContain('killSessionIfUnboundEverywhere')
   expect(stopCase).not.toContain('suspended.')
 })
 
@@ -3328,9 +3306,9 @@ test('Codex app-server uses websocket runtime and auto-attaches remote TUI', () 
   expect(lifecycle).toContain("commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId])")
   const commandBody = lifecycle.slice(lifecycle.indexOf('function codexRemoteTuiCommand'), lifecycle.indexOf('export class CodexAppServerSession'))
   expect(commandBody).toContain("'resume', session.nativeSessionId")
-  expect(daemon).toContain('void ensureCodexRemoteTui(uuid, session, ck)')
-  expect(daemon).toContain("if (runtime === 'codex') void ensureCodexRemoteTui(uuid, session, ck)")
-  expect(daemon).toContain("if (peer === 'codex') void ensureCodexRemoteTui(peerUuid, session, ck)")
+  expect(daemon).toContain('const tuiReady = await ensureCodexRemoteTui(uuid, session, ck)')
+  expect(daemon).not.toContain('void ensureCodexRemoteTui(uuid, session, ck)')
+  expect(daemon).not.toContain("if (peer === 'codex') void ensureCodexRemoteTui(peerUuid, session, ck)")
   expect(lifecycle).toContain('this.tui.closeTab(this.tabName(sessionId))')
   expect(bindings).toContain('appServerUrl?: string')
   expect(bindings).toContain('tuiTabName?: string')
@@ -3462,9 +3440,42 @@ test('Codex app-server stop owns process-group and awaited stop semantics', () =
   expect(daemon).toContain('await codexSessionLifecycle.stop(uuid)')
   expect(lifecycle).toContain('await this.opts.driver.stop?.(session)')
   expect(daemon).toContain('async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntimeKind): Promise<boolean>')
-  expect(daemon).toContain('const killed = await killSessionIfUnboundEverywhere(uuid, runtime)')
+  expect(daemon).toContain('async function stopRoomMappedSession(ck: string, runtime: AgentRuntimeKind, uuid: string): Promise<void>')
   const killSessionBody = daemon.slice(daemon.indexOf('async function killSession(uuid: string): Promise<void>'), daemon.indexOf('function unbind(ck: string'))
   expect(killSessionBody).not.toContain('void codexSessionLifecycle.stop(uuid).catch')
+})
+
+test('room lifecycle contract keeps mappings through stop and gates Codex TUI readiness', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const bindings = readFileSync('bindings.ts', 'utf8')
+  const lifecycle = readFileSync('agents/codex/session.ts', 'utf8')
+  expect(bindings).toContain('desiredRunning?: boolean')
+  expect(daemon).toContain('function setAgentDesiredRunning')
+  expect(daemon).toContain('function agentDesiredRunning')
+  expect(daemon).toContain('setAgentDesiredRunning(ck, runtime, false)')
+  expect(daemon).toContain('await killSession(uuid)')
+  const stopCase = daemon.slice(daemon.indexOf("case 'stop':"), daemon.indexOf("case 'stop_id':"))
+  expect(stopCase).toContain('await stopRoomMappedSession(ck, runtime, uuid)')
+  expect(stopCase).not.toContain('unbindSessionEverywhere')
+  expect(daemon).toContain('async function ensureRoomAgentReady')
+  expect(daemon).toContain('const uuid = await ensureRoomAgentReady(ck, runtime, false)')
+  expect(daemon).toContain('let uuid = await ensureRoomAgentReady(ck, runtime, makeActive)')
+  expect(daemon).toContain('let peerUuid = await ensureRoomAgentReady(ck, peer, false)')
+  expect(daemon).toContain('const tuiReady = await ensureCodexRemoteTui')
+  expect(lifecycle).toContain('codexTuiPaneReadyForSession')
+  expect(lifecycle).toContain('throw new Error(`codex remote TUI failed to become ready')
+})
+
+test('room delete and path-change reset are confirmed operations', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  expect(daemon).toContain("| { t: 'delete_room' }")
+  expect(daemon).toContain('async function deleteRoomState')
+  expect(daemon).toContain("if (/^(?:delete|reset)\\s+room$/i.test(args)) return { t: 'delete_room' }")
+  expect(daemon).toContain("{ text: '🗑 Confirm Delete Room', data: 'cmd:delete_room_confirm' }")
+  expect(daemon).toContain("action === 'delete_room_confirm'")
+  expect(daemon).toContain("action.startsWith('pathconfirm:')")
+  expect(daemon).toContain('await deleteRoomState(ck)')
+  expect(daemon).toContain('encodeURIComponent(cmd.cwd)')
 })
 
 

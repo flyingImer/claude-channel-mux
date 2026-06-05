@@ -22,12 +22,13 @@ test('bindings preserve room observer agents', () => {
 })
 
 test('normalizeBinding trims cwd and preserves agent metadata', () => {
-  const normalized = normalizeBinding({ active: 'codex', sessions: { codex: 'cx' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', appServerUrl: 'ws://127.0.0.1:1', codexHome: '/home/me/.codex', tuiTabName: 'ccm:cx:abc' } } }, 'claude')
+  const normalized = normalizeBinding({ active: 'codex', sessions: { codex: 'cx' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', appServerUrl: 'ws://127.0.0.1:1', codexHome: '/home/me/.codex', tuiTabName: 'ccm:cx:abc', desiredRunning: false } } }, 'claude')
   expect(normalized.cwd).toBe('/repo')
   expect(normalized.agentMeta.codex?.model).toBe('gpt')
   expect(normalized.agentMeta.codex?.appServerUrl).toBe('ws://127.0.0.1:1')
   expect(normalized.agentMeta.codex?.codexHome).toBe('/home/me/.codex')
   expect(normalized.agentMeta.codex?.tuiTabName).toBe('ccm:cx:abc')
+  expect(normalized.agentMeta.codex?.desiredRunning).toBe(false)
 })
 
 test('serializeBinding omits empty default bindings and empty metadata', () => {
@@ -39,23 +40,24 @@ test('serializeBinding omits empty default bindings and empty metadata', () => {
 })
 
 
-test('keepAgentModelMeta preserves only model overrides', () => {
+test('keepAgentModelMeta preserves model and desired running state', () => {
   expect(keepAgentModelMeta(undefined)).toBeUndefined()
   expect(keepAgentModelMeta({ cwd: '/repo', nativeSessionId: 'native' })).toBeUndefined()
   expect(keepAgentModelMeta({ model: 'gpt-5.4', cwd: '/repo', nativeSessionId: 'native' })).toEqual({ model: 'gpt-5.4' })
+  expect(keepAgentModelMeta({ model: 'gpt-5.4', desiredRunning: false, cwd: '/repo', nativeSessionId: 'native' })).toEqual({ model: 'gpt-5.4', desiredRunning: false })
 })
 
 
 test('bindingsFromJson keeps valid bindings and drops malformed persisted state', () => {
   expect(bindingsFromJson({
     'slack:C1': 'legacy-uuid',
-    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx', other: 'bad' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', cwd: '/repo', bad: 1 } } },
+    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx', other: 'bad' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', cwd: '/repo', desiredRunning: false, bad: 1 } } },
     'slack:bad': { active: 'other', sessions: { claude: 1 }, cwd: '   ', agentMeta: { codex: { model: '' } } },
     'slack:number-active': { active: 1, sessions: { codex: 2 } },
     'slack:null': null,
   })).toEqual({
     'slack:C1': 'legacy-uuid',
-    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx' }, cwd: '/repo', agentMeta: { codex: { cwd: '/repo', model: 'gpt' } } },
+    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx' }, cwd: '/repo', agentMeta: { codex: { cwd: '/repo', model: 'gpt', desiredRunning: false } } },
   })
   expect(bindingsFromJson([])).toEqual({})
 })

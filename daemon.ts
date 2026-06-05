@@ -559,6 +559,14 @@ function setAgentMeta(ck: string, runtime: AgentRuntimeKind, meta: AgentSlotMeta
   saveBindings(b)
 }
 
+function setAgentDesiredRunning(ck: string, runtime: AgentRuntimeKind, desiredRunning: boolean): void {
+  setAgentMeta(ck, runtime, { desiredRunning })
+}
+
+function agentDesiredRunning(ck: string, runtime: AgentRuntimeKind): boolean {
+  return agentMeta(ck, runtime)?.desiredRunning !== false
+}
+
 function clearAgentMetaField(ck: string, runtime: AgentRuntimeKind, field: keyof AgentSlotMeta): void {
   const b = loadBindings()
   const binding = normalizeBinding(b[ck])
@@ -2244,7 +2252,7 @@ async function injectPeerReply(inflight: AskPeerInflight, text: string, messageI
     if (!session) throw new Error(`${agentName(inflight.fromRuntime)} session is not loaded`)
     if (session.status === 'running') {
       queuePeerReplyInjection(inflight, text, messageId)
-      return false
+      return undefined
     }
     const binding = normalizeBinding(loadBindings()[inflight.roomId])
     const peerReplyPayload = peerReplyTurnText(inflight, text, messageId)
@@ -2998,12 +3006,14 @@ const codexSessionLifecycle = new CodexAppServerSession({
   },
 })
 
-async function ensureCodexRemoteTui(uuid: string, session: AgentSession, channelKey?: string): Promise<void> {
+async function ensureCodexRemoteTui(uuid: string, session: AgentSession, channelKey?: string): Promise<boolean> {
   try {
     const meta = await codexSessionLifecycle.attachTui(uuid, session)
     if (channelKey && meta) setAgentMeta(channelKey, 'codex', meta)
+    return true
   } catch (err) {
     process.stderr.write(`daemon: codex remote TUI attach failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
+    return false
   }
 }
 function exitedPaneSummary(uuid: string, status: Extract<PaneStatus, { kind: 'exited' }>): string {
@@ -3232,7 +3242,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
       // Do not fall back to direct background spawn for Claude: without a TTY,
       // Claude Code switches to non-interactive/print semantics and exits before
       // the channel bridge can receive turns.
-      return false
+      return undefined
     }
   } else {
     process.stderr.write(`daemon: zellij unavailable; Claude channel sessions require an interactive zellij pane\n`)
@@ -3290,17 +3300,28 @@ async function startNew(ck: string, cwd: string, runtime = DEFAULT_AGENT_RUNTIME
     await sendChannelNotice(ck, formatAgentReply(runtime, formatAgentStartFailure(runtime, 'start', result.error)), undefined, `${runtime} start failure`)
     return undefined
   }
+  if (runtime === 'codex') {
+    const session = codexSessions.get(uuid)
+    if (!session) {
+      await killSession(uuid)
+      await sendChannelNotice(ck, formatAgentReply(runtime, '❌ Codex app-server did not report a session. The previous room mapping was kept; try again.'), undefined, 'codex session start failure')
+      return undefined
+    }
+    const tuiReady = await ensureCodexRemoteTui(uuid, session)
+    if (!tuiReady) {
+      await killSession(uuid)
+      await sendChannelNotice(ck, formatAgentReply(runtime, '❌ Codex app-server started but remote TUI was not ready. The previous room mapping was kept; try again or use `ccm stop codex`.'), undefined, 'codex tui start failure')
+      return undefined
+    }
+    if (codexCwd.warning) await sendChannelNotice(ck, formatAgentReply(runtime, `⚠️ Codex worktree: ${codexCwd.warning}`), undefined, 'codex worktree warning')
+  }
   setRoom(ck, cwd, makeActive ? runtime : undefined)
   setBindingSession(ck, runtime, uuid, makeActive)
   if (runtime === 'codex') {
     const session = codexSessions.get(uuid)
-    if (session) {
-      setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(existingMeta?.model ? { model: existingMeta.model } : {}) })
-      void ensureCodexRemoteTui(uuid, session, ck)
-    }
-    if (codexCwd.warning) await sendChannelNotice(ck, formatAgentReply(runtime, `⚠️ Codex worktree: ${codexCwd.warning}`), undefined, 'codex worktree warning')
+    if (session) setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(existingMeta?.model ? { model: existingMeta.model } : {}), desiredRunning: true })
   } else {
-    setAgentMeta(ck, runtime, { cwd })
+    setAgentMeta(ck, runtime, { cwd, desiredRunning: true })
   }
   if (announce) await sendChannelNotice(ck, formatAgentReply(runtime, `🚀 ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` starting...`), undefined, `${runtime} start notice`)
   if (runtime === 'codex') await sendChannelNotice(ck, formatAgentReadyNotice(runtime, uuid), undefined, `${runtime} ready notice`)
@@ -3415,14 +3436,22 @@ async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_R
       const session = codexSessions.get(uuid)
       if (session) {
         setAgentMetaForUuid(uuid, runtime, { transport: session.transport, nativeSessionId: session.nativeSessionId, cwd: session.cwd, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(keepAgentModelMeta(agentMeta(ck, runtime)) ?? {}) })
-        void ensureCodexRemoteTui(uuid, session, ck)
+        const tuiReady = await ensureCodexRemoteTui(uuid, session, ck)
+        if (!tuiReady) {
+          await killSession(uuid)
+          if (boundForResume) restoreBindingSnapshot(ck, before)
+          await sendChannelNotice(ck, formatAgentReply(runtime, `❌ Codex app-server resumed but remote TUI was not ready. No work was sent; try resume again or start a new Codex session.`), undefined, 'codex tui resume failure')
+          return false
+        }
       }
     }
+    setAgentDesiredRunning(ck, runtime, true)
     await sendChannelNotice(ck, formatAgentReply(runtime,
       hasTranscript ? `▶️ Resuming ${agentName(runtime)} \`${uuid.slice(0, 8)}\`...` : `🚀 ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` starting (no prior transcript)...`), undefined, `${runtime} resume notice`)
     if (runtime === 'codex') await sendChannelNotice(ck, formatAgentReadyNotice(runtime, uuid), undefined, `${runtime} resume ready notice`)
     if (runtime !== 'codex') void startScreenWatch(ck, uuid)
   } else {
+    setAgentDesiredRunning(ck, runtime, true)
     await sendChannelNotice(ck, formatAgentReply(runtime, `✅ Bound to ${agentName(runtime)} \`${uuid.slice(0, 8)}\``), undefined, `${runtime} bind notice`)
   }
   process.stderr.write(`daemon: bound ${ck} → ${uuid.slice(0, 8)}\n`)
@@ -3835,6 +3864,32 @@ async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntim
   return true
 }
 
+async function stopRoomMappedSession(ck: string, runtime: AgentRuntimeKind, uuid: string): Promise<void> {
+  setAgentDesiredRunning(ck, runtime, false)
+  await killSession(uuid)
+}
+
+function roomHasResettableState(ck: string): boolean {
+  const binding = normalizeBinding(loadBindings()[ck])
+  return !!binding.cwd
+    || binding.active !== DEFAULT_AGENT_RUNTIME
+    || binding.observers.length > 0
+    || Object.keys(binding.sessions).length > 0
+    || Object.keys(binding.agentMeta).length > 0
+}
+
+async function deleteRoomState(ck: string): Promise<void> {
+  const binding = normalizeBinding(loadBindings()[ck])
+  for (const entry of bindingSessionEntries(binding)) await killSession(entry.uuid)
+  const b = loadBindings()
+  delete b[ck]
+  saveBindings(b)
+  for (const [key, req] of pendingCodexRequests) {
+    if (req.channelKey === ck) pendingCodexRequests.delete(key)
+  }
+  savePendingCodexRequests()
+}
+
 // ---------------------------------------------------------------------------
 // Magic word parsing
 // ---------------------------------------------------------------------------
@@ -3849,6 +3904,7 @@ type Cmd =
   | { t: 'resume_id'; uuid: string; runtime?: AgentRuntimeKind }
   | { t: 'stop'; runtime?: AgentRuntimeKind }
   | { t: 'stop_id'; uuid: string; runtime?: AgentRuntimeKind }
+  | { t: 'delete_room' }
   | { t: 'help' }
   | { t: 'find'; query: string; runtime?: AgentRuntimeKind }
   | { t: 'screen'; runtime?: AgentRuntimeKind }
@@ -3937,6 +3993,7 @@ function parseCmd(text: string): Cmd {
     if (/^collab(?:\s+(?:ss|status))?$/i.test(args)) return { t: 'collab_status' }
     if (/^collab\s+(?:cancel|stop)$/i.test(args)) return { t: 'collab_cancel' }
     if (/^collab\s+(?:done|complete)$/i.test(args)) return { t: 'collab_done' }
+    if (/^(?:delete|reset)\s+room$/i.test(args)) return { t: 'delete_room' }
     if (/^route$/i.test(args)) return { t: 'route' }
     if (/^default$/i.test(args) && runtime) return { t: 'default', runtime }
     const defaultM = args.match(/^default\s+(claude|cc|codex|cx)$/i)
@@ -4386,27 +4443,11 @@ async function interruptAgentTurn(ck: string, runtime: AgentRuntimeKind, threadI
 async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, runtime: AgentRuntimeKind, makeActive = true): Promise<boolean> {
   const adapter = adapterFor(ck)
   const id = localId(ck)
-  let uuid = bindingUuid(ck, runtime)
-  if (!uuid) {
-    if (!roomHasExplicitCwd(ck)) {
-      await sendDirPicker(ck, runtime)
-      await sendChannelNotice(ck, formatAgentReply(runtime, `📂 Choose a working directory for ${agentName(runtime)} first, or send \`ccm /path/to/repo\`.`), undefined, `${runtime} cwd required notice`)
-      return false
-    }
-    uuid = await startNew(ck, roomCwd(ck), runtime, false, makeActive)
-    if (!uuid) return false
-    await sendChannelNotice(ck, formatAgentReply(runtime, `🚀 ${agentName(runtime)} joined this room.`), undefined, `${runtime} joined notice`)
-  } else {
-    setBindingSession(ck, runtime, uuid, makeActive)
-  }
+  let uuid = await ensureRoomAgentReady(ck, runtime, makeActive)
+  if (!uuid) return false
 
   const typingThreadId = msg.replyToId ?? msg.messageId
   const turnNoticeOpts = { replyTo: typingThreadId, broadcast: true }
-
-  if (liveEntryNeedsRespawn(uuid)) {
-    const ok = await resumeAndBind(ck, uuid, runtime, makeActive)
-    if (!ok) return false
-  }
 
   let l = live.get(uuid)
   if (!l) {
@@ -4483,7 +4524,6 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
       ], turnNoticeOpts)
       return false
     }
-    void ensureCodexRemoteTui(uuid, session, ck)
     const turn: AgentTurn = {
       turnId: randomUUID(),
       roomId: ck,
@@ -4545,6 +4585,45 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
     ], turnNoticeOpts)
     return false
   }
+}
+
+async function ensureRoomAgentReady(ck: string, runtime: AgentRuntimeKind, makeActive: boolean): Promise<string | undefined> {
+  let uuid = bindingUuid(ck, runtime)
+  if (!uuid) {
+    if (!roomHasExplicitCwd(ck)) {
+      await sendDirPicker(ck, runtime)
+      await sendChannelNotice(ck, formatAgentReply(runtime, `📂 Choose a working directory for ${agentName(runtime)} first, or send \`ccm /path/to/repo\`.`), undefined, `${runtime} cwd required notice`)
+      return undefined
+    }
+    uuid = await startNew(ck, roomCwd(ck), runtime, false, makeActive)
+    if (!uuid) return undefined
+    await sendChannelNotice(ck, formatAgentReply(runtime, `🚀 ${agentName(runtime)} joined this room.`), undefined, `${runtime} joined notice`)
+  } else {
+    setBindingSession(ck, runtime, uuid, makeActive)
+  }
+
+  if (!agentDesiredRunning(ck, runtime) || liveEntryNeedsRespawn(uuid)) {
+    const ok = await resumeAndBind(ck, uuid, runtime, makeActive)
+    if (!ok) return undefined
+  }
+  if (runtime === 'codex') {
+    const session = codexSessions.get(uuid)
+    if (!session) {
+      await sendWithButtons(ck, formatAgentReply('codex', '⏳ Codex app-server session starting up.'), [
+        { text: '🔄 Retry', data: `cmd:retry:${uuid}` },
+      ])
+      return undefined
+    }
+    const tuiReady = await ensureCodexRemoteTui(uuid, session, ck)
+    if (!tuiReady) {
+      await sendWithButtons(ck, formatAgentReply('codex', `❌ Codex remote TUI is not ready for session \`${uuid.slice(0, 8)}\`. No work was sent.`), [
+        { text: '🔄 Retry', data: `cmd:retry:${uuid}` },
+        { text: `🚀 New Codex`, data: `cmd:new:codex` },
+      ])
+      return undefined
+    }
+  }
+  return uuid
 }
 
 
@@ -4776,6 +4855,7 @@ async function sendAgentSnapshot(ck: string, runtime: AgentRuntimeKind): Promise
     await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not started in this room.`), undefined, `${runtime} not started notice`)
     return false
   }
+  if (!agentDesiredRunning(ck, runtime)) return sendStoppedAgentPanel(ck, runtime, uuid)
   const session = runtime === 'codex' ? codexSessions.get(uuid) : claudeSessions.get(uuid) ?? claudeDriver.get(uuid)
   if (!session) {
     const stale = runtime === 'codex' ? staleCodexPendingSnapshot(ck, uuid) : null
@@ -4803,6 +4883,15 @@ async function sendAgentSnapshot(ck: string, runtime: AgentRuntimeKind): Promise
     return true
   }
   await sendChannelNotice(ck, formatAgentReply(runtime, rendered), undefined, `${runtime} snapshot notice`)
+  return true
+}
+
+async function sendStoppedAgentPanel(ck: string, runtime: AgentRuntimeKind, uuid: string): Promise<boolean> {
+  await sendWithButtons(ck, formatAgentReply(runtime, `⏸ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` is stopped. Room mapping is kept.`), [
+    { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
+    { text: `🚀 New ${agentName(runtime)}`, data: `cmd:new:${runtime}` },
+    { text: '🗑 Delete Room', data: 'cmd:delete_room' },
+  ])
   return true
 }
 
@@ -4852,11 +4941,23 @@ async function sendAgentNav(ck: string, runtime: AgentRuntimeKind): Promise<bool
     await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not started in this room.`), undefined, `${runtime} not started notice`)
     return false
   }
+  if (!agentDesiredRunning(ck, runtime)) return sendStoppedAgentPanel(ck, runtime, uuid)
   if (runtime === 'claude') return sendClaudeNav(ck, uuid)
   const session = runtime === 'codex' ? codexSessions.get(uuid) : claudeSessions.get(uuid) ?? claudeDriver.get(uuid)
   if (runtime === 'codex' && session) {
     const paneStatus = getCodexTuiPaneStatus(uuid)
-    if (paneStatus.kind !== 'alive') void ensureCodexRemoteTui(uuid, session, ck)
+    if (paneStatus.kind !== 'alive') {
+      const ready = await ensureCodexRemoteTui(uuid, session, ck)
+      if (!ready) {
+        await sendWithButtons(ck, formatAgentReply(runtime, `❌ Codex remote TUI is not ready for session \`${uuid.slice(0, 8)}\`.`), [
+          { text: '🔄 Retry', data: `cmd:retry:${uuid}` },
+          { text: `🚀 New Codex`, data: `cmd:new:codex` },
+        ])
+        return false
+      }
+    }
+    const refreshedPaneStatus = getCodexTuiPaneStatus(uuid)
+    if (refreshedPaneStatus.kind === 'alive') return sendCodexTuiNav(ck, uuid, refreshedPaneStatus.paneId)
     if (paneStatus.kind === 'alive') {
       return sendCodexTuiNav(ck, uuid, paneStatus.paneId)
     }
@@ -5089,45 +5190,12 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     ? handleAgentNavCommand(ck, runtime, navMatch[1]?.trim() ?? '')
     : sendAgentNav(ck, runtime)
 
-  const requiresLoadedSessionCommand = ['cancel', 'stop', 'interrupt', 'compact', 'mcp', 'goal'].includes(commandVerb)
-    || (runtime === 'claude' && commandVerb === 'model')
   if (['cancel', 'stop', 'interrupt'].includes(commandVerb)) {
     return interruptAgentTurn(ck, runtime, msg.replyToId ?? msg.messageId)
   }
 
-  if (requiresLoadedSessionCommand) {
-    const liveUuid = bindingUuid(ck, runtime)
-    if (!liveUuid) {
-      await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not started in this room.`), undefined, `${runtime} command not started notice`)
-      return false
-    }
-    const loadedSession = runtime === 'codex'
-      ? codexSessions.get(liveUuid)
-      : claudeSessions.get(liveUuid) ?? claudeDriver.get(liveUuid)
-    if (!loadedSession || liveEntryNeedsRespawn(liveUuid)) {
-      await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not currently loaded. Resume or cue it first.`), undefined, `${runtime} command not loaded notice`)
-      return false
-    }
-  }
-
-  let uuid = bindingUuid(ck, runtime)
-  if (!uuid) {
-    if (!roomHasExplicitCwd(ck)) {
-      await sendDirPicker(ck, runtime)
-      await sendChannelNotice(ck, formatAgentReply(runtime, `📂 Choose a working directory for ${agentName(runtime)} first, or send \`ccm /path/to/repo\`.`), undefined, `${runtime} cwd required notice`)
-      return false
-    }
-    uuid = await startNew(ck, roomCwd(ck), runtime, false, false)
-    if (!uuid) return false
-    await sendChannelNotice(ck, formatAgentReply(runtime, `🚀 ${agentName(runtime)} joined this room.`), undefined, `${runtime} joined notice`)
-  } else {
-    setBindingSession(ck, runtime, uuid, false)
-  }
-
-  if (liveEntryNeedsRespawn(uuid)) {
-    const ok = await resumeAndBind(ck, uuid, runtime, false)
-    if (!ok) return false
-  }
+  const uuid = await ensureRoomAgentReady(ck, runtime, false)
+  if (!uuid) return false
 
   const threadId = msg.replyToId ?? msg.messageId
   const commandNoticeOpts = { replyTo: threadId, broadcast: true }
@@ -5141,8 +5209,6 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     ], commandNoticeOpts)
     return false
   }
-  if (runtime === 'codex') void ensureCodexRemoteTui(uuid, session, ck)
-
   if (!driver.sendCommand) {
     await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} command proxy is not available.`), commandNoticeOpts, `${runtime} command proxy unavailable notice`)
     return false
@@ -5258,6 +5324,13 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       await sendChannelNotice(ck, formatAgentReply(cmd.runtime, `✅ Default agent is now ${agentLabel(cmd.runtime)}.`), undefined, 'default agent notice')
       return
     }
+    case 'delete_room': {
+      await sendWithButtons(ck, '⚠️ Delete this CCM room mapping? This stops mapped live sessions and clears room path, sessions, metadata, default agent, and pending UI state. Durable provider history is kept.', [
+        { text: '🗑 Confirm Delete Room', data: 'cmd:delete_room_confirm' },
+        { text: 'Cancel', data: 'noop' },
+      ])
+      return
+    }
     case 'use': {
       const binding = normalizeBinding(loadBindings()[ck])
       const uuid = binding.sessions[cmd.runtime]
@@ -5339,14 +5412,30 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         // Bare ccm → show recent directories + browse
         await sendDirPicker(ck, runtime)
       } else {
+        const existingCwd = roomHasExplicitCwd(ck) ? roomCwd(ck) : undefined
+        if (existingCwd !== cmd.cwd && roomHasResettableState(ck)) {
+          const from = existingCwd ? ` from \`${existingCwd}\`` : ''
+          await sendWithButtons(ck, formatAgentReply(runtime, `⚠️ Change room directory${from} to \`${cmd.cwd}\`? This resets existing room mappings/meta/default/pending UI before setting the new path.`), [
+            { text: 'Confirm Path Change', data: `cmd:pathconfirm:${runtime}:${encodeURIComponent(cmd.cwd)}` },
+            { text: 'Cancel', data: 'noop' },
+          ])
+          return
+        }
         setRoom(ck, cmd.cwd, runtime)
         await sendChannelNotice(ck, formatAgentReply(runtime, `✅ Room directory set to \`${cmd.cwd}\`. ${agentLabel(runtime)} will lazy-start on first cue.`), undefined, 'room directory notice')
       }
       return
     }
-    case 'resume_pick':
-      await sendPicker(ck, 0, cmd.runtime)
+    case 'resume_pick': {
+      const runtime = cmd.runtime ?? bindingRuntime(ck)
+      const uuid = bindingUuid(ck, runtime)
+      if (!uuid) {
+        await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} has no mapped session in this room. Use ccm new ${runtime} to start one.`), undefined, `${runtime} resume no mapping notice`)
+        return
+      }
+      await resumeAndBind(ck, uuid, runtime, true)
       return
+    }
     case 'resume_id': {
       let uuid = cmd.uuid
       let selected: SessionInfo | undefined
@@ -5375,11 +5464,8 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       const runtime = cmd.runtime ?? bindingRuntime(ck)
       const uuid = bindingUuid(ck, runtime)
       if (uuid) {
-        const unboundCount = unbindSessionEverywhere(uuid, runtime)
-        const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
-        await sendWithButtons(ck, formatAgentReply(runtime, killed
-          ? `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`
-          : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
+        await stopRoomMappedSession(ck, runtime, uuid)
+        await sendWithButtons(ck, formatAgentReply(runtime, `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped. Room mapping was kept for resume.`), [
           { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
           { text: `🚀 Start ${agentName(runtime)}`, data: `cmd:new:${runtime}` },
         ])
@@ -5397,11 +5483,14 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       }
       uuid = resolved.session.uuid
       const runtime = resolved.session.runtime
-      const unboundCount = unbindSessionEverywhere(uuid, runtime)
-      const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
-      await sendWithButtons(ck, formatAgentReply(runtime, killed
-        ? `⏹ Stopped ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` (${unboundCount} channel(s) unbound).`
-        : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
+      const isRoomMapped = bindingUuid(ck, runtime) === uuid
+      if (isRoomMapped) await stopRoomMappedSession(ck, runtime, uuid)
+      else {
+        const unboundCount = unbindSessionEverywhere(uuid, runtime)
+        if (unboundCount === 0) await killSession(uuid)
+        else await killSessionIfUnboundEverywhere(uuid, runtime)
+      }
+      await sendWithButtons(ck, formatAgentReply(runtime, `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`), [
         { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
         { text: `🚀 Start ${agentName(runtime)}`, data: `cmd:new:${runtime}` },
       ])
@@ -5555,27 +5644,13 @@ async function routeCue(cue: AgentCue): Promise<string> {
     throw new Error(`CCM collaboration ${collab.collabId} reached its peer handoff budget (${collab.turnCount}/${COLLAB_MAX_HANDOFFS}). Produce the current convergence and ask the user whether to continue.`)
   }
 
+  let peerUuid = await ensureRoomAgentReady(ck, peer, false)
   let binding = normalizeBinding(loadBindings()[ck])
-  let peerUuid = binding.sessions[peer]
-  if (!peerUuid && cue.allowColdStart) {
-    if (!roomHasExplicitCwd(ck)) {
-      deny('missing_cwd')
-      throw new Error(`Choose a working directory for ${agentName(peer)} first, or send \`ccm /path/to/repo\`.`)
-    }
-    peerUuid = await startNew(ck, roomCwd(ck), peer, false, false)
-    binding = normalizeBinding(loadBindings()[ck])
-  }
   if (!peerUuid) {
-    deny('peer_not_started')
-    throw new Error(`${agentName(peer)} is not started in this room`)
-  }
-
-  if (liveEntryNeedsRespawn(peerUuid)) {
-    const ok = await resumeAndBind(ck, peerUuid, peer, false)
-    if (!ok) {
-      deny('peer_unavailable', { to_session_id: peerUuid })
-      throw new Error(`${agentName(peer)} is not available`)
-    }
+    deny(roomHasExplicitCwd(ck) ? 'peer_unavailable' : 'missing_cwd')
+    throw new Error(roomHasExplicitCwd(ck)
+      ? `${agentName(peer)} is not available`
+      : `Choose a working directory for ${agentName(peer)} first, or send \`ccm /path/to/repo\`.`)
   }
   if (peer === 'claude' && !await waitForLiveBridge(peerUuid)) {
     deny('peer_unavailable', { to_session_id: peerUuid, detail: 'channel_bridge_not_connected_after_resume' })
@@ -5587,8 +5662,6 @@ async function routeCue(cue: AgentCue): Promise<string> {
     deny('peer_session_not_loaded', { to_session_id: peerUuid })
     throw new Error(`${agentName(peer)} session is not loaded`)
   }
-  if (peer === 'codex') void ensureCodexRemoteTui(peerUuid, session, ck)
-
   const rateLimitError = checkAskPeerRate(ck, fromRuntime, peer)
   if (rateLimitError) {
     deny('rate_limited', { to_session_id: peerUuid })
@@ -6324,6 +6397,9 @@ for (const adapter of activeAdapters) {
     const ck = `${adapter.platform}:${interaction.channelId}`
     if (!channelAllowed(ck)) return
     const data = interaction.data
+    if (data === 'noop') {
+      return
+    }
     if (data === 'ccr:cmd:resume') {
       await sendPicker(ck)
     } else if (data === 'ccr:__noop' || data === 'noop') {
@@ -6435,6 +6511,25 @@ for (const adapter of activeAdapters) {
         await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: `ccm start ${action.slice(4)}`, messageId: '', meta: {} })
       } else if (action === 'stop') {
         await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: 'ccm stop', messageId: '', meta: {} })
+      } else if (action === 'delete_room') {
+        await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: 'ccm delete room', messageId: '', meta: {} })
+      } else if (action === 'delete_room_confirm') {
+        await deleteRoomState(ck)
+        await sendChannelNotice(ck, '🗑 CCM room reset complete. Durable provider history was kept.', undefined, 'delete room confirmation notice')
+      } else if (action.startsWith('pathconfirm:')) {
+        const rest = action.slice('pathconfirm:'.length)
+        const firstColon = rest.indexOf(':')
+        const runtime = isAgentRuntimeKind(rest.slice(0, firstColon)) ? rest.slice(0, firstColon) as AgentRuntimeKind : undefined
+        const encodedPath = firstColon >= 0 ? rest.slice(firstColon + 1) : ''
+        if (!runtime || !encodedPath) { await sendInvalidButtonMessage(ck); return }
+        const dir = decodeURIComponent(encodedPath)
+        if (!isReadableDirectory(dir)) {
+          await sendChannelNotice(ck, formatAgentReply(runtime, `❌ Cannot use \`${dir}\`: directory is no longer readable.`), undefined, 'directory use failure')
+          return
+        }
+        await deleteRoomState(ck)
+        setRoom(ck, dir, runtime)
+        await sendChannelNotice(ck, formatAgentReply(runtime, `✅ Room reset and directory set to \`${dir}\`. ${agentLabel(runtime)} will lazy-start on first cue.`), undefined, 'path change confirmation notice')
       } else if (action === 'interrupt' || action.startsWith('interrupt:')) {
         const runtimeSuffix = parseOptionalRuntimeSuffix(action, 'interrupt')
         if (runtimeSuffix === null) { await sendInvalidButtonMessage(ck); return }
@@ -6463,8 +6558,7 @@ for (const adapter of activeAdapters) {
         const uuid = parseSessionCallbackUuid(action.slice(8))
         if (!uuid) { await sendInvalidButtonMessage(ck); return }
         const runtime = bindingEntries().find(e => e.uuid === uuid)?.runtime ?? bindingRuntime(ck)
-        unbindSessionEverywhere(uuid, runtime)
-        await killSessionIfUnboundEverywhere(uuid, runtime)
+        await stopRoomMappedSession(ck, runtime, uuid)
         await onMessage(ck, { channelId: interaction.channelId, userId: '', userName: '', text: `ccm start ${runtime}`, messageId: '', meta: {} })
       } else if (action.startsWith('retry:')) {
         const uuid = parseSessionCallbackUuid(action.slice(6))
@@ -6475,11 +6569,12 @@ for (const adapter of activeAdapters) {
         const uuid = parseSessionCallbackUuid(action.slice(5))
         if (!uuid) { await sendInvalidButtonMessage(ck); return }
         const runtime = bindingEntries().find(e => e.uuid === uuid)?.runtime ?? resolveSessionRuntime(uuid)
-        const unboundCount = unbindSessionEverywhere(uuid, runtime)
-        const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
-        await sendWithButtons(ck, formatAgentReply(runtime, killed
-          ? `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`
-          : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
+        if (bindingUuid(ck, runtime) === uuid) await stopRoomMappedSession(ck, runtime, uuid)
+        else {
+          unbindSessionEverywhere(uuid, runtime)
+          await killSessionIfUnboundEverywhere(uuid, runtime)
+        }
+        await sendWithButtons(ck, formatAgentReply(runtime, `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`), [
           { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
           { text: `🚀 Start ${agentName(runtime)}`, data: `cmd:new:${runtime}` },
         ])
@@ -6488,11 +6583,12 @@ for (const adapter of activeAdapters) {
         const uuid = parseSessionCallbackUuid(action.slice(8))
         if (!uuid) { await sendInvalidButtonMessage(ck); return }
         const runtime = bindingEntries().find(e => e.uuid === uuid)?.runtime ?? bindingRuntime(ck)
-        const unboundCount = unbindSessionEverywhere(uuid, runtime)
-        const killed = await killSessionIfUnboundEverywhere(uuid, runtime)
-        await sendWithButtons(ck, formatAgentReply(runtime, killed
-          ? `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`
-          : `⏹ Unbound ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` from ${unboundCount} allowed channel(s); still active on other channels.`), [
+        if (bindingUuid(ck, runtime) === uuid) await stopRoomMappedSession(ck, runtime, uuid)
+        else {
+          unbindSessionEverywhere(uuid, runtime)
+          await killSessionIfUnboundEverywhere(uuid, runtime)
+        }
+        await sendWithButtons(ck, formatAgentReply(runtime, `⏹ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` stopped.`), [
           { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
           { text: `🚀 Start ${agentName(runtime)}`, data: `cmd:new:${runtime}` },
         ])

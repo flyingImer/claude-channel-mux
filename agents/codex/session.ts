@@ -39,6 +39,20 @@ export function codexTuiPaneMatchesAppServer(status: CodexRemoteTuiStatus, appSe
   return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl))
 }
 
+function codexTuiPaneReadyForSession(status: CodexRemoteTuiStatus, appServerUrl: string, nativeSessionId: string): status is Extract<CodexRemoteTuiStatus, { kind: 'alive' }> {
+  return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl) && command.includes(nativeSessionId))
+}
+
+function codexTuiStatusDescription(status: CodexRemoteTuiStatus): string {
+  switch (status.kind) {
+    case 'alive': return `alive pane ${status.paneId}`
+    case 'exited': return `exited pane ${status.paneId} status=${status.exitStatus ?? 'unknown'}`
+    case 'missing': return 'missing pane'
+    case 'zellij_down': return 'zellij unavailable'
+    case 'unknown': return `unknown: ${status.reason}`
+  }
+}
+
 function codexRemoteTuiCommand(config: CodexResolvedConfig, session: AgentSession, appServerUrl: string): string {
   const envExports = `export CODEX_HOME=${shellArg(config.home)} DISABLE_AUTOUPDATER=1;`
   const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId])
@@ -82,7 +96,10 @@ export class CodexAppServerSession {
     await this.tui.newTab(tabName, codexRemoteTuiCommand(this.config, session, appServerUrl))
     this.tui.log(`daemon: attached codex remote TUI ${sessionId.slice(0, 8)} tab=${tabName} url=${appServerUrl}`)
     const paneStatus = await this.tui.waitForPane(tabName)
-    if (paneStatus.kind === 'alive') await this.tui.autoSkipUpdatePrompt(sessionId, paneStatus.paneId)
+    if (!codexTuiPaneReadyForSession(paneStatus, appServerUrl, session.nativeSessionId)) {
+      throw new Error(`codex remote TUI failed to become ready for ${sessionId.slice(0, 8)} tab=${tabName}: ${codexTuiStatusDescription(paneStatus)}`)
+    }
+    await this.tui.autoSkipUpdatePrompt(sessionId, paneStatus.paneId)
     return { appServerUrl, codexHome: this.config.home, tuiTabName: tabName }
   }
 

@@ -18,7 +18,10 @@ function session(sessionId = '019e94e57c377cb3b3152443705b9aaf', nativeSessionId
   }
 }
 
-function fakeTui(status: CodexRemoteTuiStatus = { kind: 'missing' }): CodexRemoteTuiAdapter & { commands: string[]; tabs: string[]; closed: string[]; skipped: string[]; logs: string[]; ensured: number } {
+function fakeTui(
+  status: CodexRemoteTuiStatus = { kind: 'missing' },
+  waitStatus: CodexRemoteTuiStatus = { kind: 'alive', paneId: 1, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume thread-1' },
+): CodexRemoteTuiAdapter & { commands: string[]; tabs: string[]; closed: string[]; skipped: string[]; logs: string[]; ensured: number } {
   const tui = {
     commands: [] as string[],
     tabs: [] as string[],
@@ -34,7 +37,7 @@ function fakeTui(status: CodexRemoteTuiStatus = { kind: 'missing' }): CodexRemot
       tui.tabs.push(tabName)
       tui.commands.push(command)
     },
-    waitForPane: async () => ({ kind: 'missing' } as CodexRemoteTuiStatus),
+    waitForPane: async () => waitStatus,
     autoSkipUpdatePrompt: async (sessionId: string) => { tui.skipped.push(sessionId) },
     log: (line: string) => tui.logs.push(line),
   }
@@ -141,6 +144,30 @@ test('Codex remote TUI reuses matching app-server pane and closes stale panes', 
   await lifecycleWith({ tui: staleTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1'))
   expect(staleTui.closed).toEqual(['ccm:cx:ccm-sess'])
   expect(staleTui.tabs).toEqual(['ccm:cx:ccm-sess'])
+})
+
+test('Codex remote TUI attach rejects when launched pane is not ready', async () => {
+  const missingTui = fakeTui({ kind: 'missing' }, { kind: 'missing' })
+  await expect(lifecycleWith({ tui: missingTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1')))
+    .rejects.toThrow('codex remote TUI failed to become ready for ccm-sess tab=ccm:cx:ccm-sess: missing pane')
+  expect(missingTui.tabs).toEqual(['ccm:cx:ccm-sess'])
+  expect(missingTui.skipped).toEqual([])
+
+  const wrongPaneTui = fakeTui(
+    { kind: 'missing' },
+    { kind: 'alive', paneId: 2, terminalCommand: 'codex --remote ws://127.0.0.1:9999' },
+  )
+  await expect(lifecycleWith({ tui: wrongPaneTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1')))
+    .rejects.toThrow('codex remote TUI failed to become ready for ccm-sess tab=ccm:cx:ccm-sess: alive pane 2')
+  expect(wrongPaneTui.skipped).toEqual([])
+
+  const wrongThreadTui = fakeTui(
+    { kind: 'missing' },
+    { kind: 'alive', paneId: 3, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume other-thread' },
+  )
+  await expect(lifecycleWith({ tui: wrongThreadTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1')))
+    .rejects.toThrow('codex remote TUI failed to become ready for ccm-sess tab=ccm:cx:ccm-sess: alive pane 3')
+  expect(wrongThreadTui.skipped).toEqual([])
 })
 
 test('Codex remote TUI skips non-websocket app-server sessions', async () => {

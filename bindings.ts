@@ -2,7 +2,7 @@ import type { AgentKind } from './agents/types.js'
 
 export type AgentRuntimeKind = AgentKind
 export const AGENT_RUNTIMES = ['claude', 'codex'] as const satisfies readonly AgentRuntimeKind[]
-export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; appServerUrl?: string; codexHome?: string; tuiTabName?: string }
+export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; appServerUrl?: string; codexHome?: string; tuiTabName?: string; desiredRunning?: boolean }
 export type ChannelBinding = string | {
   active?: AgentRuntimeKind
   observers?: AgentRuntimeKind[]
@@ -58,6 +58,7 @@ function slotMeta(value: unknown): AgentSlotMeta | undefined {
     const string = stringValue(record[key])
     if (string) meta[key] = string
   }
+  if (typeof record.desiredRunning === 'boolean') meta.desiredRunning = record.desiredRunning
   return Object.keys(meta).length ? meta : undefined
 }
 
@@ -148,5 +149,8 @@ export function serializeBinding(binding: NormalizedBinding, defaultRuntime: Age
 
 
 export function keepAgentModelMeta(meta: AgentSlotMeta | undefined): AgentSlotMeta | undefined {
-  return meta?.model ? { model: meta.model } : undefined
+  const kept: AgentSlotMeta = {}
+  if (meta?.model) kept.model = meta.model
+  if (typeof meta?.desiredRunning === 'boolean') kept.desiredRunning = meta.desiredRunning
+  return Object.keys(kept).length ? kept : undefined
 }
