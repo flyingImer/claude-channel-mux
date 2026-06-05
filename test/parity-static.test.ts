@@ -139,7 +139,7 @@ test('Codex startup failures are surfaced with actionable room-visible detail', 
   expect(daemon).toContain('type SpawnResult = { ok: boolean; uuid: string; error?: string }')
   expect(daemon).toContain('function summarizeAgentStartError')
   expect(daemon).toContain('OPENAI_API_KEY|api key|auth|login')
-  expect(daemon).toContain('return spawnCodexAppServer(uuid, cwd, resumeMode, options)')
+  expect(daemon).toContain('return spawnCodexAppServer(uuid, cwd, nativeSessionId, options)')
   expect(daemon).toContain('return { ok: false, uuid, error: errorMessage(err) }')
   expect(daemon).toContain("formatAgentStartFailure(runtime, 'start', result.error)")
   expect(daemon).toContain("formatAgentStartFailure(runtime, 'resume', error)")
@@ -3034,7 +3034,7 @@ test('daemon zellij cleanup and teardown failures are observable', () => {
 test('daemon runtime teardown clears per-session UI state', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function clearPerSessionUiState(uuid: string, opts: { clearPeerInflight?: boolean } = {}): void')
-  expect(daemon).not.toContain('codexNativeSessionIds.delete(uuid)')
+  expect(daemon).not.toContain('codexNativeSessionIds')
   expect(daemon).toContain('codexSessionMap[uuid]?.nativeSessionId')
   expect(daemon).toContain('codexPlanMessages.delete(uuid)')
   expect(daemon).toContain('announcedReconnect.delete(uuid)')
@@ -3136,29 +3136,30 @@ test('resume failure rolls back transient room binding changes', () => {
   expect(resumeBody).toContain("formatAgentStartFailure(runtime, 'resume', error)")
 })
 
-test('Codex resume uses transcript cwd and native id without prior room metadata', () => {
+test('Codex resume uses transcript cwd but only trusted stored native id', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const spawnBody = daemon.slice(daemon.indexOf('async function spawnResumeOnce'), daemon.indexOf('async function resumeAndBind'))
   expect(spawnBody).toContain('const sessionInfo = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid)')
   expect(spawnBody).toContain('const fallbackCwd = meta?.cwd ?? sessionInfo?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD')
   expect(spawnBody).toContain('normalizeCodexResumeCwd(uuid, fallbackCwd, meta?.sourceCwd)')
   expect(daemon).toContain('function normalizeCodexResumeCwd(uuid: string, cwd: string, sourceCwd?: string): string')
-  expect(daemon).toContain('function codexNativeSessionIdForResume(uuid: string, meta?: AgentSlotMeta, transcript?: TranscriptInfo | null): string | undefined')
+  expect(daemon).toContain('function codexNativeSessionIdForResume(uuid: string, meta?: AgentSlotMeta): string | undefined')
   expect(daemon).toContain("join(sourceRoot, '.codex', 'worktrees', uuid.slice(0, 8))")
   expect(daemon).toContain("execFileSync('git', ['worktree', 'move', cwd, target]")
-  expect(spawnBody).toContain('const nativeSessionId = runtime === \'codex\' ? codexNativeSessionIdForResume(uuid, meta, t) : undefined')
-  expect(spawnBody).toContain("if (nativeSessionId) codexNativeSessionIds.set(uuid, nativeSessionId)")
+  expect(spawnBody).toContain('const nativeSessionId = runtime === \'codex\' ? codexNativeSessionIdForResume(uuid, meta) : undefined')
   expect(spawnBody).toContain("runtime === 'codex' ? !!nativeSessionId : hasTranscript")
+  expect(spawnBody).toContain("{ model: meta?.model }, nativeSessionId")
+  expect(spawnBody).not.toContain('codexNativeSessionIds')
   expect(spawnBody).not.toContain('?? uuid')
 })
 
-test('Codex native id resolver never falls back to CCM uuid', () => {
+test('Codex native id resolver never falls back to CCM uuid or transcript rollout filename', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const resolverBody = daemon.slice(daemon.indexOf('function codexNativeSessionIdForResume'), daemon.indexOf('function saveTranscriptDeliveries'))
   const staleSnapshotBody = daemon.slice(daemon.indexOf('function staleCodexPendingSnapshot'), daemon.indexOf('function codexPendingSnapshot'))
   expect(resolverBody).toContain('meta?.nativeSessionId')
   expect(resolverBody).toContain('codexSessionMap[uuid]?.nativeSessionId')
-  expect(resolverBody).toContain('codexTranscriptSessionId(transcript.path)')
+  expect(resolverBody).not.toContain('codexTranscriptSessionId(transcript.path)')
   expect(resolverBody).not.toContain('?? uuid')
   expect(staleSnapshotBody).toContain("const nativeSessionId = codexNativeSessionIdForResume(sessionId, agentMeta(ck, 'codex'))")
   expect(staleSnapshotBody).toContain("nativeSessionId: nativeSessionId ?? ''")
@@ -3486,7 +3487,7 @@ test('stopped Codex sessions remain resolvable for resume by ccm id', () => {
   expect(daemon).toContain('rememberCodexSession(session)')
   expect(daemon).toContain('const storedCodexSessions = (): SessionInfo[] => Object.entries(codexSessionMap).map')
   expect(daemon).toContain('codexSessionMap[uuid]?.nativeSessionId')
-  expect(daemon).not.toContain('codexNativeSessionIds.delete(uuid)')
+  expect(daemon).not.toContain('codexNativeSessionIds')
 })
 
 

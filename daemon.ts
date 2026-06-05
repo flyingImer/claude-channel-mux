@@ -716,14 +716,12 @@ function rememberCodexTranscriptPath(uuid: string, path: string): void {
 function rememberCodexSession(session: AgentSession): void {
   const uuid = session.sessionId
   codexSessionMap[uuid] = { ...(codexSessionMap[uuid] ?? { mtime: 0 }), nativeSessionId: session.nativeSessionId, cwd: session.cwd, mtime: Date.now() }
-  codexNativeSessionIds.set(uuid, session.nativeSessionId)
   try { saveCodexSessionMap() } catch (err) { process.stderr.write(`daemon: codex session map save failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
 }
 
-function codexNativeSessionIdForResume(uuid: string, meta?: AgentSlotMeta, transcript?: TranscriptInfo | null): string | undefined {
+function codexNativeSessionIdForResume(uuid: string, meta?: AgentSlotMeta): string | undefined {
   return meta?.nativeSessionId
     ?? codexSessionMap[uuid]?.nativeSessionId
-    ?? (transcript ? codexTranscriptSessionId(transcript.path) ?? undefined : undefined)
 }
 
 function saveTranscriptDeliveries(): void {
@@ -1341,7 +1339,6 @@ const codexDriver = new CodexAppServerAgentDriver({
   log: line => process.stderr.write(`${line}\n`),
 })
 const codexSessions = new Map<string, AgentSession>()
-const codexNativeSessionIds = new Map<string, string>()
 const codexPlanMessages = new Map<string, { hash: string; messageIds: Map<string, string> }>()
 
 const activeTypingAnchors = new Map<string, { channelKey: string; threadId: string }>()
@@ -3123,8 +3120,8 @@ function removeWorktree(baseCwd: string, uuid: string): void {
   }
 }
 
-async function spawnAgent(runtime: AgentRuntimeKind, uuid: string, cwd: string, resumeMode: boolean, options: { model?: string } = {}): Promise<SpawnResult> {
-  if (runtime === 'codex') return spawnCodexAppServer(uuid, cwd, resumeMode, options)
+async function spawnAgent(runtime: AgentRuntimeKind, uuid: string, cwd: string, resumeMode: boolean, options: { model?: string } = {}, nativeSessionId?: string): Promise<SpawnResult> {
+  if (runtime === 'codex') return spawnCodexAppServer(uuid, cwd, nativeSessionId, options)
   try {
     const session = resumeMode
       ? await claudeDriver.resume({ sessionId: uuid, cwd })
@@ -3257,10 +3254,9 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
 }
 
 
-async function spawnCodexAppServer(uuid: string, cwd: string, resumeMode: boolean, options: { model?: string } = {}): Promise<SpawnResult> {
+async function spawnCodexAppServer(uuid: string, cwd: string, nativeSessionId: string | undefined, options: { model?: string } = {}): Promise<SpawnResult> {
   try {
-    const nativeSessionId = resumeMode ? codexNativeSessionIds.get(uuid) : undefined
-    if (resumeMode) await codexSessionLifecycle.resume(uuid, cwd, nativeSessionId, options)
+    if (nativeSessionId) await codexSessionLifecycle.resume(uuid, cwd, nativeSessionId, options)
     else await codexSessionLifecycle.start(uuid, cwd, options)
     return { ok: true, uuid }
   } catch (err) {
@@ -3406,9 +3402,8 @@ async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string): Promise
   const cwd = runtime === 'claude'
     ? claudeResumeCwd(t, fallbackCwd)
     : runtime === 'codex' ? normalizeCodexResumeCwd(uuid, fallbackCwd, meta?.sourceCwd) : fallbackCwd
-  const nativeSessionId = runtime === 'codex' ? codexNativeSessionIdForResume(uuid, meta, t) : undefined
-  if (nativeSessionId) codexNativeSessionIds.set(uuid, nativeSessionId)
-  const promise = spawnAgent(runtime, uuid, cwd, runtime === 'codex' ? !!nativeSessionId : hasTranscript, { model: meta?.model })
+  const nativeSessionId = runtime === 'codex' ? codexNativeSessionIdForResume(uuid, meta) : undefined
+  const promise = spawnAgent(runtime, uuid, cwd, runtime === 'codex' ? !!nativeSessionId : hasTranscript, { model: meta?.model }, nativeSessionId)
   resumeInFlight.set(key, promise)
   try {
     const result = await promise
