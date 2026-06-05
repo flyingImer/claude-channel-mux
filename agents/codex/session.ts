@@ -39,8 +39,8 @@ export function codexTuiPaneMatchesAppServer(status: CodexRemoteTuiStatus, appSe
   return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl))
 }
 
-function codexTuiPaneReadyForSession(status: CodexRemoteTuiStatus, appServerUrl: string, nativeSessionId: string): status is Extract<CodexRemoteTuiStatus, { kind: 'alive' }> {
-  return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl) && command.includes(nativeSessionId))
+function codexTuiPaneReadyForSession(status: CodexRemoteTuiStatus, appServerUrl: string): status is Extract<CodexRemoteTuiStatus, { kind: 'alive' }> {
+  return codexTuiPaneMatchesAppServer(status, appServerUrl)
 }
 
 function codexTuiStatusDescription(status: CodexRemoteTuiStatus): string {
@@ -55,7 +55,7 @@ function codexTuiStatusDescription(status: CodexRemoteTuiStatus): string {
 
 function codexRemoteTuiCommand(config: CodexResolvedConfig, session: AgentSession, appServerUrl: string): string {
   const envExports = `export CODEX_HOME=${shellArg(config.home)} DISABLE_AUTOUPDATER=1;`
-  const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId])
+  const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl])
   return `${envExports} cd ${shellArg(session.cwd)} && exec ${cmd}`
 }
 
@@ -110,7 +110,7 @@ export class CodexAppServerSession {
     await this.tui.newTab(tabName, codexRemoteTuiCommand(this.config, session, appServerUrl))
     this.tui.log(`daemon: attached codex remote TUI ${sessionId.slice(0, 8)} tab=${tabName} url=${appServerUrl}`)
     const paneStatus = await this.tui.waitForPane(tabName)
-    if (!codexTuiPaneReadyForSession(paneStatus, appServerUrl, session.nativeSessionId)) {
+    if (!codexTuiPaneReadyForSession(paneStatus, appServerUrl)) {
       throw new Error(`codex remote TUI failed to become ready for ${sessionId.slice(0, 8)} tab=${tabName}: ${codexTuiStatusDescription(paneStatus)}`)
     }
     await this.tui.autoSkipUpdatePrompt(sessionId, paneStatus.paneId)

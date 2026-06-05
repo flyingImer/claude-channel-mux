@@ -20,7 +20,7 @@ function session(sessionId = '019e94e57c377cb3b3152443705b9aaf', nativeSessionId
 
 function fakeTui(
   status: CodexRemoteTuiStatus = { kind: 'missing' },
-  waitStatus: CodexRemoteTuiStatus = { kind: 'alive', paneId: 1, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume thread-1' },
+  waitStatus: CodexRemoteTuiStatus = { kind: 'alive', paneId: 1, terminalCommand: 'codex --remote ws://127.0.0.1:0' },
 ): CodexRemoteTuiAdapter & { commands: string[]; tabs: string[]; closed: string[]; skipped: string[]; logs: string[]; ensured: number } {
   const tui = {
     commands: [] as string[],
@@ -130,7 +130,8 @@ test('Codex remote TUI launch details stay behind the lifecycle seam', async () 
   expect(tui.tabs).toEqual(['ccm:cx:019e94e5'])
   expect(tui.commands[0]).toContain('CODEX_HOME=')
   expect(tui.commands[0]).toContain("'--remote' 'ws://127.0.0.1:0'")
-  expect(tui.commands[0]).toContain("'resume' 'thread-1'")
+  expect(tui.commands[0]).not.toContain("'resume'")
+  expect(tui.commands[0]).not.toContain("'thread-1'")
 })
 
 test('Codex remote TUI attach coalesces concurrent launches for the same session', async () => {
@@ -189,13 +190,13 @@ test('Codex remote TUI attach rejects when launched pane is not ready', async ()
     .rejects.toThrow('codex remote TUI failed to become ready for ccm-sess tab=ccm:cx:ccm-sess: alive pane 2')
   expect(wrongPaneTui.skipped).toEqual([])
 
-  const wrongThreadTui = fakeTui(
+  const remoteOnlyTui = fakeTui(
     { kind: 'missing' },
-    { kind: 'alive', paneId: 3, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume other-thread' },
+    { kind: 'alive', paneId: 3, terminalCommand: 'codex --remote ws://127.0.0.1:0' },
   )
-  await expect(lifecycleWith({ tui: wrongThreadTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1')))
-    .rejects.toThrow('codex remote TUI failed to become ready for ccm-sess tab=ccm:cx:ccm-sess: alive pane 3')
-  expect(wrongThreadTui.skipped).toEqual([])
+  const meta = await lifecycleWith({ tui: remoteOnlyTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1'))
+  expect(meta?.tuiTabName).toBe('ccm:cx:ccm-sess')
+  expect(remoteOnlyTui.skipped).toEqual(['ccm-session'])
 })
 
 test('Codex remote TUI skips non-websocket app-server sessions', async () => {
