@@ -8,6 +8,9 @@ import { codexResolvedConfigFromEnv, type CodexResolvedConfig } from '../agents/
 import type { AgentCommand, AgentCommandResult, AgentEvent, AgentSession, AgentSnapshotPendingItem, AgentTurn } from '../agents/types.ts'
 
 type TestCodexClient = {
+  start?: () => Promise<void>
+  stop?: () => Promise<void>
+  url?: () => string | undefined
   request?: (method: string, params: JsonObject) => Promise<JsonObject>
 }
 
@@ -32,6 +35,9 @@ type CodexDriverHarness = {
   runtimes: Map<string, TestCodexRuntime>
   threadToSession: Map<string, string>
   onEvent(cb: (event: AgentEvent) => void): void
+  start(input: { sessionId: string; cwd: string; options?: { model?: string; materializeCwd?: string } }): Promise<AgentSession>
+  resume(input: { sessionId: string; cwd: string; nativeSessionId?: string; options?: { model?: string; materializeCwd?: string } }): Promise<AgentSession>
+  stop(session: AgentSession): Promise<void>
   handleNotification(msg: JsonObject): void
   handleServerRequest(msg: JsonObject): void
   readTranscriptRecent(path: string, limit: number): Array<{ role: string; text: string }>
@@ -63,6 +69,99 @@ function driver(): CodexDriverHarness {
     baseEnv: {},
   }) as unknown as CodexDriverHarness
 }
+
+function driverWithClient(client: Required<Pick<TestCodexClient, 'start' | 'stop' | 'url' | 'request'>>): CodexDriverHarness {
+  return new CodexAppServerAgentDriver({
+    codexCommand: ['codex'],
+    daemonSock: '/tmp/no.sock',
+    mcpServerPath: '/tmp/server.ts',
+    baseEnv: {},
+    appServerListen: 'websocket',
+    clientFactory: () => client as never,
+  }) as unknown as CodexDriverHarness
+}
+
+test('Codex app-server driver starts one shared client and materializes native thread ids as session ids', async () => {
+  let starts = 0
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const client = {
+    start: async () => { starts += 1 },
+    stop: async () => {},
+    url: () => 'ws://127.0.0.1:12345',
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'thread/start') return { result: { thread: { id: calls.filter(call => call.method === 'thread/start').length === 1 ? 'thread-a' : 'thread-b' } } }
+      return { result: {} }
+    },
+  }
+  const d = driverWithClient(client)
+
+  const first = await d.start({ sessionId: 'provisional-a', cwd: '/repo-a' })
+  const second = await d.start({ sessionId: 'provisional-b', cwd: '/repo-b' })
+
+  expect(starts).toBe(1)
+  expect(first.sessionId).toBe('thread-a')
+  expect(first.nativeSessionId).toBe('thread-a')
+  expect(second.sessionId).toBe('thread-b')
+  expect(second.nativeSessionId).toBe('thread-b')
+  expect(d.runtimes.has('thread-a')).toBe(true)
+  expect(d.runtimes.has('provisional-a')).toBe(false)
+  expect(calls.map(call => call.method)).toEqual([
+    'thread/start',
+    'thread/inject_items',
+    'thread/settings/update',
+    'thread/start',
+    'thread/inject_items',
+    'thread/settings/update',
+  ])
+  expect(calls[1]).toMatchObject({ method: 'thread/inject_items', params: { threadId: 'thread-a' } })
+  expect(calls[2]).toMatchObject({ method: 'thread/settings/update', params: { threadId: 'thread-a', cwd: '/repo-a' } })
+})
+
+test('Codex app-server driver stops a thread runtime without killing the shared app-server client', async () => {
+  let stops = 0
+  const client = {
+    start: async () => {},
+    stop: async () => { stops += 1 },
+    url: () => 'ws://127.0.0.1:12345',
+    request: async (method: string) => method === 'thread/start' ? { result: { thread: { id: 'thread-a' } } } : { result: {} },
+  }
+  const d = driverWithClient(client)
+  const session = await d.start({ sessionId: 'provisional-a', cwd: '/repo-a' })
+
+  await d.stop(session)
+
+  expect(stops).toBe(0)
+  expect(d.runtimes.has('thread-a')).toBe(false)
+})
+
+test('Codex app-server driver can update an existing native thread to its materialized cwd', async () => {
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const client = {
+    start: async () => {},
+    stop: async () => {},
+    url: () => 'ws://127.0.0.1:12345',
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'thread/start') return { result: { thread: { id: 'thread-a' } } }
+      return { result: {} }
+    },
+  }
+  const d = driverWithClient(client)
+  const session = await d.start({ sessionId: 'provisional-a', cwd: '/source' })
+
+  const updated = await d.resume({ sessionId: session.sessionId, cwd: '/source', nativeSessionId: session.nativeSessionId, options: { materializeCwd: '/source/.codex/worktrees/thread-a' } })
+
+  expect(updated.cwd).toBe('/source/.codex/worktrees/thread-a')
+  expect(calls.map(call => call.method)).toEqual([
+    'thread/start',
+    'thread/inject_items',
+    'thread/settings/update',
+    'thread/inject_items',
+    'thread/settings/update',
+  ])
+  expect(calls.at(-1)).toMatchObject({ method: 'thread/settings/update', params: { threadId: 'thread-a', cwd: '/source/.codex/worktrees/thread-a' } })
+})
 
 test('Codex transcript parser covers user, assistant, plan, reasoning, and tool rows', () => {
   const d = driver()

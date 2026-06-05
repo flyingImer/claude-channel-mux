@@ -12,6 +12,7 @@ export type CodexAppServerDriverOptions = {
   codexConfig?: CodexResolvedConfig
   appServerListen?: 'stdio' | 'websocket'
   log?: (line: string) => void
+  clientFactory?: (options: ConstructorParameters<typeof CodexAppServerClient>[0]) => CodexAppServerClient
 }
 
 function codexTurnSandboxPolicy(cwd: string, config: CodexResolvedConfig): JsonObject {
@@ -147,8 +148,11 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   readonly kind = 'codex' as const
   private runtimes = new Map<string, CodexRuntime>()
   private threadToSession = new Map<string, string>()
+  private sessionAliases = new Map<string, string>()
   private listeners = new Set<(event: AgentEvent) => void>()
   private readonly baseConfig: CodexResolvedConfig
+  private sharedClient?: CodexAppServerClient
+  private sharedClientStart?: Promise<CodexAppServerClient>
 
   constructor(private opts: CodexAppServerDriverOptions) {
     this.baseConfig = opts.codexConfig ?? { ...codexResolvedConfigFromEnv(opts.baseEnv), command: opts.codexCommand }
@@ -159,15 +163,15 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   async start(input: StartAgentInput): Promise<AgentSession> {
-    return await this.createRuntime(input.sessionId, input.cwd, undefined, input.options?.model)
+    return await this.createRuntime(input.sessionId, input.cwd, undefined, input.options?.model, input.options?.materializeCwd)
   }
 
   async resume(input: ResumeAgentInput): Promise<AgentSession> {
-    return await this.createRuntime(input.sessionId, input.cwd, input.nativeSessionId, input.options?.model)
+    return await this.createRuntime(input.sessionId, input.cwd, input.nativeSessionId, input.options?.model, input.options?.materializeCwd)
   }
 
   setModelOverride(sessionId: string, model?: string): void {
-    const runtime = this.runtimes.get(sessionId)
+    const runtime = this.runtimeForSessionId(sessionId)
     if (runtime) runtime.modelOverride = model
   }
 
@@ -191,7 +195,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   async sendTurn(input: SendTurnInput): Promise<string> {
-    const runtime = this.runtimes.get(input.session.sessionId)
+    const runtime = this.runtimeForSession(input.session)
     if (!runtime) throw new Error(`No Codex app-server runtime for ${input.session.sessionId}`)
     const response = await runtime.client.request('turn/start', {
       threadId: runtime.threadId,
@@ -213,7 +217,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
 
 
   async sendCommand(input: SendCommandInput): Promise<AgentCommandResult> {
-    const runtime = this.runtimes.get(input.session.sessionId)
+    const runtime = this.runtimeForSession(input.session)
     if (!runtime) throw new Error(`No Codex app-server runtime for ${input.session.sessionId}`)
     const command = input.command.command.trim().replace(/^\//, '')
     const [nameRaw, ...rest] = command.split(/\s+/)
@@ -297,7 +301,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
 
 
   async transcript(input: GetTranscriptInput): Promise<AgentTranscript> {
-    const runtime = this.runtimes.get(input.session.sessionId)
+    const runtime = this.runtimeForSession(input.session)
     const limit = input.limit ?? 50
     if (!runtime) {
       return { kind: 'codex', session: input.session, source: 'partial', entries: [] }
@@ -314,7 +318,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   async snapshot(input: GetSnapshotInput): Promise<AgentSnapshot> {
-    const runtime = this.runtimes.get(input.session.sessionId)
+    const runtime = this.runtimeForSession(input.session)
     if (!runtime) {
       return {
         kind: 'codex',
@@ -370,7 +374,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   async resolveServerRequest(input: ResolveServerRequestInput): Promise<void> {
-    const runtime = this.runtimes.get(input.session.sessionId)
+    const runtime = this.runtimeForSession(input.session)
     if (!runtime) throw new Error(`No Codex app-server runtime for ${input.session.sessionId}`)
     const numericId = runtime.pendingRequests.get(input.requestId)
     if (numericId === undefined) throw new Error(`No pending Codex request ${input.requestId}`)
@@ -380,31 +384,68 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   async cancel(session: AgentSession, turnId: string): Promise<void> {
-    const runtime = this.runtimes.get(session.sessionId)
+    const runtime = this.runtimeForSession(session)
     if (!runtime) return
     await runtime.client.request('turn/interrupt', { threadId: runtime.threadId, turnId }, 15_000)
   }
 
   async stop(session: AgentSession): Promise<void> {
-    const runtime = this.runtimes.get(session.sessionId)
+    const runtime = this.runtimeForSession(session)
     if (!runtime) return
-    await runtime.client.stop()
     runtime.session.status = 'stopped'
     this.emit({ type: 'status', session: runtime.session, status: 'stopped' })
     this.threadToSession.delete(runtime.threadId)
-    this.runtimes.delete(session.sessionId)
+    this.runtimes.delete(runtime.threadId)
+    this.sessionAliases.delete(session.sessionId)
   }
 
-  private async createRuntime(sessionId: string, cwd: string, nativeSessionId?: string, modelOverride?: string): Promise<AgentSession> {
-    const existing = this.runtimes.get(sessionId)
+  private async createRuntime(sessionId: string, cwd: string, nativeSessionId?: string, modelOverride?: string, materializeCwd = cwd): Promise<AgentSession> {
+    const existing = this.runtimeForSessionId(nativeSessionId ?? sessionId)
     if (existing) {
       if (modelOverride) existing.modelOverride = modelOverride
+      if (materializeCwd !== existing.session.cwd) {
+        await this.materializeThread(existing.client, existing.threadId, materializeCwd)
+        existing.session.cwd = materializeCwd
+      }
       return existing.session
     }
 
     const runtimeConfig = codexConfigWithModelOverride(this.baseConfig, modelOverride)
     const effectiveModel = runtimeConfig.model
-    const client = new CodexAppServerClient({
+    const client = await this.ensureSharedClient(sessionId, cwd, runtimeConfig)
+    const response = nativeSessionId && !effectiveModel
+      ? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000)
+      : await client.request('thread/start', {
+      cwd,
+      ...(effectiveModel ? { model: effectiveModel } : {}),
+      approvalPolicy: runtimeConfig.approvalPolicy,
+      sandbox: runtimeConfig.sandbox,
+    }, 60_000)
+    const thread = codexResponseObject(response, 'thread')
+    const threadId = typeof thread?.id === 'string' ? thread.id : nativeSessionId
+    if (!threadId) throw new Error('codex app-server did not return a thread id')
+    await this.materializeThread(client, threadId, materializeCwd)
+    const session: AgentSession = {
+      kind: 'codex',
+      sessionId: threadId,
+      nativeSessionId: threadId,
+      transport: 'codex-app-server',
+      cwd: materializeCwd,
+      status: 'idle',
+      capabilities: { streaming: true, cancel: true, resume: true, toolCalling: true },
+      meta: { appServerUrl: client.url() },
+    }
+    this.runtimes.set(threadId, { session, modelOverride, effectiveModel, config: runtimeConfig, client, threadId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() })
+    this.threadToSession.set(threadId, threadId)
+    this.sessionAliases.set(sessionId, threadId)
+    this.emit({ type: 'status', session, status: 'idle' })
+    return session
+  }
+
+  private async ensureSharedClient(sessionId: string, cwd: string, runtimeConfig: CodexResolvedConfig): Promise<CodexAppServerClient> {
+    if (this.sharedClient) return this.sharedClient
+    if (this.sharedClientStart) return await this.sharedClientStart
+    const client = (this.opts.clientFactory ?? (options => new CodexAppServerClient(options)))({
       codexCommand: [...runtimeConfig.command, ...runtimeConfig.launchArgs],
       cwd,
       env: {
@@ -421,39 +462,31 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       notification: msg => this.handleNotification(msg),
       serverRequest: msg => this.handleServerRequest(msg),
     })
-    let started = false
-    try {
+    this.sharedClientStart = (async () => {
       await client.start()
-      started = true
-      const response = nativeSessionId && !effectiveModel
-        ? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000)
-        : await client.request('thread/start', {
-        cwd,
-        ...(effectiveModel ? { model: effectiveModel } : {}),
-        approvalPolicy: runtimeConfig.approvalPolicy,
-        sandbox: runtimeConfig.sandbox,
-      }, 60_000)
-      const thread = codexResponseObject(response, 'thread')
-      const threadId = typeof thread?.id === 'string' ? thread.id : nativeSessionId
-      if (!threadId) throw new Error('codex app-server did not return a thread id')
-      const session: AgentSession = {
-        kind: 'codex',
-        sessionId,
-        nativeSessionId: threadId,
-        transport: 'codex-app-server',
-        cwd,
-        status: 'idle',
-        capabilities: { streaming: true, cancel: true, resume: true, toolCalling: true },
-        meta: { appServerUrl: client.url() },
-      }
-      this.runtimes.set(sessionId, { session, modelOverride, effectiveModel, config: runtimeConfig, client, threadId, activeTurns: new Map(), turnThreads: new Map(), turnChannels: new Map(), buffers: new Map(), deliveredMessages: new Map(), pendingRequests: new Map(), pendingRequestDetails: new Map() })
-      this.threadToSession.set(threadId, sessionId)
-      this.emit({ type: 'status', session, status: 'idle' })
-      return session
+      this.sharedClient = client
+      return client
+    })()
+    try {
+      return await this.sharedClientStart
     } catch (err) {
-      if (started) await client.stop().catch(stopErr => this.opts.log?.(`codex app-server cleanup failed after startup error for ${sessionId.slice(0, 8)}: ${errorMessage(stopErr)}`))
+      this.sharedClientStart = undefined
+      await client.stop().catch(stopErr => this.opts.log?.(`codex app-server cleanup failed after startup error for ${sessionId.slice(0, 8)}: ${errorMessage(stopErr)}`))
       throw err
     }
+  }
+
+  private async materializeThread(client: CodexAppServerClient, threadId: string, cwd: string): Promise<void> {
+    await client.request('thread/inject_items', { threadId, items: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '' }] }] }, 60_000)
+    await client.request('thread/settings/update', { threadId, cwd }, 60_000)
+  }
+
+  private runtimeForSession(session: AgentSession): CodexRuntime | undefined {
+    return this.runtimes.get(session.nativeSessionId) ?? this.runtimeForSessionId(session.sessionId)
+  }
+
+  private runtimeForSessionId(sessionId: string): CodexRuntime | undefined {
+    return this.runtimes.get(sessionId) ?? this.runtimes.get(this.sessionAliases.get(sessionId) ?? '')
   }
 
   private configArgs(sessionId: string): string[] {
@@ -476,7 +509,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         ? params.conversationId
         : undefined
     const sessionId = threadId ? this.threadToSession.get(threadId) : undefined
-    const runtime = sessionId ? this.runtimes.get(sessionId) : undefined
+    const runtime = sessionId ? this.runtimeForSessionId(sessionId) : undefined
     if (!runtime) return
     const requestId = String(msg.id)
     const requestParams = params ?? {}
@@ -514,7 +547,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     const params = jsonObject(msg.params)
     const threadId = typeof params?.threadId === 'string' ? params.threadId : undefined
     const sessionId = threadId ? this.threadToSession.get(threadId) : undefined
-    const runtime = sessionId ? this.runtimes.get(sessionId) : undefined
+    const runtime = sessionId ? this.runtimeForSessionId(sessionId) : undefined
     if (!runtime) return
     const nativeTurnId = typeof params?.turnId === 'string'
       ? params.turnId

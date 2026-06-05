@@ -35,12 +35,12 @@ export function codexTuiTabName(sessionId: string): string {
   return `ccm:cx:${sessionId.slice(0, 8)}`
 }
 
-export function codexTuiPaneMatchesAppServer(status: CodexRemoteTuiStatus, appServerUrl: string): boolean {
-  return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl))
+export function codexTuiPaneMatchesSession(status: CodexRemoteTuiStatus, appServerUrl: string, threadId: string): boolean {
+  return status.kind === 'alive' && [status.terminalCommand, status.paneCommand].some(command => command?.includes(appServerUrl) && command.includes(threadId))
 }
 
-function codexTuiPaneReadyForSession(status: CodexRemoteTuiStatus, appServerUrl: string): status is Extract<CodexRemoteTuiStatus, { kind: 'alive' }> {
-  return codexTuiPaneMatchesAppServer(status, appServerUrl)
+function codexTuiPaneReadyForSession(status: CodexRemoteTuiStatus, appServerUrl: string, threadId: string): status is Extract<CodexRemoteTuiStatus, { kind: 'alive' }> {
+  return codexTuiPaneMatchesSession(status, appServerUrl, threadId)
 }
 
 function codexTuiStatusDescription(status: CodexRemoteTuiStatus): string {
@@ -55,7 +55,7 @@ function codexTuiStatusDescription(status: CodexRemoteTuiStatus): string {
 
 function codexRemoteTuiCommand(config: CodexResolvedConfig, session: AgentSession, appServerUrl: string): string {
   const envExports = `export CODEX_HOME=${shellArg(config.home)} DISABLE_AUTOUPDATER=1;`
-  const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl])
+  const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId, '-C', session.cwd])
   return `${envExports} cd ${shellArg(session.cwd)} && exec ${cmd}`
 }
 
@@ -98,7 +98,7 @@ export class CodexAppServerSession {
     await this.tui.ensureSession()
     const status = this.tui.status(tabName)
     if (status.kind === 'alive') {
-      if (codexTuiPaneMatchesAppServer(status, appServerUrl)) {
+      if (codexTuiPaneMatchesSession(status, appServerUrl, session.nativeSessionId)) {
         await this.tui.autoSkipUpdatePrompt(sessionId, status.paneId)
         return { appServerUrl, codexHome: this.config.home, tuiTabName: tabName }
       }
@@ -110,21 +110,21 @@ export class CodexAppServerSession {
     await this.tui.newTab(tabName, codexRemoteTuiCommand(this.config, session, appServerUrl))
     this.tui.log(`daemon: attached codex remote TUI ${sessionId.slice(0, 8)} tab=${tabName} url=${appServerUrl}`)
     const paneStatus = await this.tui.waitForPane(tabName)
-    if (!codexTuiPaneReadyForSession(paneStatus, appServerUrl)) {
+    if (!codexTuiPaneReadyForSession(paneStatus, appServerUrl, session.nativeSessionId)) {
       throw new Error(`codex remote TUI failed to become ready for ${sessionId.slice(0, 8)} tab=${tabName}: ${codexTuiStatusDescription(paneStatus)}`)
     }
     await this.tui.autoSkipUpdatePrompt(sessionId, paneStatus.paneId)
     return { appServerUrl, codexHome: this.config.home, tuiTabName: tabName }
   }
 
-  async start(sessionId: string, cwd: string, options: { model?: string } = {}): Promise<AgentSession> {
+  async start(sessionId: string, cwd: string, options: { model?: string; materializeCwd?: string } = {}): Promise<AgentSession> {
     const session = await this.opts.driver.start({ sessionId, cwd, options })
     this.opts.remember(session)
     this.opts.log(`daemon: started codex app-server session ${sessionId.slice(0, 8)} thread=${session.nativeSessionId}`)
     return session
   }
 
-  async resume(sessionId: string, cwd: string, nativeSessionId: string | undefined, options: { model?: string } = {}): Promise<AgentSession> {
+  async resume(sessionId: string, cwd: string, nativeSessionId: string | undefined, options: { model?: string; materializeCwd?: string } = {}): Promise<AgentSession> {
     const session = await this.opts.driver.resume({ sessionId, cwd, nativeSessionId, options })
     this.opts.remember(session)
     this.opts.log(`daemon: started codex app-server session ${sessionId.slice(0, 8)} thread=${session.nativeSessionId}`)

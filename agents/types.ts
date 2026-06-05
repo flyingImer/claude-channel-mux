@@ -65,6 +65,7 @@ export type AgentEvent =
 
 export type AgentStartOptions = {
   model?: string
+  materializeCwd?: string
 }
 
 export type StartAgentInput = {

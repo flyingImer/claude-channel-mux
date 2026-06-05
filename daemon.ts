@@ -180,7 +180,7 @@ function parseCodexOptionIndex(value: string | undefined): number | undefined {
 }
 
 function parseSessionCallbackUuid(value: string): string | undefined {
-  return /^(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(value) ? value : undefined
+  return /^[A-Za-z0-9._:-]{8,128}$/.test(value) ? value : undefined
 }
 
 function firstNumberArg(args: string, fallback = 30): number {
@@ -1219,7 +1219,7 @@ function resolveSessionByPrefix(prefix: string, preferred?: AgentRuntimeKind): S
 }
 
 function resolveSessionById(input: string, preferred?: AgentRuntimeKind): SessionIdResolution {
-  if (!/^[0-9a-f]{8}(?:[0-9a-f]{4}){0,7}$/i.test(input) && !parseSessionCallbackUuid(input)) return { ok: false, reason: 'invalid' }
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(input)) return { ok: false, reason: 'invalid' }
   const candidates = [...boundAgentSessions(preferred), ...listAllAgentSessions(500, preferred)]
   const seen = new Set<string>()
   const unique = candidates.filter(session => {
@@ -3120,7 +3120,7 @@ function removeWorktree(baseCwd: string, uuid: string): void {
   }
 }
 
-async function spawnAgent(runtime: AgentRuntimeKind, uuid: string, cwd: string, resumeMode: boolean, options: { model?: string } = {}, nativeSessionId?: string): Promise<SpawnResult> {
+async function spawnAgent(runtime: AgentRuntimeKind, uuid: string, cwd: string, resumeMode: boolean, options: { model?: string; materializeCwd?: string } = {}, nativeSessionId?: string): Promise<SpawnResult> {
   if (runtime === 'codex') return spawnCodexAppServer(uuid, cwd, nativeSessionId, options)
   try {
     const session = resumeMode
@@ -3254,11 +3254,12 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
 }
 
 
-async function spawnCodexAppServer(uuid: string, cwd: string, nativeSessionId: string | undefined, options: { model?: string } = {}): Promise<SpawnResult> {
+async function spawnCodexAppServer(uuid: string, cwd: string, nativeSessionId: string | undefined, options: { model?: string; materializeCwd?: string } = {}): Promise<SpawnResult> {
   try {
-    if (nativeSessionId) await codexSessionLifecycle.resume(uuid, cwd, nativeSessionId, options)
-    else await codexSessionLifecycle.start(uuid, cwd, options)
-    return { ok: true, uuid }
+    const session = nativeSessionId
+      ? await codexSessionLifecycle.resume(uuid, cwd, nativeSessionId, options)
+      : await codexSessionLifecycle.start(uuid, cwd, options)
+    return { ok: true, uuid: session.sessionId }
   } catch (err) {
     process.stderr.write(`daemon: codex app-server start failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
     return { ok: false, uuid, error: errorMessage(err) }
@@ -3290,44 +3291,49 @@ function spawnDirect(runtime: AgentRuntimeKind, bin: string, uuid: string, args:
 async function startNew(ck: string, cwd: string, runtime = DEFAULT_AGENT_RUNTIME, announce = true, makeActive = true): Promise<string | undefined> {
   const uuid = randomUUID()
   const existingMeta = agentMeta(ck, runtime)
-  const codexCwd = runtime === 'codex' ? prepareCodexCwd(cwd, uuid) : { cwd, meta: { cwd } as AgentSlotMeta }
-  const result = await spawnAgent(runtime, uuid, codexCwd.cwd, false, { model: existingMeta?.model })
+  const result = await spawnAgent(runtime, uuid, cwd, false, { model: existingMeta?.model })
   if (!result.ok) {
     await sendChannelNotice(ck, formatAgentReply(runtime, formatAgentStartFailure(runtime, 'start', result.error)), undefined, `${runtime} start failure`)
     return undefined
   }
+  const sessionId = result.uuid
+  const codexCwd = runtime === 'codex' ? prepareCodexCwd(cwd, sessionId) : { cwd, meta: { cwd } as AgentSlotMeta }
   if (runtime === 'codex') {
-    const session = codexSessions.get(uuid)
+    const session = codexSessions.get(sessionId)
     if (!session) {
-      await killSession(uuid)
+      await killSession(sessionId)
       await sendChannelNotice(ck, formatAgentReply(runtime, '❌ Codex app-server did not report a session. The previous room mapping was kept; try again.'), undefined, 'codex session start failure')
       return undefined
     }
-    const tuiReady = await ensureCodexRemoteTui(uuid, session)
+    if (session.cwd !== codexCwd.cwd) {
+      await codexSessionLifecycle.resume(sessionId, cwd, session.nativeSessionId, { model: existingMeta?.model, materializeCwd: codexCwd.cwd })
+      session.cwd = codexCwd.cwd
+    }
+    const tuiReady = await ensureCodexRemoteTui(sessionId, session)
     if (!tuiReady) {
-      await killSession(uuid)
+      await killSession(sessionId)
       await sendChannelNotice(ck, formatAgentReply(runtime, '❌ Codex app-server started but remote TUI was not ready. The previous room mapping was kept; try again or use `ccm stop codex`.'), undefined, 'codex tui start failure')
       return undefined
     }
     if (codexCwd.warning) await sendChannelNotice(ck, formatAgentReply(runtime, `⚠️ Codex worktree: ${codexCwd.warning}`), undefined, 'codex worktree warning')
   }
   setRoom(ck, cwd, makeActive ? runtime : undefined)
-  setBindingSession(ck, runtime, uuid, makeActive)
+  setBindingSession(ck, runtime, sessionId, makeActive)
   if (runtime === 'codex') {
-    const session = codexSessions.get(uuid)
-    if (session) setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(existingMeta?.model ? { model: existingMeta.model } : {}), desiredRunning: true })
+    const session = codexSessions.get(sessionId)
+    if (session) setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(sessionId), ...(existingMeta?.model ? { model: existingMeta.model } : {}), desiredRunning: true })
   } else {
     setAgentMeta(ck, runtime, { cwd, desiredRunning: true })
   }
-  if (announce) await sendChannelNotice(ck, formatAgentReply(runtime, `🚀 ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` starting...`), undefined, `${runtime} start notice`)
-  if (runtime === 'codex') await sendChannelNotice(ck, formatAgentReadyNotice(runtime, uuid), undefined, `${runtime} ready notice`)
-  process.stderr.write(`daemon: new ${runtime} ${uuid.slice(0, 8)} for ${ck}\n`)
+  if (announce) await sendChannelNotice(ck, formatAgentReply(runtime, `🚀 ${agentName(runtime)} session \`${sessionId.slice(0, 8)}\` starting...`), undefined, `${runtime} start notice`)
+  if (runtime === 'codex') await sendChannelNotice(ck, formatAgentReadyNotice(runtime, sessionId), undefined, `${runtime} ready notice`)
+  process.stderr.write(`daemon: new ${runtime} ${sessionId.slice(0, 8)} for ${ck}\n`)
 
   if (runtime !== 'codex') {
-    void startScreenWatch(ck, uuid)
-    startTranscriptPoll(uuid, runtime)
+    void startScreenWatch(ck, sessionId)
+    startTranscriptPoll(sessionId, runtime)
   }
-  return uuid
+  return sessionId
 }
 
 function clearRuntimeState(uuid: string, reason: string, opts: { closePane?: boolean; killChild?: boolean } = {}): void {
