@@ -41,7 +41,7 @@ export function codexTuiPaneMatchesAppServer(status: CodexRemoteTuiStatus, appSe
 
 function codexRemoteTuiCommand(config: CodexResolvedConfig, session: AgentSession, appServerUrl: string): string {
   const envExports = `export CODEX_HOME=${shellArg(config.home)} DISABLE_AUTOUPDATER=1;`
-  const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl])
+  const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId])
   return `${envExports} cd ${shellArg(session.cwd)} && exec ${cmd}`
 }
 
