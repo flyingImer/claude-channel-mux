@@ -9,6 +9,15 @@ These notes capture lessons from the June 2026 Codex app-server authentication/m
 - Treat `CODEX_BIN` as the command prefix for deployment-specific CLI flags and wrappers. CCM may append generic runtime args after it, but should not hardcode private provider details or personal preferences.
 - Keep room-specific model overrides as room metadata only. Do not write them into global Codex config files.
 - The app-server process, native thread creation, per-turn requests, and remote TUI attachment must all derive command/model config from the same resolved config object.
+- For the current shared app-server architecture and native thread id rationale, read `docs/codex-shared-app-server-thread-identity.md` before changing Codex lifecycle code.
+
+## Lifecycle Direction
+
+- CCM should run one shared Codex app-server process per daemon and one native app-server thread per Codex room.
+- For new Codex sessions, `AgentSession.sessionId` should equal `AgentSession.nativeSessionId`, and both should equal the Codex-native `thread.id`.
+- New Codex threads must be materialized with `thread/inject_items` before remote TUI resume is treated as ready.
+- The app-server client must initialize with `capabilities.experimentalApi: true`; otherwise `thread/settings/update` fails.
+- Remote TUI commands should include `--remote <url> resume <threadId> -C <cwd>` and readiness checks should match both URL and native thread id.
 
 ## Debugging Checklist
 
@@ -18,9 +27,11 @@ When a Codex app-server turn reports authentication, policy, provider, or invali
 2. **Actual child argv** — inspect the running app-server process argv and ordering. Config args that appear after an app-server subcommand may not affect app-server startup.
 3. **App-server config** — call `config/read` on the live app-server and confirm the provider/base route is what the deployment expects.
 4. **Native thread state** — inspect `thread/read`, native thread id, status, and session JSONL path. Old native threads may preserve stale config/model assumptions.
-5. **Per-turn request shape** — confirm every `turn/start` carries the effective model when CCM has resolved one. It is not enough for only `thread/start` to carry it.
-6. **Real room route** — verify the Slack/Telegram room binding and canonical `chat_id` resolution so tools and turns do not route through a stale room.
-7. **Structured errors** — prefer structured app-server `error` events, daemon stderr hits, and live thread status over broad text search. Memory/context text may contain historical error strings and create false positives.
+5. **Materialization gate** — confirm `thread/inject_items` succeeded, `thread/settings/update` succeeded, and the effective cwd is the worktree path.
+6. **Remote TUI command** — confirm the pane command includes the shared app-server URL, `resume <threadId>`, and `-C <cwd>`.
+7. **Per-turn request shape** — confirm every `turn/start` carries the effective model when CCM has resolved one. It is not enough for only `thread/start` to carry it.
+8. **Real room route** — verify the Slack/Telegram room binding and canonical `chat_id` resolution so tools and turns do not route through a stale room.
+9. **Structured errors** — prefer structured app-server `error` events, daemon stderr hits, and live thread status over broad text search. Memory/context text may contain historical error strings and create false positives.
 
 ## Lessons Learned
 
