@@ -156,6 +156,7 @@ export class CodexAppServerClient {
     await this.request('initialize', {
       clientInfo: { name: 'claude-channel-mux', version: '0.3.0' },
       capabilities: {
+        experimentalApi: true,
         optOutNotificationMethods: [
           'turn/diff/updated',
           'mcpServer/startupStatus/updated',

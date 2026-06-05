@@ -112,6 +112,39 @@ test('CodexAppServerClient starts app-server after all config args', async () =>
   }
 })
 
+test('CodexAppServerClient initializes experimental API capability for thread settings', async () => {
+  const dir = join(tmpdir(), 'ccm-codex-client-init-' + process.pid + '-' + Date.now())
+  mkdirSync(dir, { recursive: true })
+  const script = join(dir, 'fake-app-server-init.js')
+  const initPath = join(dir, 'initialize.json')
+  await Bun.write(script, [
+    "const fs = require('fs')",
+    "process.stdin.setEncoding('utf8')",
+    "process.stdin.on('data', chunk => {",
+    "  for (const line of String(chunk).trim().split(/\\n+/)) {",
+    "    if (!line) continue",
+    "    const msg = JSON.parse(line)",
+    "    if (msg.method === 'initialize') {",
+    '      fs.writeFileSync(' + JSON.stringify(initPath) + ', JSON.stringify(msg.params))',
+    "      process.stdout.write(JSON.stringify({ id: msg.id, result: {} }) + '\\n')",
+    "    }",
+    '  }',
+    '})',
+  ].join('\n'))
+  const client = new CodexAppServerClient({
+    codexCommand: [process.execPath, script],
+    cwd: dir,
+    env: process.env,
+  })
+  try {
+    await client.start()
+    expect(JSON.parse(readFileSync(initPath, 'utf8'))).toMatchObject({ capabilities: { experimentalApi: true } })
+  } finally {
+    await client.stop().catch(() => {})
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('CodexAppServerClient.stop terminates spawned app-server children', async () => {
   const dir = join(tmpdir(), `ccm-codex-client-${process.pid}-${Date.now()}`)
   mkdirSync(dir, { recursive: true })
