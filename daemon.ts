@@ -54,7 +54,7 @@ import { findZellijSessionLine } from './zellij.js'
 import { commandLine, forwardedEnvExports, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
-import { AGENT_RUNTIMES, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
 import { compareTaskSnapshotItems, taskSnapshotItemFromJson, type TaskSnapshotItem, type TaskStatus } from './tasks.js'
@@ -451,7 +451,7 @@ function bindingEntries(): Array<{ channelKey: string; runtime: AgentRuntimeKind
 }
 
 function canonicalToolChannelKey(uuid: string, requestedCk: string): string {
-  const boundRooms = [...new Set(bindingEntries().filter(e => e.uuid === uuid).map(e => e.channelKey))]
+  const boundRooms = bindingAuthorizedRoomsForSession(loadBindings(), uuid)
   if (boundRooms.length === 0) {
     auditEvent({ event: 'tool_chat_id_mismatch', reason: 'caller_not_bound', requested_room_id: requestedCk, from_session_id: uuid, from_agent: runtimeForUuid(uuid) })
     throw new Error(`Session ${uuid.slice(0, 8)} is not bound to any CCM room`)

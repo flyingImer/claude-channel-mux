@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { AGENT_RUNTIMES, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding } from '../bindings.ts'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding } from '../bindings.ts'
 
 test('normalizeBinding upgrades legacy string bindings to Claude sessions', () => {
   expect(normalizeBinding('legacy-uuid', 'codex')).toEqual({
@@ -69,6 +69,18 @@ test('bindingSessionEntries returns typed active session entries', () => {
     { runtime: 'codex', uuid: 'cx', active: true },
   ])
   expect(bindingSessionEntries({ active: 'claude', observers: [], sessions: { claude: '', codex: undefined }, agentMeta: {} })).toEqual([])
+})
+
+
+test('bindingAuthorizedRoomsForSession allows Codex shared app-server bridge rooms', () => {
+  const bindings = bindingsFromJson({
+    'slack:first': { active: 'codex', sessions: { codex: 'thread-a' }, agentMeta: { codex: { appServerUrl: 'ws://127.0.0.1:1' } } },
+    'slack:second': { active: 'codex', sessions: { codex: 'thread-b' }, agentMeta: { codex: { appServerUrl: 'ws://127.0.0.1:1' } } },
+    'slack:other-app-server': { active: 'codex', sessions: { codex: 'thread-c' }, agentMeta: { codex: { appServerUrl: 'ws://127.0.0.1:2' } } },
+    'slack:claude': { active: 'claude', sessions: { claude: 'thread-a' } },
+  })
+
+  expect(bindingAuthorizedRoomsForSession(bindings, 'thread-a').sort()).toEqual(['slack:claude', 'slack:first', 'slack:second'])
 })
 
 

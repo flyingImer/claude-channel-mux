@@ -166,7 +166,7 @@ test('binding helpers are shared and behavior-tested', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const bindings = readFileSync('bindings.ts', 'utf8')
   const state = readFileSync('state.ts', 'utf8')
-  expect(daemon).toContain("import { AGENT_RUNTIMES, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue")
+  expect(daemon).toContain("import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue")
   expect(daemon).toContain("import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson")
   expect(daemon).toContain('return normalizeBindingValue(value, DEFAULT_AGENT_RUNTIME)')
   expect(daemon).toContain('return serializeBindingValue(binding, DEFAULT_AGENT_RUNTIME)')
@@ -1646,7 +1646,8 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
 test('tool calls reject stale cross-room chat_id values', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const helper = daemon.slice(daemon.indexOf('function canonicalToolChannelKey'), daemon.indexOf('function roomCwd'))
-  expect(helper).toContain('bindingEntries().filter(e => e.uuid === uuid).map(e => e.channelKey)')
+  expect(daemon).toContain('bindingAuthorizedRoomsForSession')
+  expect(helper).toContain('const boundRooms = bindingAuthorizedRoomsForSession(loadBindings(), uuid)')
   expect(helper).toContain('if (boundRooms.includes(requestedCk)) return requestedCk')
   expect(helper).toContain('if (!requestedCk && boundRooms.length === 1) return boundRooms[0]')
   expect(helper).toContain("event: 'tool_chat_id_mismatch'")

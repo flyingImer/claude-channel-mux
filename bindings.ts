@@ -131,6 +131,26 @@ export function bindingSessionEntries(binding: NormalizedBinding): BindingSessio
   return entries
 }
 
+export function bindingAuthorizedRoomsForSession(bindings: Record<string, ChannelBinding>, uuid: string): string[] {
+  const normalized = Object.entries(bindings).map(([channelKey, raw]) => [channelKey, normalizeBinding(raw, 'claude')] as const)
+  const directRooms = normalized
+    .filter(([, binding]) => bindingSessionEntries(binding).some(entry => entry.uuid === uuid))
+    .map(([channelKey]) => channelKey)
+  const directSet = new Set(directRooms)
+  const appServerUrls = new Set(normalized.flatMap(([, binding]) => {
+    const appServerUrl = binding.agentMeta.codex?.appServerUrl
+    return appServerUrl && bindingSessionEntries(binding).some(entry => entry.uuid === uuid && entry.runtime === 'codex') ? [appServerUrl] : []
+  }))
+  if (appServerUrls.size === 0) return directRooms
+  for (const [channelKey, binding] of normalized) {
+    if (directSet.has(channelKey)) continue
+    const codexUuid = binding.sessions.codex
+    const appServerUrl = binding.agentMeta.codex?.appServerUrl
+    if (codexUuid && appServerUrl && appServerUrls.has(appServerUrl)) directSet.add(channelKey)
+  }
+  return [...directSet]
+}
+
 export function serializeBinding(binding: NormalizedBinding, defaultRuntime: AgentRuntimeKind): ChannelBinding | undefined {
   const sessions: Partial<Record<AgentRuntimeKind, string>> = {}
   const agentMeta: Partial<Record<AgentRuntimeKind, AgentSlotMeta>> = {}
