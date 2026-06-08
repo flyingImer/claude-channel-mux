@@ -186,8 +186,11 @@ Configure at least one platform (Slack, Telegram, or both).
 **Slack:**
 1. Go to https://api.slack.com/apps -> Create New App -> From manifest
 2. Paste the contents of `slack-app-manifest.json`
-3. In Socket Mode settings, generate an App-Level Token with `connections:write` scope
-4. Install to your workspace
+3. Install to your workspace and copy the Bot User OAuth Token (`xoxb-...`) into `SLACK_BOT_TOKEN`
+4. In Basic Information -> App-Level Tokens, generate an app-level token with `connections:write` scope and copy it into `SLACK_APP_TOKEN`
+5. Invite the bot user to each channel that should talk to CCM (`/invite @CCM Mux`, or your manifest's bot display name)
+
+The manifest enables Socket Mode, interactivity, `/ccm`, `/cc`, `/cx`, message events, file access, reactions, and Slack assistant status updates. Because CCM uses Socket Mode, no public request URL is required. If you update an existing Slack app, replace its App Manifest with `slack-app-manifest.json`, save it, reinstall the app to the workspace so new scopes and slash commands apply, then restart the daemon.
 
 **Telegram:**
 1. Message [@BotFather](https://t.me/BotFather) -> `/newbot`
