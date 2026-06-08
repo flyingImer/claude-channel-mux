@@ -1085,11 +1085,15 @@ test('daemon callback pagination never partially parses page numbers', () => {
 })
 
 test('daemon Claude nav output is bounded while preserving recent screen lines', () => {
+  const helper = readFileSync('claude-nav.ts', 'utf8')
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain('const CLAUDE_NAV_SCREEN_LINE_LIMIT = 80')
-  expect(daemon).toContain('function truncateClaudeNavScreen(text: string): string')
-  expect(daemon).toContain('lines.slice(-CLAUDE_NAV_SCREEN_LINE_LIMIT)')
-  expect(daemon).toContain('const clean = truncateClaudeNavScreen(lines.filter(l => l.trim()).join')
+  expect(helper).toContain('const CLAUDE_NAV_SCREEN_LINE_LIMIT = 80')
+  expect(helper).toContain('const CLAUDE_NAV_MESSAGE_CHAR_LIMIT = 3500')
+  expect(helper).toContain('export function truncateClaudeNavScreen(text: string, maxChars = CLAUDE_NAV_MESSAGE_CHAR_LIMIT): string')
+  expect(helper).toContain('kept = kept.slice(-CLAUDE_NAV_SCREEN_LINE_LIMIT)')
+  expect(helper).toContain('export function claudeNavMessageText')
+  expect(daemon).toContain("import { claudeNavMessageText, isClaudeDialogScreen } from './claude-nav.js'")
+  expect(daemon).toContain("formatAgentReply('claude', claudeNavMessageText(u, screen))")
   expect(daemon).not.toContain('const clean = lines.filter(l => l.trim()).join')
 })
 
@@ -2002,11 +2006,11 @@ test('button-return and directory browser sends log failures without losing ids'
   const dialogBlock = daemon.slice(daemon.indexOf('async function sendDialogButtons'), daemon.indexOf('// ---------------------------------------------------------------------------', daemon.indexOf('async function sendDialogButtons')))
   expect(dialogBlock).toContain('await adapter.editMessage(id, existingMsgId, msg, opts)')
   expect(dialogBlock).toContain('return existingMsgId')
-  expect(dialogBlock).toContain('editMessage failed for ${u}: ${errorMessage(err)}; sending replacement')
+  expect(dialogBlock).toContain('editMessage failed for ${u}: ${errorMessage(err)}; keeping existing nav message')
   expect(dialogBlock).toContain('return await adapter.sendMessage(id, msg, opts)')
   expect(dialogBlock).toContain('claude dialog buttons send failed')
-  expect(dialogBlock.indexOf('return existingMsgId')).toBeLessThan(dialogBlock.indexOf('editMessage failed for ${u}: ${errorMessage(err)}; sending replacement'))
-  expect(dialogBlock.indexOf('editMessage failed for ${u}: ${errorMessage(err)}; sending replacement')).toBeLessThan(dialogBlock.indexOf('return await adapter.sendMessage(id, msg, opts)'))
+  expect(dialogBlock.indexOf('return existingMsgId')).toBeLessThan(dialogBlock.indexOf('editMessage failed for ${u}: ${errorMessage(err)}; keeping existing nav message'))
+  expect(dialogBlock.indexOf('return existingMsgId')).toBeLessThan(dialogBlock.indexOf('return await adapter.sendMessage(id, msg, opts)'))
   const dirBlock = daemon.slice(daemon.indexOf('async function sendDirBrowser'), daemon.indexOf('async function sendFindResults'))
   expect(dirBlock).toContain('await sendChannelNotice(ck, text, opts, `${runtime} directory browser`)')
   expect(dirBlock).not.toContain('await adapter.sendMessage(id, text, opts)')
@@ -2842,7 +2846,7 @@ test('agent replies are visibly identity-prefixed and idempotent', () => {
     "formatAgentReply('codex', `📋 Codex plan",
     "formatAgentReply(runtimeForUuid(uuid), `📋 Tasks",
     "sendChannelNotice(ck, formatAgentReply(runtimeForUuid(uuid), '🗜️ Compacting conversation context...')",
-    "formatAgentReply('claude', `🔧 Claude nav",
+    "formatAgentReply('claude', claudeNavMessageText(u, screen))",
     "formatAgentReply('claude', `🎮 Claude screen",
     "formatAgentReply('claude', '⏳ Navigating Claude...')",
   ]) expect(daemon).toContain(call)

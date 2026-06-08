@@ -58,6 +58,7 @@ import { AGENT_RUNTIMES, bindingSessionEntries, bindingsFromJson, isAgentRuntime
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
 import { compareTaskSnapshotItems, taskSnapshotItemFromJson, type TaskSnapshotItem, type TaskStatus } from './tasks.js'
+import { claudeNavMessageText, isClaudeDialogScreen } from './claude-nav.js'
 import { codexApprovalResult, codexOptionInputResult, codexPendingRequestButtons, codexRequestActionAllowed, codexTextResponseResult, summarizeCodexRequest } from './codex-response.js'
 import { parseZellijJson, zellijPanes, type ZellijPane } from './zellij-json.js'
 import { ipcMessageFromLine } from './ipc.js'
@@ -189,15 +190,6 @@ function firstNumberArg(args: string, fallback = 30): number {
 
 function clampCount(value: number, min = 1, max = 200): number {
   return Math.max(min, Math.min(max, value))
-}
-
-const CLAUDE_NAV_SCREEN_LINE_LIMIT = 80
-
-function truncateClaudeNavScreen(text: string): string {
-  const lines = text.split('\n')
-  if (lines.length <= CLAUDE_NAV_SCREEN_LINE_LIMIT) return text
-  const omitted = lines.length - CLAUDE_NAV_SCREEN_LINE_LIMIT
-  return [`… truncated ${omitted} earlier lines …`, ...lines.slice(-CLAUDE_NAV_SCREEN_LINE_LIMIT)].join('\n')
 }
 
 const CLAUDE_NAV_KEYS = new Set(['Left', 'Right', 'Up', 'Down', 'Enter', 'Escape'])
@@ -3548,7 +3540,6 @@ const DEV_CHANNEL_CONFIRM_RE = /WARNING:\s+Loading development channels[\s\S]*I 
 // "Esc to dismiss" as "Esc to ignore" would still hit. When CC invents a
 // totally new prompt shape (e.g. "Tab: switch") the MAYBE_PROMPT_HINT_RE
 // below will log it so we know to update.
-const PROMPT_HINT_RE = /(?<![+\w])(?:Esc|Enter|Tab|Space|Ctrl\+[A-Z]|[↑↓←→]+\/[↑↓←→]+) to [a-z]/
 // Broader hint that catches "looks like a prompt" even outside our vocabulary.
 // If this matches and PROMPT_HINT_RE doesn't, we log a warning so we can see
 // new CC UI shapes we haven't adapted to. Case-sensitive on the key name so
@@ -3643,7 +3634,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     // manual list. Still string-matching terminal text — CC doesn't expose
     // a hook for its built-in TUI dialogs (see feedback_ccm_dialog_gaps.md),
     // so this is the best we have until CC changes its UI wording again.
-    const isDialog = !permissionInFlight && PROMPT_HINT_RE.test(content)
+    const isDialog = isClaudeDialogScreen(content, permissionInFlight)
 
     if (isDialog) {
       entry.nonDialogStreak = 0
@@ -3668,7 +3659,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
       // Observability: flag screens that look prompt-like (contain "to " with
       // a known key word) but our detector said no. Signals CC added a new
       // prompt shape we should adapt to. Deduped per hint text to avoid log spam.
-      if (!permissionInFlight && MAYBE_PROMPT_HINT_RE.test(content) && !PROMPT_HINT_RE.test(content)) {
+      if (!permissionInFlight && MAYBE_PROMPT_HINT_RE.test(content) && !isClaudeDialogScreen(content)) {
         const hintLine = lines.filter(l => MAYBE_PROMPT_HINT_RE.test(l)).pop()?.trim().slice(0, 120) ?? ''
         if (hintLine && !entry.lastMaybeHint?.startsWith(hintLine)) {
           entry.lastMaybeHint = hintLine
@@ -3769,7 +3760,6 @@ async function sendDialogButtons(
   if (!adapter) return undefined
   const id = localId(ck)
   const lines = screen.split('\n')
-  const clean = truncateClaudeNavScreen(lines.filter(l => l.trim()).join('\n').trim())
 
   const options: string[] = []
   for (const line of lines) {
@@ -3777,7 +3767,7 @@ async function sendDialogButtons(
     if (optMatch) options.push(optMatch[2].trim())
   }
 
-  const msg = formatAgentReply('claude', `🔧 Claude nav \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``)
+  const msg = formatAgentReply('claude', claudeNavMessageText(u, screen))
   const buttons: Array<{ text: string; data: string }> = []
   if (options.length > 0) {
     options.forEach((opt, i) => {
@@ -3797,7 +3787,8 @@ async function sendDialogButtons(
       await adapter.editMessage(id, existingMsgId, msg, opts)
       return existingMsgId
     } catch (err) {
-      process.stderr.write(`daemon: editMessage failed for ${u}: ${errorMessage(err)}; sending replacement\n`)
+      process.stderr.write(`daemon: editMessage failed for ${u}: ${errorMessage(err)}; keeping existing nav message\n`)
+      return existingMsgId
     }
   }
   try {
@@ -4762,7 +4753,7 @@ function claudeSnapshot(ck: string, session: AgentSession): AgentSnapshot {
   const screen = paneId !== null ? dumpScreen(paneId) : ''
   const transcript = findTranscript(uuid, 'claude')
   const recent = transcript ? readClaudeTranscriptEntries(transcript.path, 8) : []
-  const pending = screen && PROMPT_HINT_RE.test(screen)
+  const pending = screen && isClaudeDialogScreen(screen)
     ? [{ id: 'screen', kind: 'other' as const, title: 'Claude screen prompt', detail: screen.split('\n').filter(l => l.trim()).slice(-8).join('\n'), actions: ['nav buttons', 'enter', 'escape'] }]
     : []
   return {
@@ -5376,7 +5367,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       const changed = await waitForChange(paneId, before)
       if (changed) {
         const screen = dumpScreen(paneId)
-        if (PROMPT_HINT_RE.test(screen)) {
+        if (isClaudeDialogScreen(screen)) {
           const u = uuid.slice(0, 8)
           const msgId = await sendDialogButtons(ck, u, screen)
           const entry = screenWatchers.get(uuid)

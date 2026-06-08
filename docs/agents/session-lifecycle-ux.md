@@ -67,6 +67,22 @@ Resume or repair failure should drop the message/handoff with a clear error and 
 - If no Codex mapping exists, status/navigation should report that no active room Codex session is mapped.
 - Codex status output should make the shared app-server URL and per-room native thread id visible enough for debugging.
 
+### Claude Nav Screen-Watcher Guardrails
+
+The Claude screen watcher is allowed to surface `Claude nav` only for actionable dialogs that need remote key input. It must not treat routine Claude TUI chrome, task/subagent lists, or progress panes as nav prompts just because they contain key-hint text.
+
+On 2026-06-08, a live session exposed this failure mode while Claude was orchestrating subagents. The pane showed the subagent task list footer `↑/↓ to select · Enter to view`, which matched the broad dialog-hint detector and caused repeated `🔧 Claude nav` posts in the bound chat channel. The storm was amplified because the channel edit API rejected oversized nav text; the old edit-failure path sent replacement messages, producing hundreds of duplicate nav replies.
+
+Current guardrails:
+
+- A pure helper owns the Claude nav detector and renderer so prompt classification can be behavior-tested without starting the daemon.
+- Task/subagent list footers such as `↑/↓ to select`, `Enter to view`, `ctrl+t to hide tasks`, and `↓ to manage` are non-dialog screens.
+- Real confirmation dialogs such as `Enter to confirm` remain actionable and should still produce nav buttons.
+- Claude nav message text is bounded before channel send/edit paths see it.
+- If editing an existing nav message fails, CCM keeps the existing nav message instead of sending a replacement, preventing replacement storms.
+
+Regression coverage includes false-positive detection, message-size bounds, and daemon wiring guards.
+
 ## Delete Room And Path Change
 
 - `delete room` is a confirmed reset.
