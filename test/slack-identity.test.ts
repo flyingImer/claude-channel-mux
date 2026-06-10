@@ -58,6 +58,16 @@ test('slackInboundEventFields strips app attribution footer from forwarded text'
     ts: '171000.5',
     text: 'please review this\n\n_Sent using Some App_',
   })?.text).toBe('please review this')
+  expect(slackInboundEventFields({
+    channel: 'C1',
+    ts: '171000.5',
+    text: 'ccm /home/repo/ejwang/ws-spi *Sent using* <@U0B92AQGU3G>',
+  })?.text).toBe('ccm /home/repo/ejwang/ws-spi')
+  expect(slackInboundEventFields({
+    channel: 'C1',
+    ts: '171000.5',
+    text: 'ccm new codex *Sent using* <@U0B92AQGU3G>',
+  })?.text).toBe('ccm new codex')
 })
 
 

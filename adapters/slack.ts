@@ -218,7 +218,7 @@ export function slackInboundEventFields(event: SlackInboundEventInput): { channe
 }
 
 function stripSlackAppAttributionFooter(text: string): string {
-  return text.replace(/(?:\n\s*){1,2}[*_]?Sent using(?:\s+<[^>|]+\|[^>]+>|\s+[^\n*_]+)[*_]?\s*$/i, '').trimEnd()
+  return text.replace(/(?:\s+|(?:\n\s*){1,2})[*_]?Sent using[*_]?(?:\s+<[^>]+>|\s+[^\n*_]+)[*_]?\s*$/i, '').trimEnd()
 }
 
 export function normalizeSlackSlashCommandText(command: string, text = ''): string {
