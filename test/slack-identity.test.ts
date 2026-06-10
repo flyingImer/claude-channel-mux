@@ -47,6 +47,19 @@ test('slackInboundEventFields rejects messages without required routing fields',
   expect(slackInboundEventFields({ channel: 'C1', ts: '0' })).toBeUndefined()
 })
 
+test('slackInboundEventFields strips app attribution footer from forwarded text', () => {
+  expect(slackInboundEventFields({
+    channel: 'C1',
+    ts: '171000.5',
+    text: 'please review this\n\n*Sent using <https://example.com/app|Some App>*',
+  })?.text).toBe('please review this')
+  expect(slackInboundEventFields({
+    channel: 'C1',
+    ts: '171000.5',
+    text: 'please review this\n\n_Sent using Some App_',
+  })?.text).toBe('please review this')
+})
+
 
 test('normalizeSlackSlashCommandText maps Slack slash commands to message text', () => {
   expect(normalizeSlackSlashCommandText('/ccm', 'resume')).toBe('ccm resume')

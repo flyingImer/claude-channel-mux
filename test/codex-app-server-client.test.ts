@@ -145,6 +145,17 @@ test('CodexAppServerClient initializes experimental API capability for thread se
   }
 })
 
+test('CodexAppServerClient surfaces spawn ENOENT instead of websocket URL timeout', async () => {
+  const client = new CodexAppServerClient({
+    codexCommand: ['definitely-missing-codex-for-ccm-test'],
+    cwd: tmpdir(),
+    env: process.env,
+    listen: 'websocket',
+  })
+
+  await expect(client.start()).rejects.toThrow(/spawn failed.*definitely-missing-codex-for-ccm-test/)
+})
+
 test('CodexAppServerClient.stop terminates spawned app-server children', async () => {
   const dir = join(tmpdir(), `ccm-codex-client-${process.pid}-${Date.now()}`)
   mkdirSync(dir, { recursive: true })

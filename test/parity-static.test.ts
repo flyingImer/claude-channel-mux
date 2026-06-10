@@ -98,7 +98,7 @@ test('Codex worktree warnings redact spawn errors before channel send', () => {
 
 test('daemon agent-facing tool errors use shared redaction helper', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain("sendToLive(uuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })")
+  expect(daemon).toContain("sendToLive(route.responseUuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })")
   expect(daemon).toContain('const message = redactSensitiveText(event.error)')
   expect(daemon).toContain('formatAgentReply(event.session.kind, `❌ ${message}`)')
   expect(daemon).toContain('const opts = event.channelKey === ck && event.threadId ? { replyTo: event.threadId, broadcast: true } : undefined')
@@ -623,11 +623,11 @@ test('Codex app-server stop logs SIGKILL failures through redacted stderr callba
 test('Codex app-server startup cleans up shared client if startup fails', () => {
   const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   const ensureSharedClient = driver.slice(driver.indexOf('private async ensureSharedClient'), driver.indexOf('private async materializeThread'))
-  expect(ensureSharedClient).toContain('if (this.sharedClient) return this.sharedClient')
-  expect(ensureSharedClient).toContain('if (this.sharedClientStart) return await this.sharedClientStart')
+  expect(ensureSharedClient).toContain('if (this.client) return this.client')
+  expect(ensureSharedClient).toContain('if (this.clientStart) return await this.clientStart')
   expect(ensureSharedClient).toContain('await client.start()')
-  expect(ensureSharedClient).toContain('this.sharedClient = client')
-  expect(ensureSharedClient).toContain('this.sharedClientStart = undefined')
+  expect(ensureSharedClient).toContain('this.client = client')
+  expect(ensureSharedClient).toContain('this.clientStart = undefined')
   expect(ensureSharedClient).toContain('await client.stop().catch(stopErr => this.opts.log?.(`')
   expect(ensureSharedClient).toContain('codex app-server cleanup failed after startup error')
   expect(ensureSharedClient).toContain('throw err')
@@ -843,6 +843,9 @@ test('CCM runtime-prefixed screen and nav route to the requested agent', () => {
 test('directory use callbacks validate readable directories before binding', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function isReadableDirectory(path: string): boolean')
+  expect(daemon).toContain('function normalizeRoomCwd(cwd: string): string')
+  expect(daemon).toContain('return normalizeRoomCwd(cwd)')
+  expect(daemon).toContain('binding.cwd = normalizeRoomCwd(cwd)')
   expect(daemon).toContain('function parseRuntimePayload(value: string, fallback?: AgentRuntimeKind)')
   expect(daemon).toContain('if (!isAgentRuntimeKind(runtimeToken)) return fallback ? { runtime: fallback, payload: value } : undefined')
   expect(daemon).toContain('const parsed = parseRuntimePayload(rest, DEFAULT_AGENT_RUNTIME)')
@@ -930,9 +933,10 @@ test('zellij session detection uses exact session names', () => {
   expect(daemon).toContain('zellij session health check failed: ${errorMessage(err)}')
   expect(daemon).toContain("return { kind: 'unknown', reason: errorMessage(err) }")
   expect(daemon).toContain('pane status unknown for ${uuid.slice(0, 8)}, preserving live entry: ${status.reason}')
-  expect(daemon).toContain('function shutdownZellijSession(): void')
-  expect(daemon).toContain("zellijSync(['delete-session', ZELLIJ_SESSION, '--force']")
-  expect(daemon).toContain('shutdownZellijSession()')
+  expect(daemon).toContain('async function ensureZellijSession(): Promise<void>')
+  expect(daemon).not.toContain('function shutdownZellijSession(): void')
+  expect(daemon).not.toContain('shutdownZellijSession()')
+  expect(daemon).not.toContain("zellijSync(['delete-session', ZELLIJ_SESSION, '--force']")
   expect(daemon).not.toContain("return { kind: 'unknown', reason: String(err) }")
   expect(daemon).not.toContain("zellij not found, sessions will run as background processes")
   expect(daemon).not.toContain('includes(ZELLIJ_SESSION)')
@@ -1268,7 +1272,7 @@ test('Legacy callback payloads stay Claude-compatible unless runtime is explicit
   expect(daemon).toContain('const { runtime: parsedRuntime, payload } = splitRuntimePayload(value)')
   expect(daemon).toContain('const uuid = parseSessionCallbackUuid(payload)')
   expect(daemon).toContain('const runtime = parsedRuntime ?? resolveSessionRuntime(uuid, undefined)')
-  expect(daemon).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))')
+  expect(daemon).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)')
   expect(daemon).toContain('function parseRuntimePayload(value: string, fallback?: AgentRuntimeKind)')
   expect(daemon).toContain('if (firstColon < 0) return fallback ? { runtime: fallback, payload: value } : undefined')
   expect(daemon).toContain('if (!isAgentRuntimeKind(runtimeToken)) return fallback ? { runtime: fallback, payload: value } : undefined')
@@ -1435,7 +1439,7 @@ test('auto-recovered Claude sessions restart screen watching on register', () =>
   const registerBlock = daemon.slice(daemon.indexOf("if (msg.type === 'register')"), daemon.indexOf("} else if (msg.type === 'tool_call')"))
   expect(registerBlock).toContain('const bound = bindingEntries().find(e => e.uuid === uuid)')
   expect(registerBlock).toContain('daemon: auto-recovered session ${uuid.slice(0, 8)} from bindings')
-  expect(registerBlock).toContain('for (const ch of routableChannelsForUuid(uuid))')
+  expect(registerBlock).toContain('for (const ch of uuid === SHARED_CODEX_BRIDGE_ID ? [] : routableChannelsForUuid(uuid))')
   expect(registerBlock).toContain('if (!screenWatchers.has(uuid)) void startScreenWatch(ch, uuid)')
   expect(registerBlock.indexOf('live.set(uuid, l)')).toBeLessThan(registerBlock.indexOf('if (!screenWatchers.has(uuid)) void startScreenWatch(ch, uuid)'))
 })
@@ -1489,9 +1493,10 @@ test('Claude MCP bridge parses daemon IPC messages with typed helpers', () => {
   expect(server).not.toContain('(req.params.arguments ?? {}) as Record<string, unknown>')
 })
 
-test('Codex MCP bridge receives per-session daemon environment', () => {
+test('Codex MCP bridge receives shared daemon bridge environment', () => {
   const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
-  expect(driver).toContain('private configArgs(sessionId: string')
+  expect(driver).toContain("const SHARED_CODEX_BRIDGE_ID = 'ccm-shared-codex-app-server'")
+  expect(driver).toContain('private configArgs(): string')
   expect(driver).toContain('mcp_servers.claude-channel-mux.env.CC_CHANNEL_SESSION_UUID')
   expect(driver).toContain('mcp_servers.claude-channel-mux.env.CODEX_CHANNEL_SESSION_UUID')
   expect(driver).toContain('mcp_servers.claude-channel-mux.env.CC_CHANNEL_DAEMON_SOCK')
@@ -1522,7 +1527,8 @@ test('Codex app-server and remote TUI share environment-driven launch args', () 
   expect(driver).toContain('CODEX_HOME: runtimeConfig.home')
   expect(driver).toContain("DISABLE_AUTOUPDATER: '1'")
   expect(driver).toContain('const effectiveModel = runtimeConfig.model')
-  expect(driver).toContain('const response = nativeSessionId && !effectiveModel')
+  expect(driver).toContain('const response = nativeSessionId')
+  expect(driver).not.toContain('const response = nativeSessionId && !effectiveModel')
   expect(driver).toContain('...(effectiveModel ? { model: effectiveModel } : {})')
   expect(driver).toContain('...(runtime.effectiveModel ? { model: runtime.effectiveModel } : {})')
   expect(daemon).toContain('const CODEX_CONFIG = codexResolvedConfigFromEnv(process.env)')
@@ -1617,7 +1623,8 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).toContain('retrying main channel')
   expect(daemon).toContain('fallback=main')
   const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
-  expect(driver).toContain('runtime.turnThreads.set(nativeTurnId, input.turn.threadId)')
+  expect(driver).toContain('runtime.turnThreads.set(input.turn.turnId, input.turn.threadId)')
+  expect(driver).toContain('this.moveTurnRoute(runtime, input.turn.turnId, nativeTurnId)')
   expect(driver).toContain('const channelThreadId = runtime.turnThreads.get(nativeTurnId)')
   expect(daemon.indexOf('const nativeTurnId = await agentRegistry.get(peer).sendTurn({ session, turn })')).toBeLessThan(daemon.indexOf('recordAskPeerRate(ck, fromRuntime, peer)'))
   expect(daemon).toContain('askPeerRoomStatusLines')
@@ -1654,10 +1661,35 @@ test('tool calls reject stale cross-room chat_id values', () => {
   expect(helper).toContain("reason: 'requested_room_not_bound_to_caller'")
   expect(helper).toContain("throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to session")
   const handleTool = daemon.slice(daemon.indexOf('async function handleTool'), daemon.indexOf('// ---------------------------------------------------------------------------\n// Permission request'))
-  expect(handleTool).toContain('const requestedCk = stringValue(msg.args.chat_id)')
-  expect(handleTool).toContain('const ck = canonicalToolChannelKey(uuid, requestedCk)')
-  expect(handleTool.indexOf('const ck = canonicalToolChannelKey(uuid, requestedCk)')).toBeLessThan(handleTool.indexOf('const adapter = adapterFor(ck)'))
+  expect(handleTool).toContain('const route = resolveToolCallRoute(callerUuid, msg.args)')
+  expect(daemon).toContain('const requestedCk = stringValue(args.chat_id)')
+  expect(daemon).toContain('canonicalToolChannelKey(callerUuid, requestedCk)')
+  expect(handleTool.indexOf('const route = resolveToolCallRoute(callerUuid, msg.args)')).toBeLessThan(handleTool.indexOf('const adapter = adapterFor(ck)'))
   expect(handleTool).not.toContain('const ck = stringValue(msg.args.chat_id)')
+})
+
+test('shared Codex app-server tool calls are routed by room capability token', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
+  const server = readFileSync('server.ts', 'utf8')
+  const resolver = daemon.slice(daemon.indexOf('function resolveSharedCodexToolCall'), daemon.indexOf('function roomCwd'))
+  expect(driver).toContain("const SHARED_CODEX_BRIDGE_ID = 'ccm-shared-codex-app-server'")
+  expect(driver).toContain('CC_CHANNEL_SESSION_UUID: SHARED_CODEX_BRIDGE_ID')
+  expect(driver).toContain('if (this.runtimes.size === 0 && runtime.client === this.client)')
+  expect(daemon).toContain("const SHARED_CODEX_BRIDGE_ID = 'ccm-shared-codex-app-server'")
+  expect(daemon).toContain("const CODEX_ROOM_TOKENS_FILE = join(STATE_DIR, 'codex-room-tokens.json')")
+  expect(daemon).toContain('newCodexRoomToken(ck, uuid, bindingGeneration)')
+  expect(daemon).toContain("if (targetRuntime === 'codex') invalidateCodexRoomToken(ck, uuid)")
+  expect(daemon).toContain("if (runtime === 'codex') invalidateCodexRoomToken(ck, uuid)")
+  expect(resolver).toContain('const rawToken = optionalString(args.ccm_room_token)')
+  expect(resolver).toContain("event: 'capability_token_missing'")
+  expect(resolver).toContain("event: 'capability_token_unknown'")
+  expect(resolver).toContain("event: 'capability_token_chat_mismatch'")
+  expect(resolver).toContain("event: 'capability_token_binding_stale'")
+  expect(resolver).toContain('currentSession !== token.sessionId || currentGeneration !== token.bindingGeneration')
+  expect(daemon).toContain('uuid === SHARED_CODEX_BRIDGE_ID ? [] : routableChannelsForUuid(uuid)')
+  expect(server).toContain('If <ccm_turn> includes ccm_room_token')
+  expect(server).toContain("ccm_room_token: { type: 'string'")
 })
 
 
@@ -2236,11 +2268,11 @@ test('safe live testing docs require isolated state and channel allowlist', () =
     'for (const ck of routableChannelsForUuid(uuid))',
     'const channels = routableChannelsForUuid(uuid)',
     'for (const ck of routableChannelsForUuid(uuid))',
+    'const channels = routableChannelsForUuid(uuid, runtime)',
     "sendToLive(uuid, { type: 'registered', uuid, channels: routableChannelsForUuid(uuid) })",
-    'for (const ch of routableChannelsForUuid(uuid))',
+    'for (const ch of uuid === SHARED_CODEX_BRIDGE_ID ? [] : routableChannelsForUuid(uuid))',
     'const chans = routableChannelsForUuid(s.uuid, s.runtime)',
     'const sessions = listSessions().filter(s => live.has(s.uuid) && routableChannelsForUuid(s.uuid, s.runtime).length > 0)',
-    "const chans = routableChannelsForUuid(s.uuid, s.runtime).map(c => c.split(':').slice(1).join(':')).join(', ')",
   ]) {
     expect(daemon).toContain(outbound)
   }
@@ -2797,7 +2829,7 @@ test('reply tool keeps Slack thread broadcast parity', () => {
 test('tool errors clear active typing before returning to agent', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const block = daemon.slice(daemon.indexOf('async function handleTool'), daemon.indexOf('// ---------------------------------------------------------------------------\n// Permission request'))
-  expect(block).toContain("} catch (err) {\n    await clearAgentTyping(uuid)\n    sendToLive(uuid, { type: 'tool_error'")
+  expect(block).toContain("} catch (err) {\n    await clearAgentTyping(uuid)\n    sendToLive(route.responseUuid, { type: 'tool_error'")
 })
 
 test('agent replies are visibly identity-prefixed and idempotent', () => {
@@ -2869,7 +2901,9 @@ test('Codex assistant messages are forwarded before final turn completion', () =
   const codexDriver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   expect(types).toContain("type: 'assistant_message'")
   expect(codexDriver).toContain("type: 'assistant_message'")
-  expect(codexDriver).toContain("item?.type === 'agentMessage'")
+  expect(codexDriver).toContain('function assistantMessageText')
+  expect(codexDriver).toContain("item.type === 'agentMessage'")
+  expect(codexDriver).toContain("item.type === 'message' && item.role === 'assistant'")
   expect(daemon).toContain("event.type === 'assistant_message'")
   expect(daemon).toContain("formatAgentReply(event.session.kind, `💭 ${text}`)")
   expect(daemon).toContain('daemon: agent mid-turn send skipped')
@@ -2881,7 +2915,9 @@ test('agent final fallback replies preserve originating thread when known', () =
   const codexDriver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   expect(types).toContain('channelKey?: string; threadId?: string')
   expect(codexDriver).toContain('turnChannels: Map<string, string>')
-  expect(codexDriver).toContain('runtime.turnChannels.set(nativeTurnId, input.turn.channelKey)')
+  expect(codexDriver).toContain('runtime.turnChannels.set(input.turn.turnId, input.turn.channelKey)')
+  expect(codexDriver).toContain('private moveTurnRoute')
+  expect(codexDriver).toContain('if (channelKey) runtime.turnChannels.set(toTurnId, channelKey)')
   expect(codexDriver).toContain('runtime.turnChannels.delete(nativeTurnId)')
   expect(codexDriver).toContain('const channelKey = runtime.turnChannels.get(nativeTurnId)')
   expect(codexDriver).toContain('return { channelThreadId, channelKey }')
@@ -3042,7 +3078,7 @@ test('daemon runtime teardown clears per-session UI state', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain('function clearPerSessionUiState(uuid: string, opts: { clearPeerInflight?: boolean } = {}): void')
   expect(daemon).not.toContain('codexNativeSessionIds')
-  expect(daemon).toContain('codexSessionMap[uuid]?.nativeSessionId')
+  expect(daemon).toContain('codexStoredNativeSessionId(uuid)')
   expect(daemon).toContain('codexPlanMessages.delete(uuid)')
   expect(daemon).toContain('announcedReconnect.delete(uuid)')
   expect(daemon).toContain('knownThreadAnchors.delete(uuid)')
@@ -3094,10 +3130,10 @@ test('resume by agent id restores the room cwd from the selected session', () =>
   expect(resumeIdCase).toContain('const resolved = resolveSessionById(uuid, cmd.runtime)')
   expect(resumeIdCase).toContain('selected = resolved.session')
   expect(resumeIdCase).toContain('const runtime = selected.runtime')
-  expect(resumeIdCase).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))')
+  expect(resumeIdCase).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)')
   const resumeCallback = daemon.slice(daemon.indexOf("} else if (data.startsWith('ccr:')) {"), daemon.indexOf("} else if (data.startsWith('ccp:')) {"))
   expect(resumeCallback).toContain('const selected = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid) ?? boundAgentSessions(runtime).find(s => s.uuid === uuid)')
-  expect(resumeCallback).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))')
+  expect(resumeCallback).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)')
 })
 
 test('resume and stop ids reject malformed, unknown, and ambiguous matches', () => {
@@ -3146,18 +3182,33 @@ test('resume failure rolls back transient room binding changes', () => {
 test('Codex resume uses transcript cwd but only trusted stored native id', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const spawnBody = daemon.slice(daemon.indexOf('async function spawnResumeOnce'), daemon.indexOf('async function resumeAndBind'))
-  expect(spawnBody).toContain('const sessionInfo = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid)')
+  expect(spawnBody).toContain('const sessionInfo = selected ?? listAllAgentSessions(500, runtime).find(s => s.uuid === uuid)')
   expect(spawnBody).toContain('const fallbackCwd = meta?.cwd ?? sessionInfo?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD')
   expect(spawnBody).toContain('normalizeCodexResumeCwd(uuid, fallbackCwd, meta?.sourceCwd)')
   expect(daemon).toContain('function normalizeCodexResumeCwd(uuid: string, cwd: string, sourceCwd?: string): string')
   expect(daemon).toContain('function codexNativeSessionIdForResume(uuid: string, meta?: AgentSlotMeta): string | undefined')
+  expect(daemon).toContain('function codexStoredNativeSessionId(uuid: string): string | undefined')
+  expect(daemon).toContain('function codexLogicalSessionIdForNative(nativeSessionId: string): string | undefined')
   expect(daemon).toContain("join(sourceRoot, '.codex', 'worktrees', uuid.slice(0, 8))")
   expect(daemon).toContain("execFileSync('git', ['worktree', 'move', cwd, target]")
-  expect(spawnBody).toContain('const nativeSessionId = runtime === \'codex\' ? codexNativeSessionIdForResume(uuid, meta) : undefined')
+  expect(spawnBody).toContain('const nativeSessionId = runtime === \'codex\' ? sessionInfo?.nativeSessionId ?? codexNativeSessionIdForResume(uuid, meta) : undefined')
+  expect(spawnBody).toContain('Codex resume requires a trusted native thread id; refusing to start a new conversation.')
   expect(spawnBody).toContain("runtime === 'codex' ? !!nativeSessionId : hasTranscript")
   expect(spawnBody).toContain("{ model: meta?.model }, nativeSessionId")
   expect(spawnBody).not.toContain('codexNativeSessionIds')
   expect(spawnBody).not.toContain('?? uuid')
+})
+
+test('Codex session picker maps native transcript ids back to CCM logical ids', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const listBody = daemon.slice(daemon.indexOf('function listAllCodexSessions'), daemon.indexOf('function listAllAgentSessions'))
+  const resumeIdCase = daemon.slice(daemon.indexOf("case 'resume_id'"), daemon.indexOf("case 'screen'"))
+  const resumeCallback = daemon.slice(daemon.indexOf("} else if (data.startsWith('ccr:')) {"), daemon.indexOf("} else if (data.startsWith('ccp:')) {"))
+  expect(listBody).toContain('const nativeSessionId = m[1]')
+  expect(listBody).toContain('const uuid = codexLogicalSessionIdForNative(nativeSessionId) ?? nativeSessionId')
+  expect(listBody).toContain('nativeSessionId, mtime: st.mtimeMs')
+  expect(resumeIdCase).toContain('resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)')
+  expect(resumeCallback).toContain('resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)')
 })
 
 test('Codex native id resolver never falls back to CCM uuid or transcript rollout filename', () => {
@@ -3165,7 +3216,7 @@ test('Codex native id resolver never falls back to CCM uuid or transcript rollou
   const resolverBody = daemon.slice(daemon.indexOf('function codexNativeSessionIdForResume'), daemon.indexOf('function saveTranscriptDeliveries'))
   const staleSnapshotBody = daemon.slice(daemon.indexOf('function staleCodexPendingSnapshot'), daemon.indexOf('function codexPendingSnapshot'))
   expect(resolverBody).toContain('meta?.nativeSessionId')
-  expect(resolverBody).toContain('codexSessionMap[uuid]?.nativeSessionId')
+  expect(resolverBody).toContain('codexStoredNativeSessionId(uuid)')
   expect(resolverBody).not.toContain('codexTranscriptSessionId(transcript.path)')
   expect(resolverBody).not.toContain('?? uuid')
   expect(staleSnapshotBody).toContain("const nativeSessionId = codexNativeSessionIdForResume(sessionId, agentMeta(ck, 'codex'))")
@@ -3176,7 +3227,8 @@ test('Codex native id resolver never falls back to CCM uuid or transcript rollou
 test('Codex app-server resume fails closed instead of silently starting after resume failure', () => {
   const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   const createRuntime = driver.slice(driver.indexOf('private async createRuntime'), driver.indexOf('private configArgs'))
-  expect(createRuntime).toContain("const response = nativeSessionId && !effectiveModel")
+  expect(createRuntime).toContain('const response = nativeSessionId')
+  expect(createRuntime).not.toContain('const response = nativeSessionId && !effectiveModel')
   expect(createRuntime).toContain("? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000)")
   expect(createRuntime).toContain(": await client.request('thread/start'")
   expect(createRuntime).not.toContain(".catch(() => null)")
@@ -3315,10 +3367,12 @@ test('Codex app-server uses websocket runtime and auto-attaches remote TUI', () 
   const commandBody = lifecycle.slice(lifecycle.indexOf('function codexRemoteTuiCommand'), lifecycle.indexOf('export class CodexAppServerSession'))
   expect(commandBody).toContain("'resume', session.nativeSessionId")
   expect(daemon).toContain('const tuiReady = await ensureCodexRemoteTui(sessionId, session)')
+  expect(daemon).toContain('const { appServerUrl: _appServerUrl, ...durableMeta } = meta')
+  expect(daemon).not.toContain('appServerUrl: session.meta?.appServerUrl')
   expect(daemon).not.toContain('void ensureCodexRemoteTui(uuid, session, ck)')
   expect(daemon).not.toContain("if (peer === 'codex') void ensureCodexRemoteTui(peerUuid, session, ck)")
   expect(lifecycle).toContain('this.tui.closeTab(this.tabName(sessionId))')
-  expect(bindings).toContain('appServerUrl?: string')
+  expect(bindings).not.toContain('appServerUrl?: string')
   expect(bindings).toContain('tuiTabName?: string')
 })
 
@@ -3493,8 +3547,29 @@ test('stopped Codex sessions remain resolvable for resume by ccm id', () => {
   expect(daemon).toContain('function rememberCodexSession(session: AgentSession): void')
   expect(daemon).toContain('rememberCodexSession(session)')
   expect(daemon).toContain('const storedCodexSessions = (): SessionInfo[] => Object.entries(codexSessionMap).map')
-  expect(daemon).toContain('codexSessionMap[uuid]?.nativeSessionId')
+  expect(daemon).toContain('codexStoredNativeSessionId(uuid)')
   expect(daemon).not.toContain('codexNativeSessionIds')
+})
+
+test('Codex resume uses selected stored native thread before stale room metadata', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const nativeResolver = daemon.slice(daemon.indexOf('function codexNativeSessionIdForResume'), daemon.indexOf('function codexNativeSessionIdFromTranscriptPath'))
+  expect(nativeResolver.indexOf('codexStoredNativeSessionId(uuid)')).toBeGreaterThanOrEqual(0)
+  expect(nativeResolver.indexOf('meta?.nativeSessionId')).toBeGreaterThan(nativeResolver.indexOf('codexStoredNativeSessionId(uuid)'))
+
+  const spawnResume = daemon.slice(daemon.indexOf('async function spawnResumeOnce'), daemon.indexOf('async function resumeAndBind'))
+  expect(spawnResume).toContain('selected?: SessionInfo')
+  expect(spawnResume).toContain('sessionInfo?.nativeSessionId ?? codexNativeSessionIdForResume(uuid, meta)')
+  expect(spawnResume).toContain('Codex resume requires a trusted native thread id; refusing to start a new conversation.')
+  expect(spawnResume).not.toContain("spawnAgent(runtime, uuid, cwd, hasTranscript")
+
+  const resumeIdCase = daemon.slice(daemon.indexOf("case 'resume_id':"), daemon.indexOf("case 'screen':"))
+  expect(resumeIdCase).toContain('selected = resolved.session')
+  expect(resumeIdCase).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)')
+
+  const callbackResume = daemon.slice(daemon.indexOf("data.startsWith('ccr:')"), daemon.indexOf("data.startsWith('ccp:')"))
+  expect(callbackResume).toContain('listAllAgentSessions(500, runtime).find(s => s.uuid === uuid) ?? boundAgentSessions(runtime).find(s => s.uuid === uuid)')
+  expect(callbackResume).toContain('await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)')
 })
 
 

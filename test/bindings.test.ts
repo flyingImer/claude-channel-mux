@@ -1,4 +1,5 @@
 import { test, expect } from 'bun:test'
+import { homedir } from 'os'
 import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding } from '../bindings.ts'
 
 test('normalizeBinding upgrades legacy string bindings to Claude sessions', () => {
@@ -22,13 +23,33 @@ test('bindings preserve room observer agents', () => {
 })
 
 test('normalizeBinding trims cwd and preserves agent metadata', () => {
-  const normalized = normalizeBinding({ active: 'codex', sessions: { codex: 'cx' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', appServerUrl: 'ws://127.0.0.1:1', codexHome: '/home/me/.codex', tuiTabName: 'ccm:cx:abc', desiredRunning: false } } }, 'claude')
+  const rawBinding: Record<string, unknown> = { active: 'codex', sessions: { codex: 'cx' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', appServerUrl: 'ws://127.0.0.1:1', codexHome: '/home/me/.codex', tuiTabName: 'ccm:cx:abc', desiredRunning: false } } }
+  const normalized = normalizeBinding(rawBinding, 'claude')
   expect(normalized.cwd).toBe('/repo')
   expect(normalized.agentMeta.codex?.model).toBe('gpt')
-  expect(normalized.agentMeta.codex?.appServerUrl).toBe('ws://127.0.0.1:1')
+  expect('appServerUrl' in (normalized.agentMeta.codex ?? {})).toBe(false)
   expect(normalized.agentMeta.codex?.codexHome).toBe('/home/me/.codex')
   expect(normalized.agentMeta.codex?.tuiTabName).toBe('ccm:cx:abc')
   expect(normalized.agentMeta.codex?.desiredRunning).toBe(false)
+})
+
+test('normalizeBinding resolves relative persisted cwd values to absolute paths', () => {
+  const normalized = normalizeBinding({ cwd: 'repo/project', agentMeta: { codex: { cwd: 'repo/project', sourceCwd: 'repo', worktreePath: 'repo/project/.codex/worktrees/cx' } } }, 'claude')
+  expect(normalized.cwd?.startsWith('/')).toBe(true)
+  expect(normalized.agentMeta.codex?.cwd?.startsWith('/')).toBe(true)
+  expect(normalized.agentMeta.codex?.sourceCwd?.startsWith('/')).toBe(true)
+  expect(normalized.agentMeta.codex?.worktreePath?.startsWith('/')).toBe(true)
+})
+
+test('normalizeBinding restores persisted absolute paths missing the leading slash', () => {
+  const normalized = normalizeBinding({ cwd: 'home/repo/ejwang', agentMeta: { codex: { sourceCwd: 'home/repo/ejwang' } } }, 'claude')
+  expect(normalized.cwd).toBe('/home/repo/ejwang')
+  expect(normalized.agentMeta.codex?.sourceCwd).toBe('/home/repo/ejwang')
+})
+
+test('normalizeBinding restores absolute paths accidentally rooted under the daemon home', () => {
+  const normalized = normalizeBinding({ cwd: `${homedir()}/home/repo/ejwang` }, 'claude')
+  expect(normalized.cwd).toBe('/home/repo/ejwang')
 })
 
 test('serializeBinding omits empty default bindings and empty metadata', () => {
@@ -72,7 +93,7 @@ test('bindingSessionEntries returns typed active session entries', () => {
 })
 
 
-test('bindingAuthorizedRoomsForSession allows Codex shared app-server bridge rooms', () => {
+test('bindingAuthorizedRoomsForSession uses only direct room/session bindings', () => {
   const bindings = bindingsFromJson({
     'slack:first': { active: 'codex', sessions: { codex: 'thread-a' }, agentMeta: { codex: { appServerUrl: 'ws://127.0.0.1:1' } } },
     'slack:second': { active: 'codex', sessions: { codex: 'thread-b' }, agentMeta: { codex: { appServerUrl: 'ws://127.0.0.1:1' } } },
@@ -80,7 +101,7 @@ test('bindingAuthorizedRoomsForSession allows Codex shared app-server bridge roo
     'slack:claude': { active: 'claude', sessions: { claude: 'thread-a' } },
   })
 
-  expect(bindingAuthorizedRoomsForSession(bindings, 'thread-a').sort()).toEqual(['slack:claude', 'slack:first', 'slack:second'])
+  expect(bindingAuthorizedRoomsForSession(bindings, 'thread-a').sort()).toEqual(['slack:claude', 'slack:first'])
 })
 
 

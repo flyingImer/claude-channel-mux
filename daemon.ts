@@ -30,10 +30,10 @@ import {
   readdirSync, statSync, chmodSync, openSync, readSync, closeSync,
 } from 'fs'
 import { homedir } from 'os'
-import { join, basename } from 'path'
+import { join, basename, resolve as resolvePath } from 'path'
 import { createServer, type Server as NetServer, type Socket } from 'net'
 import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
-import { randomUUID } from 'crypto'
+import { createHash, randomBytes, randomUUID } from 'crypto'
 import { promisify } from 'util'
 import type { ButtonItem, ChannelAdapter, InboundMessage, SendOptions } from './adapters/types.js'
 import { SlackAdapter } from './adapters/slack.js'
@@ -142,6 +142,8 @@ const CODEX_PENDING_REQUESTS_FILE = join(STATE_DIR, 'codex-pending-requests.json
 const COLLAB_STATE_FILE = join(STATE_DIR, 'collabs.json')
 const RECENT_AGENT_REPLIES_FILE = join(STATE_DIR, 'recent-agent-replies.json')
 const AUDIT_LOG_FILE = join(STATE_DIR, 'audit.jsonl')
+const CODEX_ROOM_TOKENS_FILE = join(STATE_DIR, 'codex-room-tokens.json')
+const SHARED_CODEX_BRIDGE_ID = 'ccm-shared-codex-app-server'
 // Page size now comes from adapter.pageSize
 const CC_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 const CC_TASKS_DIR = join(homedir(), '.claude', 'tasks')
@@ -387,6 +389,90 @@ function saveBindings(b: Bindings): void {
   renameSync(tmp, BINDINGS_FILE)
 }
 
+function migrateBindingsFile(): void {
+  const raw = readJsonValueFile(BINDINGS_FILE)
+  const sanitized = bindingsFromJson(raw)
+  if (JSON.stringify(raw) !== JSON.stringify(sanitized)) saveBindings(sanitized)
+}
+
+type CodexRoomToken = {
+  token: string
+  tokenHash: string
+  sessionId: string
+  chatId: string
+  bindingGeneration: string
+  createdAt: number
+  lastUsedAt?: number
+}
+
+function tokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex')
+}
+
+function tokenFingerprint(tokenOrHash: string): string {
+  return tokenOrHash.slice(0, 12)
+}
+
+function codexRoomTokensFromJson(value: unknown): Map<string, CodexRoomToken> {
+  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  const tokens = new Map<string, CodexRoomToken>()
+  for (const [hash, raw] of Object.entries(record)) {
+    const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined
+    if (!item) continue
+    const token = typeof item.token === 'string' ? item.token : undefined
+    const sessionId = typeof item.sessionId === 'string' ? item.sessionId : undefined
+    const chatId = typeof item.chatId === 'string' ? item.chatId : undefined
+    const bindingGeneration = typeof item.bindingGeneration === 'string' ? item.bindingGeneration : undefined
+    const createdAt = typeof item.createdAt === 'number' && Number.isFinite(item.createdAt) ? item.createdAt : undefined
+    const lastUsedAt = typeof item.lastUsedAt === 'number' && Number.isFinite(item.lastUsedAt) ? item.lastUsedAt : undefined
+    if (!token || !sessionId || !chatId || !bindingGeneration || createdAt === undefined) continue
+    tokens.set(hash, { token, tokenHash: hash, sessionId, chatId, bindingGeneration, createdAt, ...(lastUsedAt === undefined ? {} : { lastUsedAt }) })
+  }
+  return tokens
+}
+
+const codexRoomTokens = codexRoomTokensFromJson(readJsonValueFile(CODEX_ROOM_TOKENS_FILE))
+
+function saveCodexRoomTokens(): void {
+  const tmp = CODEX_ROOM_TOKENS_FILE + '.tmp'
+  writeFileSync(tmp, JSON.stringify(Object.fromEntries(codexRoomTokens), null, 2) + '\n', { mode: 0o600 })
+  renameSync(tmp, CODEX_ROOM_TOKENS_FILE)
+}
+
+function newCodexRoomToken(ck: string, sessionId: string, bindingGeneration: string): string {
+  for (const [hash, token] of codexRoomTokens) {
+    if (token.chatId === ck) codexRoomTokens.delete(hash)
+  }
+  const token = randomBytes(32).toString('base64url')
+  const hash = tokenHash(token)
+  codexRoomTokens.set(hash, { token, tokenHash: hash, sessionId, chatId: ck, bindingGeneration, createdAt: Date.now() })
+  saveCodexRoomTokens()
+  return token
+}
+
+function invalidateCodexRoomToken(ck: string, sessionId?: string): void {
+  let changed = false
+  for (const [hash, token] of codexRoomTokens) {
+    if (token.chatId !== ck) continue
+    if (sessionId && token.sessionId !== sessionId) continue
+    codexRoomTokens.delete(hash)
+    changed = true
+  }
+  if (changed) saveCodexRoomTokens()
+}
+
+function codexRoomTokenForSession(ck: string, sessionId: string): string | undefined {
+  for (const token of codexRoomTokens.values()) {
+    if (token.chatId === ck && token.sessionId === sessionId) return token.token
+  }
+  return undefined
+}
+
+function codexTurnMeta(ck: string, sessionId: string, meta: Record<string, unknown>): Record<string, unknown> {
+  const token = codexRoomTokenForSession(ck, sessionId)
+  return token ? { ...meta, ccm_room_token: token } : meta
+}
+
 function restoreBindingSnapshot(ck: string, snapshot: ChannelBinding | undefined): void {
   const b = loadBindings()
   if (snapshot === undefined) delete b[ck]
@@ -407,6 +493,11 @@ function setBindingSession(ck: string, runtime: AgentRuntimeKind, uuid: string, 
   const b = loadBindings()
   const binding = normalizeBinding(b[ck])
   binding.sessions[runtime] = uuid
+  if (runtime === 'codex') {
+    const bindingGeneration = randomUUID()
+    binding.agentMeta.codex = { ...(binding.agentMeta.codex ?? {}), bindingGeneration }
+    newCodexRoomToken(ck, uuid, bindingGeneration)
+  }
   if (makeActive) {
     binding.active = runtime
     binding.observers = binding.observers.filter(observer => observer !== runtime)
@@ -424,6 +515,7 @@ function removeBindingSession(ck: string, runtime?: AgentRuntimeKind): { uuid: s
   const uuid = binding.sessions[targetRuntime]
   if (!uuid) return null
   delete binding.sessions[targetRuntime]
+  if (targetRuntime === 'codex') invalidateCodexRoomToken(ck, uuid)
   if (binding.active === targetRuntime) {
     const fallbackRuntime = AGENT_RUNTIMES.find(r => !!binding.sessions[r])
     if (fallbackRuntime) binding.active = fallbackRuntime
@@ -462,8 +554,48 @@ function canonicalToolChannelKey(uuid: string, requestedCk: string): string {
   throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to session ${uuid.slice(0, 8)}; bound room(s): ${boundRooms.join(', ')}`)
 }
 
+function resolveSharedCodexToolCall(args: Record<string, unknown>): { sessionId: string; channelKey: string } {
+  const rawToken = optionalString(args.ccm_room_token)
+  const requestedCk = optionalString(args.chat_id) ?? ''
+  if (!rawToken) {
+    auditEvent({ event: 'capability_token_missing', requested_room_id: requestedCk, from_agent: 'codex' })
+    throw new Error('Shared Codex bridge tool call missing ccm_room_token')
+  }
+  const hash = tokenHash(rawToken)
+  const token = codexRoomTokens.get(hash)
+  if (!token) {
+    auditEvent({ event: 'capability_token_unknown', token_fingerprint: tokenFingerprint(hash), requested_room_id: requestedCk, from_agent: 'codex' })
+    throw new Error('Shared Codex bridge tool call used an unknown ccm_room_token')
+  }
+  if (requestedCk && requestedCk !== token.chatId) {
+    auditEvent({ event: 'capability_token_chat_mismatch', token_fingerprint: tokenFingerprint(hash), requested_room_id: requestedCk, token_room_id: token.chatId, from_session_id: token.sessionId, from_agent: 'codex' })
+    throw new Error(`Tool chat_id ${requestedCk} does not match ccm_room_token room ${token.chatId}`)
+  }
+  const binding = normalizeBinding(loadBindings()[token.chatId])
+  const currentSession = binding.sessions.codex
+  const currentGeneration = binding.agentMeta.codex?.bindingGeneration
+  if (currentSession !== token.sessionId || currentGeneration !== token.bindingGeneration) {
+    auditEvent({ event: 'capability_token_binding_stale', token_fingerprint: tokenFingerprint(hash), token_room_id: token.chatId, from_session_id: token.sessionId, current_session_id: currentSession, from_agent: 'codex' })
+    throw new Error('Shared Codex bridge tool call used a stale ccm_room_token')
+  }
+  token.lastUsedAt = Date.now()
+  saveCodexRoomTokens()
+  return { sessionId: token.sessionId, channelKey: token.chatId }
+}
+
+function resolveToolCallRoute(callerUuid: string, args: Record<string, unknown>): { responseUuid: string; sessionId: string; channelKey: string } {
+  if (callerUuid === SHARED_CODEX_BRIDGE_ID) {
+    const resolved = resolveSharedCodexToolCall(args)
+    return { responseUuid: callerUuid, sessionId: resolved.sessionId, channelKey: resolved.channelKey }
+  }
+  const requestedCk = stringValue(args.chat_id)
+  return { responseUuid: callerUuid, sessionId: callerUuid, channelKey: canonicalToolChannelKey(callerUuid, requestedCk) }
+}
+
 function roomCwd(ck: string): string {
-  return normalizeBinding(loadBindings()[ck]).cwd ?? DEFAULT_CWD
+  const cwd = normalizeBinding(loadBindings()[ck]).cwd
+  if (!cwd) return DEFAULT_CWD
+  return normalizeRoomCwd(cwd)
 }
 
 function roomHasExplicitCwd(ck: string): boolean {
@@ -472,6 +604,14 @@ function roomHasExplicitCwd(ck: string): boolean {
 
 function isReadableDirectory(path: string): boolean {
   try { return statSync(path).isDirectory() } catch { return false }
+}
+
+function normalizeRoomCwd(cwd: string): string {
+  const homePrefixCandidate = cwd.startsWith(homedir() + '/home/') ? cwd.slice(homedir().length) : undefined
+  if (homePrefixCandidate && existsSync(homePrefixCandidate)) return homePrefixCandidate
+  if (cwd.startsWith('/')) return cwd
+  const rootCandidate = resolvePath('/', cwd)
+  return existsSync(rootCandidate) ? rootCandidate : resolvePath(DEFAULT_CWD, cwd)
 }
 
 function gitOutput(cwd: string, args: string[]): string | undefined {
@@ -512,7 +652,7 @@ function prepareCodexCwd(sourceCwd: string, uuid: string): { cwd: string; meta: 
 function setRoom(ck: string, cwd: string, runtime?: AgentRuntimeKind): void {
   const b = loadBindings()
   const binding = normalizeBinding(b[ck])
-  binding.cwd = cwd
+  binding.cwd = normalizeRoomCwd(cwd)
   if (runtime) binding.active = runtime
   const serialized = serializeBinding(binding)
   if (serialized) b[ck] = serialized
@@ -712,8 +852,25 @@ function rememberCodexSession(session: AgentSession): void {
 }
 
 function codexNativeSessionIdForResume(uuid: string, meta?: AgentSlotMeta): string | undefined {
-  return meta?.nativeSessionId
-    ?? codexSessionMap[uuid]?.nativeSessionId
+  return codexStoredNativeSessionId(uuid)
+    ?? meta?.nativeSessionId
+}
+
+function codexNativeSessionIdFromTranscriptPath(path: string): string | undefined {
+  return codexTranscriptSessionId(path) ?? undefined
+}
+
+function codexStoredNativeSessionId(uuid: string): string | undefined {
+  const stored = codexSessionMap[uuid]
+  return stored?.transcriptPath ? codexNativeSessionIdFromTranscriptPath(stored.transcriptPath) ?? stored.nativeSessionId : stored?.nativeSessionId
+}
+
+function codexLogicalSessionIdForNative(nativeSessionId: string): string | undefined {
+  for (const [uuid, session] of Object.entries(codexSessionMap)) {
+    const storedNativeSessionId = session.transcriptPath ? codexNativeSessionIdFromTranscriptPath(session.transcriptPath) ?? session.nativeSessionId : session.nativeSessionId
+    if (storedNativeSessionId === nativeSessionId && parseSessionCallbackUuid(uuid)) return uuid
+  }
+  return undefined
 }
 
 function saveTranscriptDeliveries(): void {
@@ -941,7 +1098,7 @@ function findTranscript(uuid: string, runtime: AgentRuntimeKind): TranscriptInfo
   return runtime === 'codex' ? findCodexTranscript(uuid) : findClaudeTranscript(uuid)
 }
 
-type SessionInfo = { uuid: string; runtime: AgentRuntimeKind; mtime: number; size: number; cwd?: string; title?: string }
+type SessionInfo = { uuid: string; runtime: AgentRuntimeKind; mtime: number; size: number; cwd?: string; title?: string; nativeSessionId?: string }
 type SpawnResult = { ok: boolean; uuid: string; error?: string }
 type SessionIdResolution = { ok: true; session: SessionInfo } | { ok: false; reason: 'invalid' | 'unknown' | 'ambiguous'; matches?: SessionInfo[] }
 
@@ -1117,10 +1274,11 @@ function listAllCodexSessions(limit = 20): SessionInfo[] {
       if (!entry.endsWith('.jsonl')) continue
       const m = entry.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i)
       if (!m) continue
-      const uuid = m[1]
+      const nativeSessionId = m[1]
+      const uuid = codexLogicalSessionIdForNative(nativeSessionId) ?? nativeSessionId
       if (seen.has(uuid)) continue
       seen.add(uuid)
-      sessions.push({ uuid, runtime: 'codex', mtime: st.mtimeMs, size: st.size, cwd: getCodexSessionCwd(path), title: getCodexSessionTitle(path) })
+      sessions.push({ uuid, runtime: 'codex', nativeSessionId, mtime: st.mtimeMs, size: st.size, cwd: getCodexSessionCwd(path), title: getCodexSessionTitle(path) })
     }
   }
   walk(CODEX_SESSIONS_DIR)
@@ -1131,6 +1289,7 @@ function listAllAgentSessions(limit = 20, runtime?: AgentRuntimeKind): SessionIn
   const storedCodexSessions = (): SessionInfo[] => Object.entries(codexSessionMap).map(([uuid, session]) => ({
     uuid,
     runtime: 'codex' as const,
+    nativeSessionId: codexStoredNativeSessionId(uuid),
     mtime: session.mtime,
     size: 0,
     cwd: session.cwd,
@@ -1184,6 +1343,7 @@ function boundAgentSessions(runtime?: AgentRuntimeKind): SessionInfo[] {
         mtime: t?.mtime ?? (live.has(entry.uuid) ? Date.now() : 0),
         size: t?.size ?? 0,
         cwd: t && entry.runtime === 'claude' ? unsanitizePath(t.projectDir).replace(/^\//, '') : t ? getCodexSessionCwd(t.path) : meta?.cwd ?? roomCwd(entry.channelKey),
+        nativeSessionId: entry.runtime === 'codex' ? codexStoredNativeSessionId(entry.uuid) : undefined,
       }
     })
 }
@@ -1431,6 +1591,11 @@ async function handleAgentEvent(event: AgentEvent): Promise<void> {
   }
   if (event.type === 'status' && (event.status === 'idle' || event.status === 'stopped')) {
     await clearAgentTyping(event.session.sessionId)
+    if (event.status === 'idle' && event.session.kind === 'codex') {
+      void codexSessionLifecycle.reconcileIdleTui(event.session.sessionId, event.session).catch(err => {
+        process.stderr.write(`daemon: codex remote TUI idle reconcile failed for ${event.session.sessionId.slice(0, 8)}: ${errorMessage(err)}\n`)
+      })
+    }
     if (event.status === 'idle') await flushPeerReplyInjections(event.session.sessionId)
     return
   }
@@ -2147,7 +2312,7 @@ async function injectObserverChimeIn(chime: ObserverChimeIn): Promise<string> {
     addressedAgent: chime.toRuntime,
     defaultAgent: binding.active,
     peerAgents: agentPeerPointers(binding, chime.toRuntime, chime.roomId, chime.threadId),
-    meta: {
+    meta: codexTurnMeta(chime.roomId, chime.toUuid, {
       chat_id: chime.roomId,
       room_id: chime.roomId,
       cwd: roomCwd(chime.roomId),
@@ -2160,7 +2325,7 @@ async function injectObserverChimeIn(chime: ObserverChimeIn): Promise<string> {
       chime_in_from_agent: chime.fromRuntime,
       chime_in_from_session_id: chime.fromUuid,
       peer_agents: JSON.stringify(agentPeerPointers(binding, chime.toRuntime, chime.roomId, chime.threadId)),
-    },
+    }),
   }
   auditEvent({ event: 'chime_in_payload', chime_id: chime.chimeId, collab_id: chime.collabId, room_id: chime.roomId, thread_id: chime.threadId, from_agent: chime.fromRuntime, to_agent: chime.toRuntime, from_session_id: chime.fromUuid, to_session_id: chime.toUuid, message_id: chime.messageId, bytes: payloadBytes(turn.text), peer_agents_bytes: payloadBytes(JSON.stringify(turn.peerAgents)), truncated: payload.truncated })
   const nativeTurnId = await agentRegistry.get(chime.toRuntime).sendTurn({ session, turn })
@@ -2261,7 +2426,20 @@ async function injectPeerReply(inflight: AskPeerInflight, text: string, messageI
       addressedAgent: inflight.fromRuntime,
       defaultAgent: binding.active,
       peerAgents: agentPeerPointers(binding, inflight.fromRuntime, inflight.roomId, inflight.threadId),
-      meta: {
+      meta: inflight.fromRuntime === 'codex' ? codexTurnMeta(inflight.roomId, inflight.fromUuid, {
+        chat_id: inflight.roomId,
+        room_id: inflight.roomId,
+        cwd: roomCwd(inflight.roomId),
+        addressed_agent: inflight.fromRuntime,
+        default_agent: binding.active,
+        message_id: messageId ?? inflight.threadId,
+        thread_id: inflight.threadId,
+        handoff_id: inflight.handoffId,
+        ...(inflight.collabId ? { collab_id: inflight.collabId } : {}),
+        peer_reply_from_agent: inflight.peer,
+        peer_reply_from_session_id: inflight.peerUuid,
+        peer_agents: JSON.stringify(agentPeerPointers(binding, inflight.fromRuntime, inflight.roomId, inflight.threadId)),
+      }) : {
         chat_id: inflight.roomId,
         room_id: inflight.roomId,
         cwd: roomCwd(inflight.roomId),
@@ -2977,6 +3155,7 @@ const codexSessionLifecycle = new CodexAppServerSession({
     available: () => zellijAvailable,
     ensureSession: () => ensureZellijSession(),
     status: (tabName: string) => getCodexTuiPaneStatusByTabName(tabName) as CodexRemoteTuiStatus,
+    screen: (paneId: number) => dumpScreenAsync(paneId),
     closeTab,
     newTab: async (tabName: string, command: string) => {
       await zellijActionAsync(['new-tab', '--name', tabName, '--', 'bash', '-lc', command], { timeout: 10000 })
@@ -2998,7 +3177,11 @@ const codexSessionLifecycle = new CodexAppServerSession({
 async function ensureCodexRemoteTui(uuid: string, session: AgentSession, channelKey?: string): Promise<boolean> {
   try {
     const meta = await codexSessionLifecycle.attachTui(uuid, session)
-    if (channelKey && meta) setAgentMeta(channelKey, 'codex', meta)
+    if (!meta) return false
+    if (channelKey && meta) {
+      const { appServerUrl: _appServerUrl, ...durableMeta } = meta
+      setAgentMeta(channelKey, 'codex', durableMeta)
+    }
     return true
   } catch (err) {
     process.stderr.write(`daemon: codex remote TUI attach failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
@@ -3313,7 +3496,7 @@ async function startNew(ck: string, cwd: string, runtime = DEFAULT_AGENT_RUNTIME
   setBindingSession(ck, runtime, sessionId, makeActive)
   if (runtime === 'codex') {
     const session = codexSessions.get(sessionId)
-    if (session) setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(sessionId), ...(existingMeta?.model ? { model: existingMeta.model } : {}), desiredRunning: true })
+    if (session) setAgentMeta(ck, runtime, { ...codexCwd.meta, transport: session.transport, nativeSessionId: session.nativeSessionId, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(sessionId), ...(existingMeta?.model ? { model: existingMeta.model } : {}), desiredRunning: true })
   } else {
     setAgentMeta(ck, runtime, { cwd, desiredRunning: true })
   }
@@ -3383,7 +3566,7 @@ function liveEntryNeedsRespawn(uuid: string): boolean {
   return true
 }
 
-async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string): Promise<{ ok: boolean; hasTranscript: boolean; error?: string }>{
+async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string, selected?: SessionInfo): Promise<{ ok: boolean; hasTranscript: boolean; error?: string }>{
   const key = `${runtime}:${uuid}`
   const existing = resumeInFlight.get(key)
   if (existing) {
@@ -3395,12 +3578,15 @@ async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string): Promise
   const hasTranscript = !!t
   const bound = bindingEntries().find(e => e.uuid === uuid && e.runtime === runtime)
   const meta = bound ? agentMeta(bound.channelKey, runtime) : undefined
-  const sessionInfo = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid)
+  const sessionInfo = selected ?? listAllAgentSessions(500, runtime).find(s => s.uuid === uuid)
   const fallbackCwd = meta?.cwd ?? sessionInfo?.cwd ?? (bound ? roomCwd(bound.channelKey) : undefined) ?? DEFAULT_CWD
   const cwd = runtime === 'claude'
     ? claudeResumeCwd(t, fallbackCwd)
     : runtime === 'codex' ? normalizeCodexResumeCwd(uuid, fallbackCwd, meta?.sourceCwd) : fallbackCwd
-  const nativeSessionId = runtime === 'codex' ? codexNativeSessionIdForResume(uuid, meta) : undefined
+  const nativeSessionId = runtime === 'codex' ? sessionInfo?.nativeSessionId ?? codexNativeSessionIdForResume(uuid, meta) : undefined
+  if (runtime === 'codex' && !nativeSessionId) {
+    return { ok: false, hasTranscript, error: 'Codex resume requires a trusted native thread id; refusing to start a new conversation.' }
+  }
   const promise = spawnAgent(runtime, uuid, cwd, runtime === 'codex' ? !!nativeSessionId : hasTranscript, { model: meta?.model }, nativeSessionId)
   resumeInFlight.set(key, promise)
   try {
@@ -3411,7 +3597,7 @@ async function spawnResumeOnce(runtime: AgentRuntimeKind, uuid: string): Promise
   }
 }
 
-async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_RUNTIME, makeActive = true, cwd?: string): Promise<boolean> {
+async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_RUNTIME, makeActive = true, cwd?: string, selected?: SessionInfo): Promise<boolean> {
   const before = loadBindings()[ck]
   let boundForResume = false
   if (cwd) setRoom(ck, cwd, runtime)
@@ -3419,7 +3605,7 @@ async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_R
   boundForResume = true
 
   if (liveEntryNeedsRespawn(uuid)) {
-    const { ok, hasTranscript, error } = await spawnResumeOnce(runtime, uuid)
+    const { ok, hasTranscript, error } = await spawnResumeOnce(runtime, uuid, selected)
     if (!ok) {
       if (boundForResume) restoreBindingSnapshot(ck, before)
       await sendChannelNotice(ck, formatAgentReply(runtime, formatAgentStartFailure(runtime, 'resume', error)), undefined, `${runtime} resume failure`)
@@ -3428,7 +3614,7 @@ async function resumeAndBind(ck: string, uuid: string, runtime = DEFAULT_AGENT_R
     if (runtime === 'codex') {
       const session = codexSessions.get(uuid)
       if (session) {
-        setAgentMetaForUuid(uuid, runtime, { transport: session.transport, nativeSessionId: session.nativeSessionId, cwd: session.cwd, appServerUrl: session.meta?.appServerUrl, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(keepAgentModelMeta(agentMeta(ck, runtime)) ?? {}) })
+        setAgentMetaForUuid(uuid, runtime, { transport: session.transport, nativeSessionId: session.nativeSessionId, cwd: session.cwd, codexHome: CODEX_HOME, tuiTabName: codexTuiTabName(uuid), ...(keepAgentModelMeta(agentMeta(ck, runtime)) ?? {}) })
         const tuiReady = await ensureCodexRemoteTui(uuid, session, ck)
         if (!tuiReady) {
           await killSession(uuid)
@@ -3858,6 +4044,7 @@ async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntim
 
 async function stopRoomMappedSession(ck: string, runtime: AgentRuntimeKind, uuid: string): Promise<void> {
   setAgentDesiredRunning(ck, runtime, false)
+  if (runtime === 'codex') invalidateCodexRoomToken(ck, uuid)
   await killSession(uuid)
 }
 
@@ -3872,7 +4059,10 @@ function roomHasResettableState(ck: string): boolean {
 
 async function deleteRoomState(ck: string): Promise<void> {
   const binding = normalizeBinding(loadBindings()[ck])
-  for (const entry of bindingSessionEntries(binding)) await killSession(entry.uuid)
+  for (const entry of bindingSessionEntries(binding)) {
+    if (entry.runtime === 'codex') invalidateCodexRoomToken(ck, entry.uuid)
+    await killSession(entry.uuid)
+  }
   const b = loadBindings()
   delete b[ck]
   saveBindings(b)
@@ -4529,7 +4719,7 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
       addressedAgent: runtime,
       defaultAgent: binding.active,
       peerAgents,
-      meta,
+      meta: codexTurnMeta(ck, uuid, meta),
     }
     try {
       await agentRegistry.get(runtime).sendTurn({ session, turn })
@@ -5439,7 +5629,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       selected = resolved.session
       uuid = selected.uuid
       const runtime = selected.runtime
-      await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))
+      await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)
       return
     }
     case 'screen': {
@@ -5691,7 +5881,24 @@ async function routeCue(cue: AgentCue): Promise<string> {
     addressedAgent: peer,
     defaultAgent: binding.active,
     peerAgents,
-    meta: {
+    meta: peer === 'codex' ? codexTurnMeta(ck, peerUuid, {
+      chat_id: ck,
+      room_id: ck,
+      cwd: roomCwd(ck),
+      addressed_agent: peer,
+      default_agent: binding.active,
+      message_id: messageId,
+      thread_id: threadId,
+      handoff_id: handoffId,
+      ...(cue.collabId ? { collab_id: cue.collabId } : {}),
+      cue_id: cue.causeId,
+      cue_source: cue.source,
+      cue_mode: cue.mode,
+      cue_expectation: cue.expectation,
+      asked_by_agent: fromRuntime,
+      asked_by_session_id: fromUuid,
+      peer_agents: JSON.stringify(peerAgents),
+    }) : {
       chat_id: ck,
       room_id: ck,
       cwd: roomCwd(ck),
@@ -5793,11 +6000,12 @@ function isPermissionRequestMessage(msg: Record<string, unknown>): msg is { type
     && msg.channels.every(channel => typeof channel === 'string')
 }
 
-async function handleTool(msg: { tool: string; args: Record<string, unknown>; callId: string }, uuid: string): Promise<void> {
+async function handleTool(msg: { tool: string; args: Record<string, unknown>; callId: string }, callerUuid: string): Promise<void> {
+  const route = resolveToolCallRoute(callerUuid, msg.args)
+  const uuid = route.sessionId
+  const ck = route.channelKey
   try {
     let result: string
-    const requestedCk = stringValue(msg.args.chat_id)
-    const ck = canonicalToolChannelKey(uuid, requestedCk)
     const adapter = adapterFor(ck)
     const id = localId(ck)
     if (!adapter) throw new Error(`No adapter for ${ck}`)
@@ -5914,10 +6122,10 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
       default:
         throw new Error(`unknown tool: ${msg.tool}`)
     }
-    sendToLive(uuid, { type: 'tool_result', callId: msg.callId, result })
+    sendToLive(route.responseUuid, { type: 'tool_result', callId: msg.callId, result })
   } catch (err) {
     await clearAgentTyping(uuid)
-    sendToLive(uuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })
+    sendToLive(route.responseUuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })
   }
 }
 
@@ -6219,12 +6427,17 @@ const ipc: NetServer = createServer((conn: Socket) => {
         // Auto-recover: if UUID is in bindings but not in live (daemon restarted),
         // create a live entry to accept the reconnecting session
         if (!l) {
-          const bindings = loadBindings()
-          const bound = bindingEntries().find(e => e.uuid === uuid)
-          if (bound) {
-            l = { runtime: bound.runtime, ipcConn: null, child: null }
+          if (uuid === SHARED_CODEX_BRIDGE_ID) {
+            l = { runtime: 'codex', ipcConn: null, child: null }
             live.set(uuid, l)
-            process.stderr.write(`daemon: auto-recovered session ${uuid.slice(0, 8)} from bindings\n`)
+          } else {
+            const bindings = loadBindings()
+            const bound = bindingEntries().find(e => e.uuid === uuid)
+            if (bound) {
+              l = { runtime: bound.runtime, ipcConn: null, child: null }
+              live.set(uuid, l)
+              process.stderr.write(`daemon: auto-recovered session ${uuid.slice(0, 8)} from bindings\n`)
+            }
           }
         }
 
@@ -6275,7 +6488,7 @@ const ipc: NetServer = createServer((conn: Socket) => {
           process.stderr.write(
             `daemon: IPC registered ${uuid.slice(0, 8)}${peerPid ? ` (pid ${peerPid})` : ''}\n`,
           )
-          for (const ch of routableChannelsForUuid(uuid)) {
+          for (const ch of uuid === SHARED_CODEX_BRIDGE_ID ? [] : routableChannelsForUuid(uuid)) {
             const readyKey = uuid + ':' + ch
             if (!announcedReady.has(readyKey)) {
               announcedReady.add(readyKey)
@@ -6371,6 +6584,8 @@ try {
 // Start adapters + wire up handlers
 // ---------------------------------------------------------------------------
 
+migrateBindingsFile()
+
 for (const adapter of activeAdapters) {
   adapter.onMessage(msg => {
     const ck = `${adapter.platform}:${msg.channelId}`
@@ -6408,7 +6623,7 @@ for (const adapter of activeAdapters) {
       if (!uuid) { await sendInvalidButtonMessage(ck, parsedRuntime ?? bindingRuntime(ck)); return }
       const runtime = parsedRuntime ?? resolveSessionRuntime(uuid, undefined)
       const selected = listAllAgentSessions(500, runtime).find(s => s.uuid === uuid) ?? boundAgentSessions(runtime).find(s => s.uuid === uuid)
-      await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)))
+      await resumeAndBind(ck, uuid, runtime, true, cwdForSessionInfo(selected, roomCwd(ck)), selected)
     } else if (data.startsWith('ccp:')) {
       const page = parsePageNumber(data.slice(4))
       if (page == null) { await sendInvalidButtonMessage(ck); return }
@@ -6615,24 +6830,12 @@ async function notifyRoomsDaemonShutdown(): Promise<void> {
   }))
 }
 
-function shutdownZellijSession(): void {
-  if (!zellijAvailable) return
-  try {
-    if (!findZellijSessionLine(zellijSync(['list-sessions'], { timeout: 5000 }), ZELLIJ_SESSION)) return
-    zellijSync(['delete-session', ZELLIJ_SESSION, '--force'], { timeout: 5000 })
-    process.stderr.write(`daemon: deleted zellij session ${JSON.stringify(ZELLIJ_SESSION)} during shutdown\n`)
-  } catch (err) {
-    process.stderr.write(`daemon: failed to delete zellij session ${JSON.stringify(ZELLIJ_SESSION)} during shutdown: ${errorMessage(err)}\n`)
-  }
-}
-
 async function shutdown(): Promise<void> {
   if (shuttingDown) return
   shuttingDown = true
   process.stderr.write('daemon: shutting down\n')
   await notifyRoomsDaemonShutdown()
   for (const [uuid] of live) await killSession(uuid)
-  shutdownZellijSession()
   for (const adapter of activeAdapters) {
     try {
       await adapter.stop()

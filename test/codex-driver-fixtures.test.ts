@@ -3,7 +3,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { test, expect } from 'bun:test'
 import { CodexAppServerAgentDriver, codexEntriesFromTurns, codexNativeTurnId, codexResponseArray, codexResponseObject, codexTranscriptEntryFromItem } from '../agents/codex/app-server-driver.ts'
-import type { JsonObject } from '../agents/codex/app-server-client.ts'
+import type { CodexAppServerClientOptions, JsonObject } from '../agents/codex/app-server-client.ts'
 import { codexResolvedConfigFromEnv, type CodexResolvedConfig } from '../agents/codex/config.ts'
 import type { AgentCommand, AgentCommandResult, AgentEvent, AgentSession, AgentSnapshotPendingItem, AgentTurn } from '../agents/types.ts'
 
@@ -34,6 +34,8 @@ type TestCodexRuntime = {
 type CodexDriverHarness = {
   runtimes: Map<string, TestCodexRuntime>
   threadToSession: Map<string, string>
+  client?: TestCodexClient
+  clientStart?: Promise<TestCodexClient>
   onEvent(cb: (event: AgentEvent) => void): void
   start(input: { sessionId: string; cwd: string; options?: { model?: string; materializeCwd?: string } }): Promise<AgentSession>
   resume(input: { sessionId: string; cwd: string; nativeSessionId?: string; options?: { model?: string; materializeCwd?: string } }): Promise<AgentSession>
@@ -71,17 +73,70 @@ function driver(): CodexDriverHarness {
 }
 
 function driverWithClient(client: Required<Pick<TestCodexClient, 'start' | 'stop' | 'url' | 'request'>>): CodexDriverHarness {
+  return driverWithClientFactory(() => client)
+}
+
+function driverWithClientFactory(clientFactory: (options: CodexAppServerClientOptions) => Required<Pick<TestCodexClient, 'start' | 'stop' | 'url' | 'request'>>): CodexDriverHarness {
   return new CodexAppServerAgentDriver({
     codexCommand: ['codex'],
     daemonSock: '/tmp/no.sock',
     mcpServerPath: '/tmp/server.ts',
     baseEnv: {},
     appServerListen: 'websocket',
-    clientFactory: () => client as never,
+    clientFactory: options => clientFactory(options) as never,
   }) as unknown as CodexDriverHarness
 }
 
-test('Codex app-server driver starts one shared client and materializes native thread ids as session ids', async () => {
+test('Codex app-server driver starts one shared client and preserves CCM session ids with native thread ids', async () => {
+  const clients: Array<{ session: string; options: CodexAppServerClientOptions; calls: Array<{ method: string; params: JsonObject }> }> = []
+  let nextClient = 0
+  let nextThread = 0
+  const d = driverWithClientFactory(options => {
+    const index = ++nextClient
+    const calls: Array<{ method: string; params: JsonObject }> = []
+    clients.push({ session: `client-${index}`, options, calls })
+    return {
+      start: async () => {},
+      stop: async () => {},
+      url: () => `ws://127.0.0.1:${12344 + index}`,
+      request: async (method: string, params: JsonObject) => {
+        calls.push({ method, params })
+        if (method === 'thread/start') return { result: { thread: { id: ++nextThread === 1 ? 'thread-a' : 'thread-b' } } }
+        return { result: {} }
+      },
+    }
+  })
+
+  const first = await d.start({ sessionId: 'provisional-a', cwd: '/repo-a' })
+  const second = await d.start({ sessionId: 'provisional-b', cwd: '/repo-b' })
+
+  expect(clients).toHaveLength(1)
+  expect(first.sessionId).toBe('provisional-a')
+  expect(first.nativeSessionId).toBe('thread-a')
+  expect(first.meta?.appServerUrl).toBe('ws://127.0.0.1:12345')
+  expect(second.sessionId).toBe('provisional-b')
+  expect(second.nativeSessionId).toBe('thread-b')
+  expect(second.meta?.appServerUrl).toBe('ws://127.0.0.1:12345')
+  expect(clients[0].options.env.CC_CHANNEL_SESSION_UUID).toBe('ccm-shared-codex-app-server')
+  expect(clients[0].options.configArgs).toContain('mcp_servers.claude-channel-mux.env.CC_CHANNEL_SESSION_UUID="ccm-shared-codex-app-server"')
+  expect(d.runtimes.has('thread-a')).toBe(true)
+  expect(d.runtimes.has('provisional-a')).toBe(false)
+  expect(d.runtimes.get('thread-a')?.session.sessionId).toBe('provisional-a')
+  expect(clients[0].calls.map(call => call.method)).toEqual([
+    'thread/start',
+    'thread/inject_items',
+    'thread/settings/update',
+    'thread/start',
+    'thread/inject_items',
+    'thread/settings/update',
+  ])
+  expect(clients[0].calls[1]).toMatchObject({ method: 'thread/inject_items', params: { threadId: 'thread-a' } })
+  expect(clients[0].calls[2]).toMatchObject({ method: 'thread/settings/update', params: { threadId: 'thread-a', cwd: '/repo-a' } })
+  expect(clients[0].calls[4]).toMatchObject({ method: 'thread/inject_items', params: { threadId: 'thread-b' } })
+  expect(clients[0].calls[5]).toMatchObject({ method: 'thread/settings/update', params: { threadId: 'thread-b', cwd: '/repo-b' } })
+})
+
+test('Codex app-server driver reuses the same client when rematerializing an existing native thread', async () => {
   let starts = 0
   const calls: Array<{ method: string; params: JsonObject }> = []
   const client = {
@@ -90,49 +145,61 @@ test('Codex app-server driver starts one shared client and materializes native t
     url: () => 'ws://127.0.0.1:12345',
     request: async (method: string, params: JsonObject) => {
       calls.push({ method, params })
-      if (method === 'thread/start') return { result: { thread: { id: calls.filter(call => call.method === 'thread/start').length === 1 ? 'thread-a' : 'thread-b' } } }
+      if (method === 'thread/start') return { result: { thread: { id: 'thread-a' } } }
       return { result: {} }
     },
   }
   const d = driverWithClient(client)
 
   const first = await d.start({ sessionId: 'provisional-a', cwd: '/repo-a' })
-  const second = await d.start({ sessionId: 'provisional-b', cwd: '/repo-b' })
+  const second = await d.start({ sessionId: 'provisional-a', cwd: '/repo-b', options: { materializeCwd: '/repo-b' } })
 
   expect(starts).toBe(1)
-  expect(first.sessionId).toBe('thread-a')
+  expect(first.sessionId).toBe('provisional-a')
   expect(first.nativeSessionId).toBe('thread-a')
-  expect(second.sessionId).toBe('thread-b')
-  expect(second.nativeSessionId).toBe('thread-b')
+  expect(second.sessionId).toBe('provisional-a')
+  expect(second.nativeSessionId).toBe('thread-a')
   expect(d.runtimes.has('thread-a')).toBe(true)
   expect(d.runtimes.has('provisional-a')).toBe(false)
   expect(calls.map(call => call.method)).toEqual([
     'thread/start',
     'thread/inject_items',
     'thread/settings/update',
-    'thread/start',
     'thread/inject_items',
     'thread/settings/update',
   ])
   expect(calls[1]).toMatchObject({ method: 'thread/inject_items', params: { threadId: 'thread-a' } })
   expect(calls[2]).toMatchObject({ method: 'thread/settings/update', params: { threadId: 'thread-a', cwd: '/repo-a' } })
+  expect(calls[3]).toMatchObject({ method: 'thread/inject_items', params: { threadId: 'thread-a' } })
+  expect(calls[4]).toMatchObject({ method: 'thread/settings/update', params: { threadId: 'thread-a', cwd: '/repo-b' } })
 })
 
-test('Codex app-server driver stops a thread runtime without killing the shared app-server client', async () => {
+test('Codex app-server driver stops shared client only after final thread runtime stops', async () => {
   let stops = 0
+  let nextThread = 0
   const client = {
     start: async () => {},
     stop: async () => { stops += 1 },
     url: () => 'ws://127.0.0.1:12345',
-    request: async (method: string) => method === 'thread/start' ? { result: { thread: { id: 'thread-a' } } } : { result: {} },
+    request: async (method: string) => method === 'thread/start' ? { result: { thread: { id: ++nextThread === 1 ? 'thread-a' : 'thread-b' } } } : { result: {} },
   }
   const d = driverWithClient(client)
-  const session = await d.start({ sessionId: 'provisional-a', cwd: '/repo-a' })
+  const first = await d.start({ sessionId: 'provisional-a', cwd: '/repo-a' })
+  const second = await d.start({ sessionId: 'provisional-b', cwd: '/repo-b' })
 
-  await d.stop(session)
+  await d.stop(first)
 
   expect(stops).toBe(0)
   expect(d.runtimes.has('thread-a')).toBe(false)
+  expect(d.runtimes.has('thread-b')).toBe(true)
+  expect(d.client).toBe(client)
+
+  await d.stop(second)
+
+  expect(stops).toBe(1)
+  expect(d.runtimes.has('thread-b')).toBe(false)
+  expect(d.client).toBeUndefined()
+  expect(d.clientStart).toBeUndefined()
 })
 
 test('Codex app-server driver can update an existing native thread to its materialized cwd', async () => {
@@ -161,6 +228,29 @@ test('Codex app-server driver can update an existing native thread to its materi
     'thread/settings/update',
   ])
   expect(calls.at(-1)).toMatchObject({ method: 'thread/settings/update', params: { threadId: 'thread-a', cwd: '/source/.codex/worktrees/thread-a' } })
+})
+
+test('Codex app-server driver resumes native threads even when a model is configured', async () => {
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const client = {
+    start: async () => {},
+    stop: async () => {},
+    url: () => 'ws://127.0.0.1:12345',
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'thread/resume') return { result: { thread: { id: params.threadId } } }
+      if (method === 'thread/start') return { result: { thread: { id: 'new-thread' } } }
+      return { result: {} }
+    },
+  }
+  const d = driverWithClient(client)
+
+  const session = await d.resume({ sessionId: 'ccm-session', cwd: '/repo', nativeSessionId: 'native-thread', options: { model: 'room-model' } })
+
+  expect(session.sessionId).toBe('ccm-session')
+  expect(session.nativeSessionId).toBe('native-thread')
+  expect(calls.map(call => call.method)).toEqual(['thread/resume', 'thread/inject_items', 'thread/settings/update'])
+  expect(calls[0]).toMatchObject({ method: 'thread/resume', params: { threadId: 'native-thread' } })
 })
 
 test('Codex transcript parser covers user, assistant, plan, reasoning, and tool rows', () => {
@@ -280,6 +370,35 @@ test('Codex turn/start carries effective model from runtime', async () => {
   expect(calls).toHaveLength(2)
   expect(calls[0]).toMatchObject({ method: 'turn/start', params: { model: 'test-model-5.5' } })
   expect(calls[1]).toMatchObject({ method: 'turn/start', params: { model: 'test-model-5.5' } })
+})
+
+test('Codex quick completion before turn/start response keeps channel route', async () => {
+  const d = driver()
+  const session = codexSession('race-session', 'race-thread')
+  const events: AgentEvent[] = []
+  const client = {
+    request: async (method: string) => {
+      if (method === 'turn/start') {
+        d.handleNotification({ method: 'item/completed', params: { threadId: 'race-thread', turnId: 'ccm-race-turn', item: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'fast answer' }] } } })
+        d.handleNotification({ method: 'turn/completed', params: { threadId: 'race-thread', turn: { id: 'ccm-race-turn' } } })
+        return { result: { turn: { id: 'native-race-turn' } } }
+      }
+      return {}
+    },
+  }
+  d.runtimes.set('race-session', testRuntime(session, client))
+  d.threadToSession.set('race-thread', 'race-session')
+  d.onEvent((event: AgentEvent) => events.push(event))
+  const turn: AgentTurn = { turnId: 'ccm-race-turn', roomId: 'room', channelKey: 'test:room', platform: 'test', channelId: 'room', threadId: 'room-thread', messageId: 'msg', cwd: '/tmp', text: 'hello', addressedAgent: 'codex', defaultAgent: 'codex', peerAgents: [], meta: {} }
+
+  await d.sendTurn({ session, turn })
+
+  expect(events).toContainEqual({ type: 'assistant_message', session, turnId: 'ccm-race-turn', text: 'fast answer', channelKey: 'test:room', threadId: 'room-thread' })
+  expect(events).toContainEqual({ type: 'assistant_final', session, turnId: 'ccm-race-turn', text: 'fast answer', channelKey: 'test:room', threadId: 'room-thread' })
+  const runtime = d.runtimes.get('race-session')
+  expect(runtime?.activeTurns.size).toBe(0)
+  expect(runtime?.latestNativeTurnId).toBeUndefined()
+  expect(runtime?.session.status).toBe('idle')
 })
 
 test('Codex goal command interrupts active turn and starts replacement goal turn', async () => {
@@ -444,6 +563,17 @@ test('Codex turn envelope includes whitelisted message meta but not arbitrary me
   expect(text).not.toContain('NOPE')
 })
 
+test('Codex turn envelope includes ccm_room_token for shared app-server tool calls', () => {
+  const d = driver()
+  const text = d.formatTurn({
+    turnId: 'turn', roomId: 'slack:C', channelKey: 'slack:C', platform: 'slack', channelId: 'C', threadId: 'T', messageId: 'M', cwd: '/tmp', text: 'hello',
+    addressedAgent: 'codex', defaultAgent: 'claude', peerAgents: [],
+    meta: { ccm_room_token: 'opaque-token', chat_id: 'slack:C' },
+  })
+  expect(text).toContain('ccm_room_token="opaque-token"')
+  expect(text).toContain('ccm_room_token')
+})
+
 
 test('Codex transcript item parser ignores malformed rows safely', () => {
   expect(codexTranscriptEntryFromItem(null)).toBeUndefined()
@@ -534,6 +664,31 @@ test('Codex completed agent message emits routable mid-turn event', () => {
   ])
   expect(runtime.buffers.get('native-mid-turn')).toBe('mid update')
   expect(runtime.deliveredMessages.get('native-mid-turn')).toEqual(['mid update'])
+})
+
+test('Codex completed assistant message emits routable mid-turn event', () => {
+  const d = driver()
+  const session = codexSession('assistant-session', 'assistant-thread')
+  const events: AgentEvent[] = []
+  const runtime = testRuntime(session)
+  runtime.activeTurns.set('native-assistant-turn', 'ccm-assistant-turn')
+  runtime.turnThreads.set('native-assistant-turn', 'room-thread')
+  runtime.turnChannels.set('native-assistant-turn', 'test:room')
+  d.runtimes.set('assistant-session', runtime)
+  d.threadToSession.set('assistant-thread', 'assistant-session')
+  d.onEvent((event: AgentEvent) => events.push(event))
+
+  d.handleNotification({ method: 'item/completed', params: { threadId: 'assistant-thread', turnId: 'native-assistant-turn', item: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'final answer' }] } } })
+
+  expect(events).toEqual([
+    { type: 'assistant_message', session, turnId: 'ccm-assistant-turn', text: 'final answer', channelKey: 'test:room', threadId: 'room-thread' },
+  ])
+  expect(runtime.buffers.get('native-assistant-turn')).toBe('final answer')
+  expect(runtime.deliveredMessages.get('native-assistant-turn')).toEqual(['final answer'])
+})
+
+test('Codex transcript parser accepts assistant message output_text items', () => {
+  expect(codexTranscriptEntryFromItem({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'transcript answer' }] })).toEqual({ role: 'codex', text: 'transcript answer' })
 })
 
 test('Codex final turn preserves channel/thread before clearing turn state', () => {

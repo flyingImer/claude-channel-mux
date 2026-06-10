@@ -1,8 +1,11 @@
+import { resolve as resolvePath } from 'path'
+import { homedir } from 'os'
+import { existsSync } from 'fs'
 import type { AgentKind } from './agents/types.js'
 
 export type AgentRuntimeKind = AgentKind
 export const AGENT_RUNTIMES = ['claude', 'codex'] as const satisfies readonly AgentRuntimeKind[]
-export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; appServerUrl?: string; codexHome?: string; tuiTabName?: string; desiredRunning?: boolean }
+export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; codexHome?: string; tuiTabName?: string; bindingGeneration?: string; desiredRunning?: boolean }
 export type ChannelBinding = string | {
   active?: AgentRuntimeKind
   observers?: AgentRuntimeKind[]
@@ -30,6 +33,16 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
+function cwdValue(value: unknown): string | undefined {
+  const cwd = stringValue(value)
+  if (!cwd) return undefined
+  const homePrefixCandidate = cwd.startsWith(homedir() + '/home/') ? cwd.slice(homedir().length) : undefined
+  if (homePrefixCandidate && existsSync(homePrefixCandidate)) return homePrefixCandidate
+  if (cwd.startsWith('/')) return cwd
+  const rootCandidate = resolvePath('/', cwd)
+  return existsSync(rootCandidate) ? rootCandidate : resolvePath(process.env.CHANNEL_DAEMON_CWD ?? homedir(), cwd)
+}
+
 function sessionMap(value: unknown): Partial<Record<AgentRuntimeKind, string>> {
   const record = recordValue(value)
   if (!record) return {}
@@ -54,9 +67,9 @@ function slotMeta(value: unknown): AgentSlotMeta | undefined {
   const record = recordValue(value)
   if (!record) return undefined
   const meta: AgentSlotMeta = {}
-  for (const key of ['transport', 'nativeSessionId', 'cwd', 'model', 'sourceCwd', 'worktreeBranch', 'worktreePath', 'appServerUrl', 'codexHome', 'tuiTabName'] as const) {
+  for (const key of ['transport', 'nativeSessionId', 'cwd', 'model', 'sourceCwd', 'worktreeBranch', 'worktreePath', 'codexHome', 'tuiTabName', 'bindingGeneration'] as const) {
     const string = stringValue(record[key])
-    if (string) meta[key] = string
+      if (string) meta[key] = key === 'cwd' || key === 'sourceCwd' || key === 'worktreePath' ? cwdValue(string)! : string
   }
   if (typeof record.desiredRunning === 'boolean') meta.desiredRunning = record.desiredRunning
   return Object.keys(meta).length ? meta : undefined
@@ -86,7 +99,7 @@ export function bindingsFromJson(value: unknown): Record<string, ChannelBinding>
     const active = runtimeValue(binding.active)
     const observers = observerList(binding.observers, active)
     const sessions = sessionMap(binding.sessions)
-    const cwd = stringValue(binding.cwd)
+    const cwd = cwdValue(binding.cwd)
     const agentMeta = agentMetaMap(binding.agentMeta)
     if (!active && observers.length === 0 && Object.keys(sessions).length === 0 && !cwd && Object.keys(agentMeta).length === 0) continue
     bindings[channelKey] = {
@@ -112,11 +125,9 @@ export function normalizeBinding(value: ChannelBinding | undefined, defaultRunti
         : sessions.codex
           ? 'codex'
           : defaultRuntime)
-  const cwd = typeof value === 'object' && typeof value?.cwd === 'string' && value.cwd.trim()
-    ? value.cwd.trim()
-    : undefined
+  const cwd = typeof value === 'object' ? cwdValue(value?.cwd) : undefined
   const agentMeta = typeof value === 'object' && value?.agentMeta && typeof value.agentMeta === 'object'
-    ? { ...value.agentMeta }
+    ? agentMetaMap(value.agentMeta)
     : {}
   const observers = typeof value === 'object' ? observerList(value?.observers, active) : []
   return { active, observers, sessions: { ...sessions }, cwd, agentMeta }
@@ -133,22 +144,9 @@ export function bindingSessionEntries(binding: NormalizedBinding): BindingSessio
 
 export function bindingAuthorizedRoomsForSession(bindings: Record<string, ChannelBinding>, uuid: string): string[] {
   const normalized = Object.entries(bindings).map(([channelKey, raw]) => [channelKey, normalizeBinding(raw, 'claude')] as const)
-  const directRooms = normalized
+  return normalized
     .filter(([, binding]) => bindingSessionEntries(binding).some(entry => entry.uuid === uuid))
     .map(([channelKey]) => channelKey)
-  const directSet = new Set(directRooms)
-  const appServerUrls = new Set(normalized.flatMap(([, binding]) => {
-    const appServerUrl = binding.agentMeta.codex?.appServerUrl
-    return appServerUrl && bindingSessionEntries(binding).some(entry => entry.uuid === uuid && entry.runtime === 'codex') ? [appServerUrl] : []
-  }))
-  if (appServerUrls.size === 0) return directRooms
-  for (const [channelKey, binding] of normalized) {
-    if (directSet.has(channelKey)) continue
-    const codexUuid = binding.sessions.codex
-    const appServerUrl = binding.agentMeta.codex?.appServerUrl
-    if (codexUuid && appServerUrl && appServerUrls.has(appServerUrl)) directSet.add(channelKey)
-  }
-  return [...directSet]
 }
 
 export function serializeBinding(binding: NormalizedBinding, defaultRuntime: AgentRuntimeKind): ChannelBinding | undefined {

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test'
 import type { AgentSession } from '../agents/types.js'
-import { CodexAppServerSession, type CodexRemoteTuiAdapter, type CodexRemoteTuiStatus } from '../agents/codex/session.js'
+import { CodexAppServerSession, codexTuiLooksStuckWorking, type CodexRemoteTuiAdapter, type CodexRemoteTuiStatus } from '../agents/codex/session.js'
 import { codexResolvedConfigFromEnv } from '../agents/codex/config.js'
 
 const capabilities = { streaming: true, cancel: true, resume: true, toolCalling: true } as const
@@ -21,17 +21,20 @@ function session(sessionId = '019e94e57c377cb3b3152443705b9aaf', nativeSessionId
 function fakeTui(
   status: CodexRemoteTuiStatus = { kind: 'missing' },
   waitStatus: CodexRemoteTuiStatus = { kind: 'alive', paneId: 1, terminalCommand: "codex --remote ws://127.0.0.1:0 resume thread-1 -C /repo" },
-): CodexRemoteTuiAdapter & { commands: string[]; tabs: string[]; closed: string[]; skipped: string[]; logs: string[]; ensured: number } {
+  screen = '',
+): CodexRemoteTuiAdapter & { commands: string[]; tabs: string[]; closed: string[]; skipped: string[]; logs: string[]; ensured: number; screens: number[] } {
   const tui = {
     commands: [] as string[],
     tabs: [] as string[],
     closed: [] as string[],
     skipped: [] as string[],
     logs: [] as string[],
+    screens: [] as number[],
     ensured: 0,
     available: () => true,
     ensureSession: async () => { tui.ensured += 1 },
     status: () => status,
+    screen: async (paneId: number) => { tui.screens.push(paneId); return screen },
     closeTab: (tabName: string) => { tui.closed.push(tabName) },
     newTab: async (tabName: string, command: string) => {
       tui.tabs.push(tabName)
@@ -74,6 +77,20 @@ test('Codex session lifecycle owns app-server start storage and logging', async 
   expect(logs.join('\n')).toContain('started codex app-server session ccm-sess thread=native-thread')
 })
 
+test('Codex session lifecycle stores app-server native threads under the CCM slot id', async () => {
+  const stored = new Map<string, AgentSession>()
+  const lifecycle = lifecycleWith({
+    stored,
+    driver: { start: async () => session('native-thread', 'native-thread') },
+  })
+
+  const result = await lifecycle.start('ccm-session', '/work')
+  expect(result.sessionId).toBe('ccm-session')
+  expect(result.nativeSessionId).toBe('native-thread')
+  expect(stored.get('ccm-session')).toEqual(result)
+  expect(stored.has('native-thread')).toBe(false)
+})
+
 test('Codex session lifecycle owns app-server resume only when caller supplies native id', async () => {
   const calls: Array<{ sessionId: string; cwd: string; nativeSessionId?: string; options?: { model?: string } }> = []
   const lifecycle = lifecycleWith({
@@ -87,6 +104,20 @@ test('Codex session lifecycle owns app-server resume only when caller supplies n
 
   await lifecycle.resume('ccm-session', '/work', 'app-server-thread', { model: 'room-model' })
   expect(calls).toEqual([{ sessionId: 'ccm-session', cwd: '/work', nativeSessionId: 'app-server-thread', options: { model: 'room-model' } }])
+})
+
+test('Codex session lifecycle resumes native threads under the CCM slot id', async () => {
+  const stored = new Map<string, AgentSession>()
+  const lifecycle = lifecycleWith({
+    stored,
+    driver: { resume: async () => session('native-thread', 'native-thread') },
+  })
+
+  const result = await lifecycle.resume('ccm-session', '/work', 'native-thread')
+  expect(result.sessionId).toBe('ccm-session')
+  expect(result.nativeSessionId).toBe('native-thread')
+  expect(stored.get('ccm-session')).toEqual(result)
+  expect(stored.has('native-thread')).toBe(false)
 })
 
 test('Codex session lifecycle does not substitute CCM uuid for missing native id', async () => {
@@ -178,6 +209,42 @@ test('Codex remote TUI reuses matching app-server pane and closes stale panes', 
   await lifecycleWith({ tui: staleTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1'))
   expect(staleTui.closed).toEqual(['ccm:cx:ccm-sess'])
   expect(staleTui.tabs).toEqual(['ccm:cx:ccm-sess'])
+})
+
+test('Codex remote TUI detects Codex panes stuck in working state', () => {
+  expect(codexTuiLooksStuckWorking('\n• Working (4m 00s • esc to interrupt)\n')).toBe(true)
+  expect(codexTuiLooksStuckWorking('\n› Write tests\n')).toBe(false)
+})
+
+test('Codex idle reconciliation restarts matching remote TUI stuck in working state', async () => {
+  const tui = fakeTui(
+    { kind: 'alive', paneId: 42, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume thread-1 -C /repo' },
+    { kind: 'alive', paneId: 43, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume thread-1 -C /repo' },
+    '\n• CX_NEW_AFTER_STOP_OK_20260609\n\n• Working (4m 00s • esc to interrupt)\n',
+  )
+  const lifecycle = lifecycleWith({ tui, driver: {} })
+
+  await expect(lifecycle.reconcileIdleTui('ccm-session', session('ccm-session', 'thread-1'))).resolves.toBe(true)
+
+  expect(tui.screens).toEqual([42])
+  expect(tui.closed).toEqual(['ccm:cx:ccm-sess'])
+  expect(tui.tabs).toEqual(['ccm:cx:ccm-sess'])
+  expect(tui.logs.join('\n')).toContain('pane still shows Working after app-server idle')
+})
+
+test('Codex idle reconciliation leaves healthy remote TUI alone', async () => {
+  const tui = fakeTui(
+    { kind: 'alive', paneId: 42, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume thread-1 -C /repo' },
+    { kind: 'alive', paneId: 43, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume thread-1 -C /repo' },
+    '\n› Write tests\n',
+  )
+  const lifecycle = lifecycleWith({ tui, driver: {} })
+
+  await expect(lifecycle.reconcileIdleTui('ccm-session', session('ccm-session', 'thread-1'))).resolves.toBe(false)
+
+  expect(tui.screens).toEqual([42])
+  expect(tui.closed).toEqual([])
+  expect(tui.tabs).toEqual([])
 })
 
 test('Codex remote TUI attach rejects when launched pane is not ready', async () => {

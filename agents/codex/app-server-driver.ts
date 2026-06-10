@@ -15,6 +15,8 @@ export type CodexAppServerDriverOptions = {
   clientFactory?: (options: ConstructorParameters<typeof CodexAppServerClient>[0]) => CodexAppServerClient
 }
 
+const SHARED_CODEX_BRIDGE_ID = 'ccm-shared-codex-app-server'
+
 function codexTurnSandboxPolicy(cwd: string, config: CodexResolvedConfig): JsonObject {
   if (codexDangerFullAccess(config)) return { type: 'dangerFullAccess' }
   return {
@@ -87,6 +89,16 @@ function textFromTextBlocks(value: unknown): string {
   }).filter(Boolean).join('\n').trim()
 }
 
+function assistantMessageText(item: JsonObject): string | undefined {
+  if (item.type === 'agentMessage' && typeof item.text === 'string') return item.text
+  if (item.type === 'message' && item.role === 'assistant') {
+    const text = textFromTextBlocks(item.content)
+    if (text) return text
+  }
+  if (item.type === 'agent_message' && typeof item.message === 'string') return item.message
+  return undefined
+}
+
 function joinedStrings(value: unknown): string {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string').join('\n').trim() : ''
 }
@@ -117,7 +129,8 @@ export function codexTranscriptEntryFromItem(raw: unknown, fallbackType?: unknow
     const text = textFromTextBlocks(item.content)
     return text ? { role: 'user', text } : undefined
   }
-  if (type === 'agentMessage' && typeof item.text === 'string') return { role: 'codex', text: item.text }
+  const assistantText = assistantMessageText(item)
+  if (assistantText) return { role: 'codex', text: assistantText }
   if (type === 'plan' && typeof item.text === 'string') return { role: 'plan', text: item.text }
   if (type === 'reasoning') {
     const text = (joinedStrings(item.summary) || joinedStrings(item.content)).trim()
@@ -151,8 +164,8 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   private sessionAliases = new Map<string, string>()
   private listeners = new Set<(event: AgentEvent) => void>()
   private readonly baseConfig: CodexResolvedConfig
-  private sharedClient?: CodexAppServerClient
-  private sharedClientStart?: Promise<CodexAppServerClient>
+  private client?: CodexAppServerClient
+  private clientStart?: Promise<CodexAppServerClient>
 
   constructor(private opts: CodexAppServerDriverOptions) {
     this.baseConfig = opts.codexConfig ?? { ...codexResolvedConfigFromEnv(opts.baseEnv), command: opts.codexCommand }
@@ -197,6 +210,9 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   async sendTurn(input: SendTurnInput): Promise<string> {
     const runtime = this.runtimeForSession(input.session)
     if (!runtime) throw new Error(`No Codex app-server runtime for ${input.session.sessionId}`)
+    runtime.activeTurns.set(input.turn.turnId, input.turn.turnId)
+    runtime.turnThreads.set(input.turn.turnId, input.turn.threadId)
+    runtime.turnChannels.set(input.turn.turnId, input.turn.channelKey)
     const response = await runtime.client.request('turn/start', {
       threadId: runtime.threadId,
       input: [{ type: 'text', text: this.formatTurn(input.turn), text_elements: [] }],
@@ -206,12 +222,17 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       sandboxPolicy: codexTurnSandboxPolicy(input.turn.cwd, runtime.config),
     }, 120_000)
     const nativeTurnId = codexNativeTurnId(response, input.turn.turnId)
-    runtime.activeTurns.set(nativeTurnId, input.turn.turnId)
-    runtime.turnThreads.set(nativeTurnId, input.turn.threadId)
-    runtime.turnChannels.set(nativeTurnId, input.turn.channelKey)
-    runtime.latestNativeTurnId = nativeTurnId
-    runtime.session.status = 'running'
-    this.emit({ type: 'status', session: runtime.session, status: 'running' })
+    const turnStillActive = runtime.activeTurns.has(input.turn.turnId)
+    if (turnStillActive && nativeTurnId !== input.turn.turnId) {
+      this.moveTurnRoute(runtime, input.turn.turnId, nativeTurnId)
+      runtime.activeTurns.set(nativeTurnId, input.turn.turnId)
+    }
+    if (turnStillActive) {
+      runtime.activeTurns.set(nativeTurnId, input.turn.turnId)
+      runtime.latestNativeTurnId = nativeTurnId
+      runtime.session.status = 'running'
+      this.emit({ type: 'status', session: runtime.session, status: 'running' })
+    }
     return nativeTurnId
   }
 
@@ -397,6 +418,11 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     this.threadToSession.delete(runtime.threadId)
     this.runtimes.delete(runtime.threadId)
     this.sessionAliases.delete(session.sessionId)
+    if (this.runtimes.size === 0 && runtime.client === this.client) {
+      this.client = undefined
+      this.clientStart = undefined
+      await runtime.client.stop().catch(err => this.opts.log?.(`codex app-server stop failed: ${errorMessage(err)}`))
+    }
   }
 
   private async createRuntime(sessionId: string, cwd: string, nativeSessionId?: string, modelOverride?: string, materializeCwd = cwd): Promise<AgentSession> {
@@ -412,8 +438,8 @@ export class CodexAppServerAgentDriver implements AgentDriver {
 
     const runtimeConfig = codexConfigWithModelOverride(this.baseConfig, modelOverride)
     const effectiveModel = runtimeConfig.model
-    const client = await this.ensureSharedClient(sessionId, cwd, runtimeConfig)
-    const response = nativeSessionId && !effectiveModel
+    const client = await this.ensureSharedClient(cwd, runtimeConfig)
+    const response = nativeSessionId
       ? await client.request('thread/resume', { threadId: nativeSessionId }, 60_000)
       : await client.request('thread/start', {
       cwd,
@@ -427,7 +453,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     await this.materializeThread(client, threadId, materializeCwd)
     const session: AgentSession = {
       kind: 'codex',
-      sessionId: threadId,
+      sessionId,
       nativeSessionId: threadId,
       transport: 'codex-app-server',
       cwd: materializeCwd,
@@ -442,9 +468,9 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     return session
   }
 
-  private async ensureSharedClient(sessionId: string, cwd: string, runtimeConfig: CodexResolvedConfig): Promise<CodexAppServerClient> {
-    if (this.sharedClient) return this.sharedClient
-    if (this.sharedClientStart) return await this.sharedClientStart
+  private async ensureSharedClient(cwd: string, runtimeConfig: CodexResolvedConfig): Promise<CodexAppServerClient> {
+    if (this.client) return this.client
+    if (this.clientStart) return await this.clientStart
     const client = (this.opts.clientFactory ?? (options => new CodexAppServerClient(options)))({
       codexCommand: [...runtimeConfig.command, ...runtimeConfig.launchArgs],
       cwd,
@@ -452,26 +478,27 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         ...this.opts.baseEnv,
         CODEX_HOME: runtimeConfig.home,
         DISABLE_AUTOUPDATER: '1',
-        CC_CHANNEL_SESSION_UUID: sessionId,
-        CODEX_CHANNEL_SESSION_UUID: sessionId,
+        CC_CHANNEL_SESSION_UUID: SHARED_CODEX_BRIDGE_ID,
+        CODEX_CHANNEL_SESSION_UUID: SHARED_CODEX_BRIDGE_ID,
         CC_CHANNEL_DAEMON_SOCK: this.opts.daemonSock,
       },
       listen: this.opts.appServerListen ?? runtimeConfig.appServerListen,
-      configArgs: this.configArgs(sessionId),
-      stderr: line => this.opts.log?.(`[codex:${sessionId.slice(0, 8)}] ${line}`),
+      configArgs: this.configArgs(),
+      stderr: line => this.opts.log?.(`[codex:shared] ${line}`),
       notification: msg => this.handleNotification(msg),
       serverRequest: msg => this.handleServerRequest(msg),
     })
-    this.sharedClientStart = (async () => {
+    const start = (async () => {
       await client.start()
-      this.sharedClient = client
+      this.client = client
       return client
     })()
+    this.clientStart = start
     try {
-      return await this.sharedClientStart
+      return await start
     } catch (err) {
-      this.sharedClientStart = undefined
-      await client.stop().catch(stopErr => this.opts.log?.(`codex app-server cleanup failed after startup error for ${sessionId.slice(0, 8)}: ${errorMessage(stopErr)}`))
+      this.clientStart = undefined
+      await client.stop().catch(stopErr => this.opts.log?.(`codex app-server cleanup failed after startup error: ${errorMessage(stopErr)}`))
       throw err
     }
   }
@@ -489,12 +516,12 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     return this.runtimes.get(sessionId) ?? this.runtimes.get(this.sessionAliases.get(sessionId) ?? '')
   }
 
-  private configArgs(sessionId: string): string[] {
+  private configArgs(): string[] {
     const args = [
       '-c', 'mcp_servers.claude-channel-mux.command="bun"',
       '-c', `mcp_servers.claude-channel-mux.args=${JSON.stringify([this.opts.mcpServerPath])}`,
-      '-c', `mcp_servers.claude-channel-mux.env.CC_CHANNEL_SESSION_UUID=${JSON.stringify(sessionId)}`,
-      '-c', `mcp_servers.claude-channel-mux.env.CODEX_CHANNEL_SESSION_UUID=${JSON.stringify(sessionId)}`,
+      '-c', `mcp_servers.claude-channel-mux.env.CC_CHANNEL_SESSION_UUID=${JSON.stringify(SHARED_CODEX_BRIDGE_ID)}`,
+      '-c', `mcp_servers.claude-channel-mux.env.CODEX_CHANNEL_SESSION_UUID=${JSON.stringify(SHARED_CODEX_BRIDGE_ID)}`,
       '-c', `mcp_servers.claude-channel-mux.env.CC_CHANNEL_DAEMON_SOCK=${JSON.stringify(this.opts.daemonSock)}`,
     ]
     return args
@@ -542,6 +569,22 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     return { channelThreadId, channelKey }
   }
 
+  private moveTurnRoute(runtime: CodexRuntime, fromTurnId: string, toTurnId: string): void {
+    const threadId = runtime.turnThreads.get(fromTurnId)
+    const channelKey = runtime.turnChannels.get(fromTurnId)
+    const buffer = runtime.buffers.get(fromTurnId)
+    const delivered = runtime.deliveredMessages.get(fromTurnId)
+    runtime.activeTurns.delete(fromTurnId)
+    runtime.turnThreads.delete(fromTurnId)
+    runtime.turnChannels.delete(fromTurnId)
+    runtime.buffers.delete(fromTurnId)
+    runtime.deliveredMessages.delete(fromTurnId)
+    if (threadId) runtime.turnThreads.set(toTurnId, threadId)
+    if (channelKey) runtime.turnChannels.set(toTurnId, channelKey)
+    if (buffer) runtime.buffers.set(toTurnId, buffer)
+    if (delivered) runtime.deliveredMessages.set(toTurnId, delivered)
+  }
+
   private handleNotification(msg: JsonObject): void {
     if (typeof msg.method !== 'string') return
     const params = jsonObject(msg.params)
@@ -574,10 +617,11 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         this.emit({ type: 'compaction', session: runtime.session, turnId, status: 'completed' })
         return
       }
-      if (item?.type === 'agentMessage' && typeof item.text === 'string' && nativeTurnId && turnId) {
-        const text = item.text.trim()
+      const assistantText = item ? assistantMessageText(item) : undefined
+      if (assistantText && nativeTurnId && turnId) {
+        const text = assistantText.trim()
         const existing = runtime.buffers.get(nativeTurnId)
-        if (!existing || item.text.length > existing.length) runtime.buffers.set(nativeTurnId, item.text)
+        if (!existing || assistantText.length > existing.length) runtime.buffers.set(nativeTurnId, assistantText)
         if (text) {
           const delivered = runtime.deliveredMessages.get(nativeTurnId) ?? []
           if (!delivered.includes(text)) {
@@ -761,10 +805,12 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   private formatTurn(turn: AgentTurn): string {
+    const ccmRoomToken = typeof turn.meta.ccm_room_token === 'string' ? turn.meta.ccm_room_token : ''
     const attrs = [
       `source="claude-channel-mux"`,
       `room_id="${escapeXmlAttr(turn.roomId)}"`,
       `chat_id="${escapeXmlAttr(turn.channelKey)}"`,
+      ...(ccmRoomToken ? [`ccm_room_token="${escapeXmlAttr(ccmRoomToken)}"`] : []),
       `cwd="${escapeXmlAttr(turn.cwd)}"`,
       `addressed_agent="${turn.addressedAgent}"`,
       `default_agent="${turn.defaultAgent}"`,
@@ -804,6 +850,7 @@ ${meta ? `<message_meta trust="untrusted">${meta}</message_meta>\n` : ''}${attac
       'user_id',
       'chat_id',
       'room_id',
+      'ccm_room_token',
     ]
     const picked: Record<string, string> = {}
     for (const key of allowed) {

@@ -14,6 +14,7 @@ export type CodexRemoteTuiAdapter = {
   available(): boolean
   ensureSession(): Promise<void>
   status(tabName: string): CodexRemoteTuiStatus
+  screen(paneId: number): Promise<string>
   closeTab(tabName: string): void
   newTab(tabName: string, command: string): Promise<void>
   waitForPane(tabName: string): Promise<CodexRemoteTuiStatus>
@@ -41,6 +42,10 @@ export function codexTuiPaneMatchesSession(status: CodexRemoteTuiStatus, appServ
 
 function codexTuiPaneReadyForSession(status: CodexRemoteTuiStatus, appServerUrl: string, threadId: string): status is Extract<CodexRemoteTuiStatus, { kind: 'alive' }> {
   return codexTuiPaneMatchesSession(status, appServerUrl, threadId)
+}
+
+export function codexTuiLooksStuckWorking(screen: string): boolean {
+  return /(?:^|\n)\s*•\s+Working\s*\([^\n]*esc to interrupt\)/.test(screen)
 }
 
 function codexTuiStatusDescription(status: CodexRemoteTuiStatus): string {
@@ -84,6 +89,21 @@ export class CodexAppServerSession {
     }
   }
 
+  async reconcileIdleTui(sessionId: string, session: AgentSession): Promise<boolean> {
+    if (!this.tui.available()) return false
+    const appServerUrl = session.meta?.appServerUrl
+    if (!appServerUrl || appServerUrl === 'stdio://') return false
+    const tabName = this.tabName(sessionId)
+    const status = this.tui.status(tabName)
+    if (!codexTuiPaneReadyForSession(status, appServerUrl, session.nativeSessionId)) return false
+    const screen = await this.tui.screen(status.paneId)
+    if (!codexTuiLooksStuckWorking(screen)) return false
+    this.tui.log(`daemon: restarting stale codex remote TUI ${sessionId.slice(0, 8)} tab=${tabName}: pane still shows Working after app-server idle`)
+    this.tui.closeTab(tabName)
+    await this.launchTui(sessionId, session, tabName, appServerUrl)
+    return true
+  }
+
   private async attachTuiOnce(sessionId: string, session: AgentSession, tabName: string): Promise<{ appServerUrl?: string; codexHome: string; tuiTabName: string } | undefined> {
     if (!this.tui.available()) {
       this.tui.log(`daemon: codex remote TUI skipped for ${sessionId.slice(0, 8)}: zellij unavailable`)
@@ -107,6 +127,10 @@ export class CodexAppServerSession {
     }
     if (status.kind === 'exited') this.tui.closeTab(tabName)
 
+    return await this.launchTui(sessionId, session, tabName, appServerUrl)
+  }
+
+  private async launchTui(sessionId: string, session: AgentSession, tabName: string, appServerUrl: string): Promise<{ appServerUrl?: string; codexHome: string; tuiTabName: string }> {
     await this.tui.newTab(tabName, codexRemoteTuiCommand(this.config, session, appServerUrl))
     this.tui.log(`daemon: attached codex remote TUI ${sessionId.slice(0, 8)} tab=${tabName} url=${appServerUrl}`)
     const paneStatus = await this.tui.waitForPane(tabName)
@@ -118,14 +142,14 @@ export class CodexAppServerSession {
   }
 
   async start(sessionId: string, cwd: string, options: { model?: string; materializeCwd?: string } = {}): Promise<AgentSession> {
-    const session = await this.opts.driver.start({ sessionId, cwd, options })
+    const session = { ...await this.opts.driver.start({ sessionId, cwd, options }), sessionId }
     this.opts.remember(session)
     this.opts.log(`daemon: started codex app-server session ${sessionId.slice(0, 8)} thread=${session.nativeSessionId}`)
     return session
   }
 
   async resume(sessionId: string, cwd: string, nativeSessionId: string | undefined, options: { model?: string; materializeCwd?: string } = {}): Promise<AgentSession> {
-    const session = await this.opts.driver.resume({ sessionId, cwd, nativeSessionId, options })
+    const session = { ...await this.opts.driver.resume({ sessionId, cwd, nativeSessionId, options }), sessionId }
     this.opts.remember(session)
     this.opts.log(`daemon: started codex app-server session ${sessionId.slice(0, 8)} thread=${session.nativeSessionId}`)
     return session

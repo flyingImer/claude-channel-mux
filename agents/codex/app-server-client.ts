@@ -91,6 +91,7 @@ function processGroupExists(pid: number | undefined): boolean {
 
 export class CodexAppServerClient {
   private proc?: ChildProcessWithoutNullStreams
+  private startError?: Error
   private rl?: Interface
   private ws?: WebSocket
   private nextId = 1
@@ -114,6 +115,7 @@ export class CodexAppServerClient {
     const listen = this.opts.listen ?? 'stdio'
     const args = [...(this.opts.configArgs ?? []), 'app-server', '--listen', listen === 'websocket' ? 'ws://127.0.0.1:0' : 'stdio://']
     const [bin, ...prefixArgs] = this.opts.codexCommand
+    this.startError = undefined
     this.proc = spawn(bin, [...prefixArgs, ...args], {
       cwd: this.opts.cwd,
       env: this.opts.env,
@@ -134,6 +136,14 @@ export class CodexAppServerClient {
     })
     this.proc.on('exit', (code, signal) => {
       this.rejectPending(new Error(appServerExitErrorMessage(code, signal, this.stderrLines)))
+      this.proc = undefined
+    })
+    this.proc.on('error', err => {
+      const message = `codex app-server spawn failed for ${bin}: ${redactSensitiveText(err.message)}`
+      const startErr = new Error(message)
+      this.startError = startErr
+      this.opts.stderr?.(message)
+      this.rejectPending(startErr)
       this.proc = undefined
     })
     if (listen === 'websocket') {
@@ -293,7 +303,8 @@ export class CodexAppServerClient {
 
   private async connectWebSocket(): Promise<void> {
     const deadline = Date.now() + 15_000
-    while (!this.appServerUrl && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+    while (!this.appServerUrl && !this.startError && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50))
+    if (this.startError) throw this.startError
     if (!this.appServerUrl) throw new Error(appServerExitErrorMessage(null, null, [...this.stderrLines, 'codex app-server did not report a websocket listening URL']))
     const ws = new WebSocket(this.appServerUrl)
     this.ws = ws

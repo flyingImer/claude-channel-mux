@@ -211,10 +211,14 @@ export function slackInboundEventFields(event: SlackInboundEventInput): { channe
   return {
     channelId,
     messageId,
-    text: stringValue(event.text),
+    text: stripSlackAppAttributionFooter(stringValue(event.text)),
     timestampIso: new Date(timestamp * 1000).toISOString(),
     replyToId: optionalStringValue(event.thread_ts),
   }
+}
+
+function stripSlackAppAttributionFooter(text: string): string {
+  return text.replace(/(?:\n\s*){1,2}[*_]?Sent using(?:\s+<[^>|]+\|[^>]+>|\s+[^\n*_]+)[*_]?\s*$/i, '').trimEnd()
 }
 
 export function normalizeSlackSlashCommandText(command: string, text = ''): string {
