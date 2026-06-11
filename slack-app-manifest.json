@@ -1,12 +1,12 @@
 {
   "display_information": {
-    "name": "Claude Channel Mux",
-    "description": "Routes Slack conversations to Claude Code and Codex via claude-channel-mux",
+    "name": "CCM",
+    "description": "Claude Channel Mux — routes Slack conversations to Claude Code and Codex",
     "background_color": "#1a1a2e"
   },
   "features": {
     "bot_user": {
-      "display_name": "CCM Mux",
+      "display_name": "CCM",
       "always_online": true
     },
     "slash_commands": [
@@ -51,7 +51,8 @@
         "reactions:write",
         "users:read"
       ]
-    }
+    },
+    "pkce_enabled": false
   },
   "settings": {
     "event_subscriptions": {
@@ -67,6 +68,7 @@
     },
     "org_deploy_enabled": false,
     "socket_mode_enabled": true,
-    "token_rotation_enabled": false
+    "token_rotation_enabled": false,
+    "is_mcp_enabled": false
   }
 }
