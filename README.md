@@ -166,9 +166,29 @@ claude plugin install claude-channel-mux@claude-channel-mux
 (the marketplace holds one plugin).
 
 Installing the plugin registers the per-session MCP bridge (`server.ts`) and
-adds `/claude-channel-mux:access` + `/claude-channel-mux:configure` skills.
+adds `/claude-channel-mux:access`, `/claude-channel-mux:configure`, and the
+CCM orchestration role skills under `skills/`.
 The daemon (`daemon.ts`) is a separate long-running process you start in
 step 4 below.
+
+### Bundled skills
+
+The plugin ships skills for both setup work and Agent Control Path operation:
+
+| Skill | Use |
+|-------|-----|
+| `access` | Manage DM/channel allowlists and pairing approvals |
+| `configure` | Configure Slack tokens and basic plugin setup |
+| `operate-orchestrator-room` | Human/operator setup, status, smoke tests, and troubleshooting |
+| `guide-orchestration` | Define stage contracts, acceptance bars, audits, and human decision points |
+| `orchestrate-workers` | Coordinate visible CCM worker rooms from a flagged orchestrator room |
+| `work-in-worker-room` | Execute a bounded worker task and report back to the orchestrator |
+
+The orchestration skills are intentionally role-specific. The Orchestrator owns
+worker assignment, validation, integration, and archive timing; Worker Agents
+execute only their stage contract; the Guiding Principal sets quality bars and
+human decision boundaries; the human/operator manages room flags and platform
+readiness.
 
 ### 2. Configure tokens
 

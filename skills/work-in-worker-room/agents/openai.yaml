@@ -1,0 +1,4 @@
+interface:
+  display_name: Work In Worker Room
+  short_description: Complete a bounded CCM worker assignment and report back.
+  default_prompt: Execute the assigned worker task, verify the result, and produce a Worker Report for the Orchestrator.

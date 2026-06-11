@@ -24,6 +24,32 @@ test('plugin and package metadata advertise both agent runtimes', () => {
   }
 })
 
+test('plugin ships CCM orchestration role skills', () => {
+  const codexPlugin = JSON.parse(readFileSync('.codex-plugin/plugin.json', 'utf8'))
+  expect(codexPlugin.skills).toBe('./skills/')
+
+  const expectedSkills = [
+    'operate-orchestrator-room',
+    'guide-orchestration',
+    'orchestrate-workers',
+    'work-in-worker-room',
+  ]
+  for (const skill of expectedSkills) {
+    const body = readFileSync(`skills/${skill}/SKILL.md`, 'utf8')
+    expect(body).toContain(`name: ${skill}`)
+    expect(body).toContain('description: Use when')
+    const ui = readFileSync(`skills/${skill}/agents/openai.yaml`, 'utf8')
+    expect(ui).toContain('display_name:')
+    expect(ui).toContain('short_description:')
+    expect(ui).toContain('default_prompt:')
+  }
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('isOrchestrator: true')
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('unsupported_capability')
+  expect(readFileSync('skills/work-in-worker-room/SKILL.md', 'utf8')).toContain('Worker Report')
+  expect(readFileSync('skills/guide-orchestration/SKILL.md', 'utf8')).toContain('Stage Contract')
+  expect(readFileSync('skills/operate-orchestrator-room/SKILL.md', 'utf8')).toContain('/ccm orch status')
+})
+
 test('Codex slash commands fail closed unless raw is explicit', () => {
   const source = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   const daemon = readFileSync('daemon.ts', 'utf8')
