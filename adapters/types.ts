@@ -40,6 +40,67 @@ export type SendOptions = {
   inlineKeyboard?: PlatformInlineKeyboard // platform-native keyboard structure
 }
 
+export const ROOM_LIFECYCLE_OPERATIONS = ['create_room_with_bot_invited', 'archive_room'] as const
+export type RoomLifecycleOperation = typeof ROOM_LIFECYCLE_OPERATIONS[number]
+
+export type UnsupportedCapabilityResult = {
+  ok: false
+  code: 'unsupported_capability'
+  platform: string
+  operation: RoomLifecycleOperation
+}
+
+export type RoomCreateInviteFact = {
+  userId: string
+  status: 'invited' | 'already_in_room' | 'skipped_bot' | 'skipped_external' | 'skipped_deactivated' | 'profile_unavailable' | 'invite_failed'
+  error?: string
+}
+
+export type CreateRoomWithBotInvitedRequest = {
+  parentRoomId: string
+  desiredRoomName: string
+}
+
+export type CreateRoomWithBotInvitedResult = UnsupportedCapabilityResult | {
+  ok: true
+  operation: 'create_room_with_bot_invited'
+  platform: string
+  roomId: string
+  roomName: string
+  created: boolean
+  archived?: boolean
+  botUserId?: string
+  botInvite: 'invited' | 'already_in_room' | 'failed' | 'unknown'
+  invitedUsers: RoomCreateInviteFact[]
+} | {
+  ok: false
+  operation: 'create_room_with_bot_invited'
+  platform: string
+  code: 'room_exists' | 'room_archived' | 'api_error'
+  roomId?: string
+  roomName?: string
+  error?: string
+}
+
+export type ArchiveRoomRequest = {
+  roomId: string
+}
+
+export type ArchiveRoomResult = UnsupportedCapabilityResult | {
+  ok: true
+  operation: 'archive_room'
+  platform: string
+  roomId: string
+  archived: true
+} | {
+  ok: false
+  operation: 'archive_room'
+  platform: string
+  code: 'api_error'
+  roomId: string
+  error: string
+}
+
 export interface ChannelAdapter {
   /** Platform name used as channel key prefix (e.g. "slack", "telegram") */
   readonly platform: string
@@ -115,6 +176,10 @@ export interface ChannelAdapter {
    * needs context from older messages.
    */
   fetchThread?(channelId: string, threadId: string): Promise<ThreadMessage[]>
+
+  createRoomWithBotInvited?(request: CreateRoomWithBotInvitedRequest): Promise<CreateRoomWithBotInvitedResult>
+
+  archiveRoom?(request: ArchiveRoomRequest): Promise<ArchiveRoomResult>
 
   // ---------------------------------------------------------------------------
   // UI rendering — each platform renders pickers/grids in its native format

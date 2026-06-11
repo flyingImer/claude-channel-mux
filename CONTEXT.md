@@ -178,6 +178,10 @@ _Avoid_: fixed script, hidden scope expansion, unprompted autonomy
 
 **Inspectable Room**:
 A CCM room with a human-visible surface whose transcript, status, and execution context can be inspected by the Guiding Principal or human operator when needed. V1 worker-room creation targets Slack-visible rooms; Telegram creation/archive is unsupported rather than emulated. Inspectable Rooms make worker execution observable, but normal coordination authority still flows through durable artifacts rather than live watching.
+
+**Orchestrator Room Flag**:
+The minimal `isOrchestrator` binding flag that authorizes Agent Control Path room lifecycle calls from a room. The flag applies only to that room; worker rooms created from it do not inherit orchestration authority.
+_Avoid_: transitive authorization, worker-room auto-admin, platform role, distributed lock
 _Avoid_: mandatory watch channel, hidden execution, source of truth
 
 **Worker Room Surface**:

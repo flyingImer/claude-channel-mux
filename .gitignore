@@ -9,3 +9,4 @@ zellij-plugin/target/
 
 # Runtime agent worktrees
 .claude/worktrees/
+.worktrees/

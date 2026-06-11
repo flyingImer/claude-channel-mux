@@ -6,7 +6,7 @@ import { createWriteStream, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { basename } from 'path'
 import { pipeline } from 'stream/promises'
-import type { ButtonItem, ChannelAdapter, InboundMessage, InteractionCallback, PickerItem, SearchContext, SendOptions } from './types.js'
+import type { ArchiveRoomRequest, ArchiveRoomResult, ButtonItem, ChannelAdapter, CreateRoomWithBotInvitedRequest, CreateRoomWithBotInvitedResult, InboundMessage, InteractionCallback, PickerItem, RoomCreateInviteFact, SearchContext, SendOptions } from './types.js'
 import { renderForSlack, splitForLimit } from './markdown.js'
 import { responseBodyStream } from './stream.js'
 import { errorMessage, redactSensitiveText } from '../redact.js'
@@ -61,6 +61,21 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
+}
+
+function slackApiErrorMessage(err: unknown): string {
+  const data = recordValue((err as SlackApiError | undefined)?.data)
+  return stringValue(data?.error) || errorMessage(err)
+}
+
+function slackChannelFacts(value: unknown): { id?: string; name?: string; archived?: boolean } {
+  const channel = recordValue(value)
+  if (!channel) return {}
+  return {
+    id: fallbackStringValue(channel.id),
+    name: fallbackStringValue(channel.name),
+    archived: typeof channel.is_archived === 'boolean' ? channel.is_archived : undefined,
+  }
 }
 
 function optionalStringValue(value: unknown): string | undefined {
@@ -307,6 +322,11 @@ export class SlackAdapter implements ChannelAdapter {
   injectWebClientForTest(web: WebClient): void {
     if (process.env.NODE_ENV !== 'test') throw new Error('injectWebClientForTest is test-only')
     this.web = web
+  }
+
+  injectBotUserIdForTest(botUserId: string): void {
+    if (process.env.NODE_ENV !== 'test') throw new Error('injectBotUserIdForTest is test-only')
+    this.botUserId = botUserId
   }
 
   private prunePendingSearchChannels(now = Date.now()): void {
@@ -720,6 +740,101 @@ export class SlackAdapter implements ChannelAdapter {
       })
     }
     return messages
+  }
+
+  async createRoomWithBotInvited(request: CreateRoomWithBotInvitedRequest): Promise<CreateRoomWithBotInvitedResult> {
+    let roomId = ''
+    let roomName = request.desiredRoomName
+    try {
+      const created = await this.webClient.conversations.create({ name: request.desiredRoomName, is_private: true })
+      const facts = slackChannelFacts(recordValue(created)?.channel)
+      roomId = facts.id ?? ''
+      roomName = facts.name ?? request.desiredRoomName
+    } catch (err) {
+      const data = recordValue((err as SlackApiError | undefined)?.data)
+      const facts = slackChannelFacts(data?.channel)
+      const code = facts.archived ? 'room_archived' : facts.id ? 'room_exists' : 'api_error'
+      return { ok: false, operation: 'create_room_with_bot_invited', platform: this.platform, code, ...(facts.id ? { roomId: facts.id } : {}), ...(facts.name ? { roomName: facts.name } : {}), error: slackApiErrorMessage(err) }
+    }
+
+    if (!roomId) {
+      return { ok: false, operation: 'create_room_with_bot_invited', platform: this.platform, code: 'api_error', error: 'missing_channel_id' }
+    }
+
+    const botUserId = this.botUserId
+    let botInvite: 'invited' | 'already_in_room' | 'failed' | 'unknown' = botUserId ? 'already_in_room' : 'unknown'
+    const invitedUsers: RoomCreateInviteFact[] = []
+
+    if (botUserId) {
+      try {
+        const info = await this.webClient.conversations.info({ channel: roomId })
+        const channel = recordValue(info.channel)
+        botInvite = channel?.is_member === false ? 'unknown' : 'already_in_room'
+      } catch {
+        botInvite = 'unknown'
+      }
+    }
+
+    if (botUserId && botInvite !== 'already_in_room') {
+      try {
+        await this.webClient.conversations.invite({ channel: roomId, users: botUserId })
+        botInvite = 'invited'
+      } catch (err) {
+        botInvite = slackApiErrorMessage(err) === 'already_in_channel' ? 'already_in_room' : 'failed'
+      }
+    }
+
+    let members: string[] = []
+    try {
+      const response = await this.webClient.conversations.members({ channel: request.parentRoomId })
+      members = Array.isArray(response.members) ? response.members.filter((member): member is string => typeof member === 'string' && !!member) : []
+    } catch {
+      members = []
+    }
+
+    for (const userId of members) {
+      if (userId === botUserId) {
+        invitedUsers.push({ userId, status: 'skipped_bot' })
+        continue
+      }
+      let user = recordValue(undefined)
+      try {
+        user = recordValue((await this.webClient.users.info({ user: userId })).user)
+      } catch (err) {
+        invitedUsers.push({ userId, status: 'profile_unavailable', error: slackApiErrorMessage(err) })
+        continue
+      }
+      if (user?.is_bot === true) {
+        invitedUsers.push({ userId, status: 'skipped_bot' })
+        continue
+      }
+      if (user?.is_stranger === true) {
+        invitedUsers.push({ userId, status: 'skipped_external' })
+        continue
+      }
+      if (user?.deleted === true) {
+        invitedUsers.push({ userId, status: 'skipped_deactivated' })
+        continue
+      }
+      try {
+        await this.webClient.conversations.invite({ channel: roomId, users: userId })
+        invitedUsers.push({ userId, status: 'invited' })
+      } catch (err) {
+        const message = slackApiErrorMessage(err)
+        invitedUsers.push({ userId, status: message === 'already_in_channel' ? 'already_in_room' : 'invite_failed', ...(message === 'already_in_channel' ? {} : { error: message }) })
+      }
+    }
+
+    return { ok: true, operation: 'create_room_with_bot_invited', platform: this.platform, roomId, roomName, created: true, botUserId, botInvite, invitedUsers }
+  }
+
+  async archiveRoom(request: ArchiveRoomRequest): Promise<ArchiveRoomResult> {
+    try {
+      await this.webClient.conversations.archive({ channel: request.roomId })
+      return { ok: true, operation: 'archive_room', platform: this.platform, roomId: request.roomId, archived: true }
+    } catch (err) {
+      return { ok: false, operation: 'archive_room', platform: this.platform, code: 'api_error', roomId: request.roomId, error: slackApiErrorMessage(err) }
+    }
   }
 
   renderListPicker(items: PickerItem[], page: number, totalPages: number, callbackPrefix: string): SendOptions {

@@ -4860,6 +4860,12 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value ? value : undefined
 }
 
+function assertOrchestratorRoom(ck: string): void {
+  if (!normalizeBinding(loadBindings()[ck]).isOrchestrator) {
+    throw new Error('Room is not flagged as an Agent Control Path orchestrator room')
+  }
+}
+
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
@@ -6111,6 +6117,28 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         }
         const threadMsgs = await adapter.fetchThread(id, stringValue(msg.args.thread_id))
         result = threadMsgs.map(m => `[${m.ts}] ${m.userName}: ${m.text}`).join('\n')
+        break
+      }
+      case 'create_room_with_bot_invited': {
+        assertOrchestratorRoom(route.channelKey)
+        if (!adapter.createRoomWithBotInvited) throw new Error(`Room lifecycle operation is not supported by ${adapter.platform}`)
+        const parentChatId = stringValue(msg.args.parent_chat_id)
+        if (!parentChatId) throw new Error('parent_chat_id is required')
+        const parentAdapter = adapterFor(parentChatId)
+        if (!parentAdapter || parentAdapter.platform !== adapter.platform) throw new Error('parent_chat_id must use the same configured adapter as chat_id')
+        const desiredRoomName = stringValue(msg.args.desired_room_name).trim()
+        if (!desiredRoomName) throw new Error('desired_room_name is required')
+        const resultFacts = await adapter.createRoomWithBotInvited({ parentRoomId: localId(parentChatId), desiredRoomName })
+        result = JSON.stringify(resultFacts)
+        break
+      }
+      case 'archive_room': {
+        assertOrchestratorRoom(route.channelKey)
+        if (!adapter.archiveRoom) throw new Error(`Room lifecycle operation is not supported by ${adapter.platform}`)
+        const roomId = stringValue(msg.args.room_id).trim()
+        if (!roomId) throw new Error('room_id is required')
+        const resultFacts = await adapter.archiveRoom({ roomId })
+        result = JSON.stringify(resultFacts)
         break
       }
       case 'ask_peer':

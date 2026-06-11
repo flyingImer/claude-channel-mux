@@ -5,6 +5,7 @@ import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries
 test('normalizeBinding upgrades legacy string bindings to Claude sessions', () => {
   expect(normalizeBinding('legacy-uuid', 'codex')).toEqual({
     active: 'claude',
+    isOrchestrator: false,
     observers: [],
     sessions: { claude: 'legacy-uuid' },
     agentMeta: {},
@@ -18,7 +19,7 @@ test('normalizeBinding chooses default runtime when that session exists', () => 
 
 test('bindings preserve room observer agents', () => {
   const binding = normalizeBinding({ active: 'codex', observers: ['claude', 'codex'], sessions: { claude: 'cc', codex: 'cx' } }, 'claude')
-  expect(binding).toEqual({ active: 'codex', observers: ['claude'], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })
+  expect(binding).toEqual({ active: 'codex', isOrchestrator: false, observers: ['claude'], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })
   expect(serializeBinding(binding, 'claude')).toEqual({ active: 'codex', observers: ['claude'], sessions: { claude: 'cc', codex: 'cx' } })
 })
 
@@ -53,8 +54,8 @@ test('normalizeBinding restores absolute paths accidentally rooted under the dae
 })
 
 test('serializeBinding omits empty default bindings and empty metadata', () => {
-  expect(serializeBinding({ active: 'claude', observers: [], sessions: {}, agentMeta: {} }, 'claude')).toBeUndefined()
-  expect(serializeBinding({ active: 'codex', observers: [], sessions: { claude: '', codex: 'cx' }, agentMeta: { codex: {} } }, 'claude')).toEqual({
+  expect(serializeBinding({ active: 'claude', isOrchestrator: false, observers: [], sessions: {}, agentMeta: {} }, 'claude')).toBeUndefined()
+  expect(serializeBinding({ active: 'codex', isOrchestrator: false, observers: [], sessions: { claude: '', codex: 'cx' }, agentMeta: { codex: {} } }, 'claude')).toEqual({
     active: 'codex',
     sessions: { codex: 'cx' },
   })
@@ -85,11 +86,11 @@ test('bindingsFromJson keeps valid bindings and drops malformed persisted state'
 
 
 test('bindingSessionEntries returns typed active session entries', () => {
-  expect(bindingSessionEntries({ active: 'codex', observers: [], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })).toEqual([
+  expect(bindingSessionEntries({ active: 'codex', isOrchestrator: false, observers: [], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })).toEqual([
     { runtime: 'claude', uuid: 'cc', active: false },
     { runtime: 'codex', uuid: 'cx', active: true },
   ])
-  expect(bindingSessionEntries({ active: 'claude', observers: [], sessions: { claude: '', codex: undefined }, agentMeta: {} })).toEqual([])
+  expect(bindingSessionEntries({ active: 'claude', isOrchestrator: false, observers: [], sessions: { claude: '', codex: undefined }, agentMeta: {} })).toEqual([])
 })
 
 

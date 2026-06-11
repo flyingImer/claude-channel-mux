@@ -2,7 +2,7 @@ import { createWriteStream } from 'fs'
 import { homedir } from 'os'
 import { basename } from 'path'
 import { pipeline } from 'stream/promises'
-import type { ButtonItem, ChannelAdapter, InboundMessage, InteractionCallback, PickerItem, SearchContext, SendOptions } from './types.js'
+import type { ArchiveRoomRequest, ArchiveRoomResult, ButtonItem, ChannelAdapter, CreateRoomWithBotInvitedRequest, CreateRoomWithBotInvitedResult, InboundMessage, InteractionCallback, PickerItem, SearchContext, SendOptions } from './types.js'
 import { renderForTelegram, splitForLimit } from './markdown.js'
 import { responseBodyStream } from './stream.js'
 import { errorMessage, redactSensitiveText } from '../redact.js'
@@ -743,5 +743,13 @@ export class TelegramAdapter implements ChannelAdapter {
       kb.push(buttons.slice(i, i + 2).map(b => this.btn(b.text, b.data)))
     }
     return { inlineKeyboard: kb }
+  }
+
+  async createRoomWithBotInvited(_request: CreateRoomWithBotInvitedRequest): Promise<CreateRoomWithBotInvitedResult> {
+    return { ok: false, code: 'unsupported_capability', platform: this.platform, operation: 'create_room_with_bot_invited' }
+  }
+
+  async archiveRoom(_request: ArchiveRoomRequest): Promise<ArchiveRoomResult> {
+    return { ok: false, code: 'unsupported_capability', platform: this.platform, operation: 'archive_room' }
   }
 }

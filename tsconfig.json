@@ -15,6 +15,7 @@
     "*.ts",
     "adapters/**/*.ts",
     "agents/**/*.ts",
+    "orchestrator/**/*.ts",
     "hooks/**/*.ts",
     "test/**/*.ts"
   ]

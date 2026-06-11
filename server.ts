@@ -448,6 +448,33 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'create_room_with_bot_invited',
+      description: 'Agent Control Path V1: create a Slack private worker room and invite the CCM bot. Requires an orchestrator room.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Current orchestrator room channel key' },
+          ccm_room_token: { type: 'string', description: 'Opaque CCM room-session token from <ccm_turn> (required for shared Codex app-server)' },
+          parent_chat_id: { type: 'string', description: 'Parent room channel key whose eligible ordinary members may be invited best-effort' },
+          desired_room_name: { type: 'string', description: 'Desired worker room name. Orchestrator owns naming/collision policy.' },
+        },
+        required: ['chat_id', 'parent_chat_id', 'desired_room_name'],
+      },
+    },
+    {
+      name: 'archive_room',
+      description: 'Agent Control Path V1: archive a worker room. Requires an orchestrator room; archive timing policy belongs to the orchestrator.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Current orchestrator room channel key' },
+          ccm_room_token: { type: 'string', description: 'Opaque CCM room-session token from <ccm_turn> (required for shared Codex app-server)' },
+          room_id: { type: 'string', description: 'Platform-local worker room id to archive' },
+        },
+        required: ['chat_id', 'room_id'],
+      },
+    },
+    {
       name: 'ask_peer',
       description: 'Ask another agent in the same CCM room for context or a second opinion. Use peer_agents from the current turn to choose the peer. This is an async visible handoff: the tool returns after routing, and the peer answer appears in the room/thread. The daemon does not maintain a hidden peer inbox or wait for answers.',
       inputSchema: {
