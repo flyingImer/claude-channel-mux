@@ -1,4 +1,4 @@
 interface:
-  display_name: Guide Orchestration
-  short_description: Set stage contracts, acceptance criteria, and quality bars.
-  default_prompt: Define the stage contract, audit bar, non-goals, and human decision boundaries for a CCM orchestration.
+  display_name: "Guide Orchestration"
+  short_description: "Set CCM stage quality bars"
+  default_prompt: "Use $guide-orchestration to define the stage contract, audit bar, non-goals, and human decision boundaries."

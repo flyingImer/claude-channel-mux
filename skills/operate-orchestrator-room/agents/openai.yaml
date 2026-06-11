@@ -1,4 +1,4 @@
 interface:
-  display_name: Operate Orchestrator Room
-  short_description: Set up, inspect, and troubleshoot CCM orchestrator rooms.
-  default_prompt: Enable or inspect a CCM orchestrator room, verify Slack lifecycle readiness, and run operator smoke checks.
+  display_name: "Operate Orchestrator Room"
+  short_description: "Run CCM orchestrator room ops"
+  default_prompt: "Use $operate-orchestrator-room to enable or inspect a CCM orchestrator room and verify Slack lifecycle readiness."

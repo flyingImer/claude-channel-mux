@@ -42,6 +42,7 @@ test('plugin ships CCM orchestration role skills', () => {
     expect(ui).toContain('display_name:')
     expect(ui).toContain('short_description:')
     expect(ui).toContain('default_prompt:')
+    expect(ui).toContain(`$${skill}`)
   }
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('isOrchestrator: true')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('unsupported_capability')

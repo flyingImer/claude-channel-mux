@@ -1,4 +1,4 @@
 interface:
-  display_name: Orchestrate Workers
-  short_description: Coordinate CCM worker rooms from an orchestrator room.
-  default_prompt: Use CCM Agent Control Path to split work across visible worker rooms, collect Worker Reports, and archive only after output is consumed.
+  display_name: "Orchestrate Workers"
+  short_description: "Coordinate CCM worker rooms"
+  default_prompt: "Use $orchestrate-workers to split this CCM stage across visible worker rooms, collect Worker Reports, and archive only after output is consumed."
