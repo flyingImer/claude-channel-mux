@@ -13,7 +13,7 @@
       {
         "command": "/ccm",
         "description": "Claude Channel Mux — room, resume, stop, help",
-        "usage_hint": "[default claude|codex | agents | route | orchestrator on|off|status | resume [agent] | stop [agent] | find <query> | help]",
+        "usage_hint": "[default claude|codex | agents | route | orchestrator/orch on|off|status | resume [agent] | stop [agent] | find <query> | help]",
         "should_escape": false
       },
       {

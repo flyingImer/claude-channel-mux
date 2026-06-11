@@ -2730,7 +2730,7 @@ test('Slack slash command bridge covers /cx without duplicate message id', () =>
   expect(ccm.description).toBe('Claude Channel Mux — room, resume, stop, help')
   expect(cx.description).toBe('Codex command proxy — help, ss, nav, transcript, goal, cancel')
   expect(cc.description).toBe('Claude command proxy — help, ss, nav, transcript, cancel')
-  expect(ccm.usage_hint).toBe('[default claude|codex | agents | route | orchestrator on|off|status | resume [agent] | stop [agent] | find <query> | help]')
+  expect(ccm.usage_hint).toBe('[default claude|codex | agents | route | orchestrator/orch on|off|status | resume [agent] | stop [agent] | find <query> | help]')
   expect(cc.usage_hint).toBe('<command> (e.g. help, ss, nav, transcript, compact, model, cancel)')
   expect(cx.usage_hint).toBe('<command> (e.g. help, ss, nav, transcript, status, mcp, model, goal, cancel)')
   for (const name of ['default', 'agents', 'route', 'orchestrator', 'resume', 'stop', 'find', 'help']) expect(ccm.usage_hint).toContain(name)

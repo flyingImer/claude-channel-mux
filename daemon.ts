@@ -4182,7 +4182,7 @@ function parseCmd(text: string): Cmd {
     if (/^collab(?:\s+(?:ss|status))?$/i.test(args)) return { t: 'collab_status' }
     if (/^collab\s+(?:cancel|stop)$/i.test(args)) return { t: 'collab_cancel' }
     if (/^collab\s+(?:done|complete)$/i.test(args)) return { t: 'collab_done' }
-    const orchestratorM = args.match(/^orchestrator(?:\s+(on|off|status))?$/i)
+    const orchestratorM = args.match(/^(?:orchestrator|orch)(?:\s+(on|off|status))?$/i)
     if (orchestratorM) return { t: 'orchestrator', action: (orchestratorM[1]?.toLowerCase() as 'on' | 'off' | 'status' | undefined) ?? 'status' }
     if (/^(?:delete|reset)\s+room$/i.test(args)) return { t: 'delete_room' }
     if (/^route$/i.test(args)) return { t: 'route' }
@@ -5468,7 +5468,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         '`ccm default claude|codex` — Set the plain-message default agent',
         '`ccm agents` — Show agent slots and active sessions',
         '`ccm route` — Explain how the next plain message routes',
-        '`ccm orchestrator on|off|status` — Toggle or inspect Agent Control Path lifecycle permission for this room',
+        '`ccm orchestrator on|off|status` / `ccm orch on|off|status` — Toggle or inspect Agent Control Path lifecycle permission for this room',
         '`ccm new [agent]` / `ccm start [agent]` — Start a fresh agent slot session in this room',
         '`ccm resume [agent\\|id]` — Browse or resume agent sessions into this room',
         '`ccm stop [agent\\|id]` — Stop an agent slot session; if other rooms still reference it, unbind those rooms first',
