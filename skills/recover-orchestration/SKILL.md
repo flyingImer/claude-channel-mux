@@ -41,6 +41,8 @@ Adopt only when Git intent matches the desired room name, workspace matches, cha
 
 ## Recovery Output
 
+When available, use `prompts/ccm/recovery.md`, `docs/checklists/recovery.md`, and `docs/orchestration/_templates/recovery-note.md` to make recovery portable across Claude Code and Codex.
+
 ```text
 Recovery Note: <timestamp>
 Observed Git State: <worker/state refs>

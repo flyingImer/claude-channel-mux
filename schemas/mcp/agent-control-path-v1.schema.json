@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingImer/claude-channel-mux/schemas/mcp/agent-control-path-v1.schema.json",
+  "title": "CCM Agent Control Path V1",
+  "type": "object",
+  "required": ["operations"],
+  "properties": {
+    "operations": {
+      "type": "object",
+      "required": ["create_room_with_bot_invited", "archive_room", "bind_worker_room", "start_worker_agent", "send_worker_task", "capture_worker_report"],
+      "properties": {
+        "create_room_with_bot_invited": {
+          "type": "object",
+          "required": ["required", "properties"],
+          "properties": {
+            "required": { "const": ["chat_id", "parent_chat_id", "desired_room_name"] },
+            "properties": {
+              "type": "array",
+              "items": { "enum": ["chat_id", "ccm_room_token", "parent_chat_id", "desired_room_name"] }
+            }
+          }
+        },
+        "archive_room": {
+          "type": "object",
+          "required": ["required", "properties"],
+          "properties": {
+            "required": { "const": ["chat_id", "room_id"] },
+            "properties": {
+              "type": "array",
+              "items": { "enum": ["chat_id", "ccm_room_token", "room_id"] }
+            }
+          }
+        },
+        "bind_worker_room": {
+          "type": "object",
+          "required": ["required", "properties"],
+          "properties": {
+            "required": { "const": ["chat_id", "room_id", "cwd", "runtime"] },
+            "properties": {
+              "type": "array",
+              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "cwd", "runtime"] }
+            }
+          }
+        },
+        "start_worker_agent": {
+          "type": "object",
+          "required": ["required", "properties"],
+          "properties": {
+            "required": { "const": ["chat_id", "room_id", "runtime"] },
+            "properties": {
+              "type": "array",
+              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "runtime"] }
+            }
+          }
+        },
+        "send_worker_task": {
+          "type": "object",
+          "required": ["required", "properties"],
+          "properties": {
+            "required": { "const": ["chat_id", "room_id", "runtime", "text"] },
+            "properties": {
+              "type": "array",
+              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "runtime", "text", "thread_id"] }
+            }
+          }
+        },
+        "capture_worker_report": {
+          "type": "object",
+          "required": ["required", "properties"],
+          "properties": {
+            "required": { "const": ["chat_id", "room_id", "runtime"] },
+            "properties": {
+              "type": "array",
+              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "runtime", "limit"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

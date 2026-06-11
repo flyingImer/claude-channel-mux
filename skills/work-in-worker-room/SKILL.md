@@ -25,6 +25,8 @@ You are a Worker Agent in a visible CCM worker room. Your job is to complete the
 4. Verify with the most relevant tests, commands, rendered artifact, or evidence available.
 5. Produce a Worker Report and then stop unless the Orchestrator asks for follow-up.
 
+When available, use `prompts/ccm/worker.md` and `docs/orchestration/_templates/worker-report.md` so Claude Code and Codex workers report in the same shape.
+
 ## Worker Report Format
 
 ```text

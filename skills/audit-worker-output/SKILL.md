@@ -36,6 +36,8 @@ Authority: audit can block acceptance, but cannot rewrite orchestration state di
 
 ## Audit Report Format
 
+When available, use `prompts/ccm/auditor.md` and `docs/orchestration/_templates/audit-report.md` so audits are portable across Claude Code and Codex.
+
 ```text
 Audit Report: <audit_id>
 Verdict: pass | pass-with-concerns | block

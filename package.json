@@ -10,7 +10,11 @@
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json",
     "check:diff": "git diff --check",
-    "validate": "bun run test && bun run typecheck && bun run check:diff",
+    "orchestration:new": "bun scripts/new-orchestration.ts",
+    "orchestration:adopt": "bun scripts/adopt-orchestration.ts",
+    "orchestration:inbox": "bun scripts/orchestration-inbox.ts",
+    "validate:orchestration": "bun scripts/validate-orchestration.ts",
+    "validate": "bun run test && bun run typecheck && bun run validate:orchestration && bun run check:diff",
     "e2e:preflight": "scripts/e2e-preflight.sh",
     "build:wasm": "cd zellij-plugin && cargo build --release --target wasm32-wasip1"
   },

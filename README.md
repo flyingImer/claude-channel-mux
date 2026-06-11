@@ -134,7 +134,7 @@ Run the local static/test gate before a live Slack/Telegram cutover:
 bun run validate
 ```
 
-`bun run validate` runs the Bun test suite, project-level TypeScript coverage via `tsconfig.json`, and `git diff --check`. Live platform behavior still needs the E2E smoke in `docs/e2e-parity-plan.md`.
+`bun run validate` runs the Bun test suite, project-level TypeScript coverage via `tsconfig.json`, `validate:orchestration`, and `git diff --check`. Live platform behavior still needs the E2E smoke in `docs/e2e-parity-plan.md`.
 
 ## Setup
 
@@ -195,6 +195,24 @@ worker assignment, validation, integration, and archive timing; Worker Agents
 execute only their stage contract; the Guiding Principal sets quality bars and
 human decision boundaries; the human/operator manages room flags and platform
 readiness.
+
+For cross-runtime orchestration, the repo also ships portable harness artifacts:
+
+| Path | Purpose |
+|------|---------|
+| `docs/orchestration/AGENTS.md` | Role boundaries and source-of-truth rules for initiative directories |
+| `docs/orchestration/_templates/` | Canonical intake, stage, state, worker, recall, Guiding Principal, audit, and recovery templates |
+| `prompts/ccm/` | Runtime-neutral Orchestrator, Worker, Guiding Principal, Auditor, and Recovery prompts for Claude Code or Codex |
+| `docs/checklists/` | Short bootstrap, preflight, dispatch, Guiding Principal recall, integration, and recovery gates |
+| `docs/contracts/agent-control-path-v1.md` | Portable Agent Control Path lifecycle contract and invariants |
+
+Create a new Git-backed orchestration structure with `bun run orchestration:new -- <initiative-id> --from <actor> --source-ref <ref> --coordination-branch <branch>`.
+Pass `--root <repo>/docs/orchestration` when bootstrapping another repo; the command copies the portable root instructions, state machine, and templates before creating the initiative.
+Adopt or repair an existing partial initiative with `bun run orchestration:adopt -- <initiative-id> [--repair]`.
+Capture pasted human, ChatGPT, or Guiding Principal context with `bun run orchestration:inbox -- <initiative-id> --kind intake|inbox --from <actor> --source-ref <ref>` so attribution and unread inbox semantics are durable.
+Validate scaffold shape with `bun run validate:orchestration -- --root <repo>/docs/orchestration`; add `--ready` when checking that an initiative has no unresolved template placeholders before live dispatch.
+
+The lean path is intentional: start from durable intake, stage, worker state, orchestration state, and repo policy; add inbox, recall, audit, and recovery artifacts only when new context, uncertainty, risk, or failure makes them necessary.
 
 ### 2. Configure tokens
 

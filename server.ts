@@ -449,13 +449,13 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'create_room_with_bot_invited',
-      description: 'Agent Control Path V1: create a Slack private worker room and invite the CCM bot. Requires an orchestrator room.',
+      description: 'Agent Control Path V1: create a Slack private worker room and invite the CCM bot. Requires an orchestrator room. Use the current Orchestrator parent room for chat_id and parent_chat_id; do not use the desired/new worker room as chat_id until it has its own bound session/token.',
       inputSchema: {
         type: 'object',
         properties: {
-          chat_id: { type: 'string', description: 'Current orchestrator room channel key' },
+          chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; must match this call\'s ccm_room_token room' },
           ccm_room_token: { type: 'string', description: 'Opaque CCM room-session token from <ccm_turn> (required for shared Codex app-server)' },
-          parent_chat_id: { type: 'string', description: 'Parent room channel key whose eligible ordinary members may be invited best-effort' },
+          parent_chat_id: { type: 'string', description: 'Parent room channel key whose eligible ordinary members may be invited best-effort; for create, this is normally the same as chat_id' },
           desired_room_name: { type: 'string', description: 'Desired worker room name. Orchestrator owns naming/collision policy.' },
         },
         required: ['chat_id', 'parent_chat_id', 'desired_room_name'],
@@ -472,6 +472,66 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
           room_id: { type: 'string', description: 'Platform-local worker room id to archive' },
         },
         required: ['chat_id', 'room_id'],
+      },
+    },
+    {
+      name: 'bind_worker_room',
+      description: 'Agent Control Path V1: bind a worker room cwd/runtime metadata from the current Orchestrator parent room. Requires an orchestrator room; the worker room does not inherit isOrchestrator.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; must match this call\'s ccm_room_token room' },
+          ccm_room_token: { type: 'string', description: 'Opaque CCM room-session token from <ccm_turn> (required for shared Codex app-server)' },
+          room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+          cwd: { type: 'string', description: 'Absolute working directory to bind to the worker room' },
+          runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Default worker agent runtime' },
+        },
+        required: ['chat_id', 'room_id', 'cwd', 'runtime'],
+      },
+    },
+    {
+      name: 'start_worker_agent',
+      description: 'Agent Control Path V1: start or resume the assigned worker agent in a bound worker room from the current Orchestrator parent room. Requires an orchestrator room.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; must match this call\'s ccm_room_token room' },
+          ccm_room_token: { type: 'string', description: 'Opaque CCM room-session token from <ccm_turn> (required for shared Codex app-server)' },
+          room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+          runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to start or resume' },
+        },
+        required: ['chat_id', 'room_id', 'runtime'],
+      },
+    },
+    {
+      name: 'send_worker_task',
+      description: 'Agent Control Path V1: send a bounded Worker Task to a started/bound worker room from the current Orchestrator parent room. Requires an orchestrator room.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; must match this call\'s ccm_room_token room' },
+          ccm_room_token: { type: 'string', description: 'Opaque CCM room-session token from <ccm_turn> (required for shared Codex app-server)' },
+          room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+          runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to receive the task' },
+          text: { type: 'string', description: 'Bounded Worker Task prompt to deliver' },
+          thread_id: { type: 'string', description: 'Optional worker-room thread/message id pointer' },
+        },
+        required: ['chat_id', 'room_id', 'runtime', 'text'],
+      },
+    },
+    {
+      name: 'capture_worker_report',
+      description: 'Agent Control Path V1: retrieve worker-room transcript/reportback facts from the current Orchestrator parent room so the Orchestrator can capture a durable Worker Report in Git. Requires an orchestrator room.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; must match this call\'s ccm_room_token room' },
+          ccm_room_token: { type: 'string', description: 'Opaque CCM room-session token from <ccm_turn> (required for shared Codex app-server)' },
+          room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+          runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to capture from' },
+          limit: { type: 'number', description: 'Maximum transcript entries to return, clamped by daemon limits' },
+        },
+        required: ['chat_id', 'room_id', 'runtime'],
       },
     },
     {

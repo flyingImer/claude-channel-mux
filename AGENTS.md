@@ -38,3 +38,7 @@ Use the default five-label triage vocabulary. See `docs/agents/triage-labels.md`
 ### Domain docs
 
 This repo uses a single-context domain-doc layout. See `docs/agents/domain.md`.
+
+### Documented solutions
+
+`docs/solutions/` stores documented solutions to past problems and workflow learnings, organized by category with YAML frontmatter such as `module`, `tags`, and `problem_type`. `CONCEPTS.md` stores shared domain vocabulary for project-specific roles, processes, and status concepts.

@@ -687,6 +687,24 @@ function setRoomOrchestratorFlag(ck: string, enabled: boolean): void {
   saveBindings(b)
 }
 
+function channelKeyForRoomId(orchestratorCk: string, roomId: string): string {
+  const trimmed = roomId.trim()
+  if (!trimmed) throw new Error('room_id is required')
+  if (trimmed.includes(':')) return trimmed
+  const platform = orchestratorCk.split(':', 1)[0]
+  if (!platform) throw new Error('chat_id must include a platform prefix')
+  return `${platform}:${trimmed}`
+}
+
+function runtimeArg(value: unknown): AgentRuntimeKind {
+  if (value === 'claude' || value === 'codex') return value
+  throw new Error('runtime must be claude or codex')
+}
+
+function assertSamePlatformRoom(parentCk: string, workerCk: string): void {
+  if (parentCk.split(':', 1)[0] !== workerCk.split(':', 1)[0]) throw new Error('worker room must use the same platform as the orchestrator room')
+}
+
 function setAgentMeta(ck: string, runtime: AgentRuntimeKind, meta: AgentSlotMeta): void {
   const b = loadBindings()
   const binding = normalizeBinding(b[ck])
@@ -5196,6 +5214,42 @@ function renderAgentTranscript(transcript: AgentTranscript, limit: number): stri
   return lines.join('\n')
 }
 
+async function workerTranscriptFacts(workerCk: string, runtime: AgentRuntimeKind, limit: number): Promise<Record<string, unknown>> {
+  const sessionId = bindingUuid(workerCk, runtime)
+  if (!sessionId) throw new Error('worker agent must be started before capture')
+  const session = runtime === 'codex' ? codexSessions.get(sessionId) : claudeSessions.get(sessionId) ?? claudeDriver.get(sessionId)
+  const transcriptSession: AgentSession | undefined = session ?? (runtime === 'claude'
+    ? {
+        kind: 'claude',
+        sessionId,
+        nativeSessionId: sessionId,
+        transport: 'claude-channel',
+        cwd: roomCwd(workerCk),
+        status: 'missing',
+        capabilities: { streaming: false, cancel: false, resume: true, toolCalling: true },
+      }
+    : undefined)
+  if (!transcriptSession) throw new Error(`worker ${runtime} session ${sessionId.slice(0, 8)} is not loaded; call start_worker_agent before capture_worker_report`)
+  const transcript = runtime === 'claude'
+    ? claudeTranscript(transcriptSession, limit)
+    : await agentRegistry.get(runtime).transcript?.({ session: transcriptSession, cwd: roomCwd(workerCk), limit })
+  if (!transcript) throw new Error(`${agentName(runtime)} transcript is not available yet`)
+  const entries = transcript.entries.slice(-limit)
+  return {
+    ok: true,
+    operation: 'capture_worker_report',
+    roomId: workerCk,
+    runtime,
+    sessionId,
+    cwd: roomCwd(workerCk),
+    source: transcript.source,
+    path: transcript.path,
+    entryCount: entries.length,
+    entries,
+    lastAssistantMessage: [...entries].reverse().find(entry => entry.role !== 'user')?.text,
+  }
+}
+
 
 function renderAgentCommandHelp(runtime: AgentRuntimeKind): string {
   const driver = agentRegistry.get(runtime)
@@ -6158,6 +6212,88 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         if (!roomId) throw new Error('room_id is required')
         const resultFacts = await adapter.archiveRoom({ roomId })
         result = JSON.stringify(resultFacts)
+        break
+      }
+      case 'bind_worker_room': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const workerAdapter = adapterFor(workerCk)
+        if (!workerAdapter) throw new Error(`No adapter for worker room ${workerCk}`)
+        const cwd = stringValue(msg.args.cwd).trim()
+        if (!cwd) throw new Error('cwd is required')
+        if (!cwd.startsWith('/')) throw new Error('cwd must be absolute')
+        const runtime = runtimeArg(msg.args.runtime)
+        setRoom(workerCk, cwd, runtime)
+        setRoomOrchestratorFlag(workerCk, false)
+        setAgentMeta(workerCk, runtime, { cwd, desiredRunning: false })
+        result = JSON.stringify({ ok: true, operation: 'bind_worker_room', platform: workerAdapter.platform, roomId: workerCk, cwd: roomCwd(workerCk), runtime, isOrchestrator: false })
+        break
+      }
+      case 'start_worker_agent': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const workerAdapter = adapterFor(workerCk)
+        if (!workerAdapter) throw new Error(`No adapter for worker room ${workerCk}`)
+        const runtime = runtimeArg(msg.args.runtime)
+        if (!roomHasExplicitCwd(workerCk)) throw new Error('worker room must be bound to a cwd before start')
+        let sessionId = bindingUuid(workerCk, runtime)
+        let action: 'already_running' | 'resumed' | 'started' = 'already_running'
+        if (sessionId && live.has(sessionId)) {
+          action = 'already_running'
+        } else if (sessionId) {
+          const resumed = await resumeAndBind(workerCk, sessionId, runtime, true, roomCwd(workerCk))
+          if (!resumed) throw new Error(`failed to resume worker ${runtime} session ${sessionId.slice(0, 8)}`)
+          action = 'resumed'
+        } else {
+          sessionId = await startNew(workerCk, roomCwd(workerCk), runtime, true, true)
+          if (!sessionId) throw new Error(`failed to start worker ${runtime} agent`)
+          action = 'started'
+        }
+        setAgentDesiredRunning(workerCk, runtime, true)
+        result = JSON.stringify({ ok: true, operation: 'start_worker_agent', platform: workerAdapter.platform, roomId: workerCk, runtime, sessionId, action })
+        break
+      }
+      case 'send_worker_task': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const workerAdapter = adapterFor(workerCk)
+        if (!workerAdapter) throw new Error(`No adapter for worker room ${workerCk}`)
+        const runtime = runtimeArg(msg.args.runtime)
+        const text = stringValue(msg.args.text).trim()
+        if (!text) throw new Error('text is required')
+        if (!roomHasExplicitCwd(workerCk)) throw new Error('worker room must be bound to a cwd before sending a task')
+        const sessionId = bindingUuid(workerCk, runtime)
+        if (!sessionId) throw new Error('worker agent must be started before sending a task')
+        if (!live.has(sessionId)) throw new Error(`worker ${runtime} session ${sessionId.slice(0, 8)} is not running; call start_worker_agent before send_worker_task`)
+        const messageId = `acp:${randomUUID()}`
+        const threadId = optionalString(msg.args.thread_id)
+        const delivered = await deliverUserTurn(workerCk, {
+          channelId: localId(workerCk),
+          userId: 'ccm-orchestrator',
+          userName: 'CCM Orchestrator',
+          text,
+          messageId,
+          replyToId: threadId,
+          meta: { source: 'agent_control_path', parent_room_id: route.channelKey },
+        }, text, runtime, true)
+        if (!delivered) throw new Error(`failed to deliver Worker Task to ${runtime} in ${workerCk}`)
+        result = JSON.stringify({ ok: true, operation: 'send_worker_task', platform: workerAdapter.platform, roomId: workerCk, runtime, messageId, threadId: threadId ?? messageId })
+        break
+      }
+      case 'capture_worker_report': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const workerAdapter = adapterFor(workerCk)
+        if (!workerAdapter) throw new Error(`No adapter for worker room ${workerCk}`)
+        const runtime = runtimeArg(msg.args.runtime)
+        const rawLimit = typeof msg.args.limit === 'number' ? msg.args.limit : Number(optionalString(msg.args.limit))
+        const limit = clampCount(Number.isFinite(rawLimit) ? rawLimit : 50)
+        const facts = await workerTranscriptFacts(workerCk, runtime, limit)
+        result = JSON.stringify({ ...facts, platform: workerAdapter.platform })
         break
       }
       case 'ask_peer':
