@@ -169,6 +169,14 @@ export function serializeBinding(binding: NormalizedBinding, defaultRuntime: Age
   return { active, ...(binding.isOrchestrator ? { isOrchestrator: true } : {}), ...(observers.length ? { observers } : {}), sessions, ...(binding.cwd ? { cwd: binding.cwd } : {}), ...(Object.keys(agentMeta).length > 0 ? { agentMeta } : {}) }
 }
 
+export function setBindingOrchestratorFlag(bindings: Record<string, ChannelBinding>, channelKey: string, enabled: boolean, defaultRuntime: AgentRuntimeKind): void {
+  const binding = normalizeBinding(bindings[channelKey], defaultRuntime)
+  binding.isOrchestrator = enabled
+  const serialized = serializeBinding(binding, defaultRuntime)
+  if (serialized) bindings[channelKey] = serialized
+  else delete bindings[channelKey]
+}
+
 
 export function keepAgentModelMeta(meta: AgentSlotMeta | undefined): AgentSlotMeta | undefined {
   const kept: AgentSlotMeta = {}

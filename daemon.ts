@@ -54,7 +54,7 @@ import { findZellijSessionLine } from './zellij.js'
 import { commandLine, forwardedEnvExports, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
-import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
 import { compareTaskSnapshotItems, taskSnapshotItemFromJson, type TaskSnapshotItem, type TaskStatus } from './tasks.js'
@@ -678,6 +678,12 @@ function setRoomObservers(ck: string, observers: AgentRuntimeKind[]): void {
   const serialized = serializeBinding(binding)
   if (serialized) b[ck] = serialized
   else delete b[ck]
+  saveBindings(b)
+}
+
+function setRoomOrchestratorFlag(ck: string, enabled: boolean): void {
+  const b = loadBindings()
+  setBindingOrchestratorFlag(b, ck, enabled, DEFAULT_AGENT_RUNTIME)
   saveBindings(b)
 }
 
@@ -4087,6 +4093,7 @@ type Cmd =
   | { t: 'stop'; runtime?: AgentRuntimeKind }
   | { t: 'stop_id'; uuid: string; runtime?: AgentRuntimeKind }
   | { t: 'delete_room' }
+  | { t: 'orchestrator'; action: 'on' | 'off' | 'status' }
   | { t: 'help' }
   | { t: 'find'; query: string; runtime?: AgentRuntimeKind }
   | { t: 'screen'; runtime?: AgentRuntimeKind }
@@ -4175,6 +4182,8 @@ function parseCmd(text: string): Cmd {
     if (/^collab(?:\s+(?:ss|status))?$/i.test(args)) return { t: 'collab_status' }
     if (/^collab\s+(?:cancel|stop)$/i.test(args)) return { t: 'collab_cancel' }
     if (/^collab\s+(?:done|complete)$/i.test(args)) return { t: 'collab_done' }
+    const orchestratorM = args.match(/^orchestrator(?:\s+(on|off|status))?$/i)
+    if (orchestratorM) return { t: 'orchestrator', action: (orchestratorM[1]?.toLowerCase() as 'on' | 'off' | 'status' | undefined) ?? 'status' }
     if (/^(?:delete|reset)\s+room$/i.test(args)) return { t: 'delete_room' }
     if (/^route$/i.test(args)) return { t: 'route' }
     if (/^default$/i.test(args) && runtime) return { t: 'default', runtime }
@@ -5459,6 +5468,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         '`ccm default claude|codex` — Set the plain-message default agent',
         '`ccm agents` — Show agent slots and active sessions',
         '`ccm route` — Explain how the next plain message routes',
+        '`ccm orchestrator on|off|status` — Toggle or inspect Agent Control Path lifecycle permission for this room',
         '`ccm new [agent]` / `ccm start [agent]` — Start a fresh agent slot session in this room',
         '`ccm resume [agent\\|id]` — Browse or resume agent sessions into this room',
         '`ccm stop [agent\\|id]` — Stop an agent slot session; if other rooms still reference it, unbind those rooms first',
@@ -5505,6 +5515,15 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         'Explicit cues win: `codex: ...` or `claude: ...`.',
         'Agent replies include an identity header so the thread stays readable shared context.',
       ].join('\n'), undefined, 'route summary')
+      return
+    }
+    case 'orchestrator': {
+      if (cmd.action === 'on') setRoomOrchestratorFlag(ck, true)
+      if (cmd.action === 'off') setRoomOrchestratorFlag(ck, false)
+      const enabled = normalizeBinding(loadBindings()[ck]).isOrchestrator
+      await sendChannelNotice(ck, enabled
+        ? '✅ Agent Control Path orchestrator room is ON. Lifecycle tools may create/archive worker rooms from this room.'
+        : '⏸ Agent Control Path orchestrator room is OFF. Lifecycle tools are denied from this room.', undefined, 'orchestrator flag notice')
       return
     }
     case 'default': {

@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test'
 import { homedir } from 'os'
-import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding } from '../bindings.ts'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding, setBindingOrchestratorFlag } from '../bindings.ts'
 
 test('normalizeBinding upgrades legacy string bindings to Claude sessions', () => {
   expect(normalizeBinding('legacy-uuid', 'codex')).toEqual({
@@ -103,6 +103,20 @@ test('bindingAuthorizedRoomsForSession uses only direct room/session bindings', 
   })
 
   expect(bindingAuthorizedRoomsForSession(bindings, 'thread-a').sort()).toEqual(['slack:claude', 'slack:first'])
+})
+
+test('setBindingOrchestratorFlag toggles current room without changing worker rooms', () => {
+  const bindings = bindingsFromJson({
+    'slack:ORCH': { active: 'codex', sessions: { codex: 'cx' } },
+    'slack:WORKER': { active: 'claude', sessions: { claude: 'cc' } },
+  })
+
+  setBindingOrchestratorFlag(bindings, 'slack:ORCH', true, 'claude')
+  expect(normalizeBinding(bindings['slack:ORCH'], 'claude').isOrchestrator).toBe(true)
+  expect(normalizeBinding(bindings['slack:WORKER'], 'claude').isOrchestrator).toBe(false)
+
+  setBindingOrchestratorFlag(bindings, 'slack:ORCH', false, 'claude')
+  expect(normalizeBinding(bindings['slack:ORCH'], 'claude').isOrchestrator).toBe(false)
 })
 
 
