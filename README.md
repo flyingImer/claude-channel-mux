@@ -180,9 +180,15 @@ The plugin ships skills for both setup work and Agent Control Path operation:
 | `access` | Manage DM/channel allowlists and pairing approvals |
 | `configure` | Configure Slack tokens and basic plugin setup |
 | `operate-orchestrator-room` | Human/operator setup, status, smoke tests, and troubleshooting |
+| `bootstrap-git-orchestration` | Seed or adopt durable `docs/orchestration/<initiative-id>/` state |
 | `guide-orchestration` | Define stage contracts, acceptance bars, audits, and human decision points |
 | `orchestrate-workers` | Coordinate visible CCM worker rooms from a flagged orchestrator room |
+| `manage-worker-protocol` | Start, brief, monitor, prompt, stop, and interpret worker rooms |
 | `work-in-worker-room` | Execute a bounded worker task and report back to the orchestrator |
+| `process-orchestration-inbox` | Process inbox, recall, decisions, conflicts, and handoffs |
+| `audit-worker-output` | Run independent audit workers over reports, diffs, claims, or evidence |
+| `integrate-worker-output` | Capture, merge, validate, abandon, cleanup, and archive worker output |
+| `recover-orchestration` | Reconstruct and repair orchestration after restarts or partial failures |
 
 The orchestration skills are intentionally role-specific. The Orchestrator owns
 worker assignment, validation, integration, and archive timing; Worker Agents

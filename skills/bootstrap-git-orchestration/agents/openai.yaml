@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bootstrap Git Orchestration"
+  short_description: "Seed Git-backed CCM state"
+  default_prompt: "Use $bootstrap-git-orchestration to create or adopt docs/orchestration state before dispatching CCM workers."

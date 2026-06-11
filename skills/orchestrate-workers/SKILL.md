@@ -1,6 +1,6 @@
 ---
 name: orchestrate-workers
-description: Use when an agent is asked to coordinate CCM worker rooms, split work across workers, collect worker reports, or run an orchestrator room.
+description: Use when an agent is asked to run the top-level CCM orchestrator role, coordinate worker rooms, split work across workers, or collect worker reports.
 ---
 
 # Orchestrate Workers
@@ -18,11 +18,11 @@ You are the Orchestrator for a CCM room flagged with `isOrchestrator: true`. Use
 1. Define a stage contract: objective, inputs, output format, acceptance checks, and non-goals.
 2. Assign each worker a stable `worker_task_id` before room creation. Derive a deterministic `desired_room_name` from the task id and purpose.
 3. Create or repair worker rooms through Agent Control Path lifecycle calls only. Treat returned Slack facts as evidence; decide adopt, repair, reject, or suffix in orchestration state.
-4. Send each worker a bounded task brief that includes source material, expected Worker Report format, and explicit guardrails.
+4. Use `manage-worker-protocol` to send bounded task briefs, handle prompt/nav actions, and interpret reportback.
 5. Poll or inspect worker status; do not mirror every worker message into the orchestrator room.
 6. On completion, capture the Worker Report, transcript/session reference, and any produced artifacts.
-7. Validate outputs against the stage contract. Use independent audit workers for blocking quality checks; self-audits cannot unblock a stage.
-8. Integrate accepted outputs and mark worker output consumed before requesting archive.
+7. Use `audit-worker-output` when a blocking independent check is required; self-audits cannot unblock a stage.
+8. Use `integrate-worker-output` to consume, merge, validate, abandon, cleanup, and decide archive readiness.
 9. Archive worker rooms only after output is consumed; preserve transcript references in the orchestrator summary.
 
 ## Guardrails
@@ -32,6 +32,12 @@ You are the Orchestrator for a CCM room flagged with `isOrchestrator: true`. Use
 - Do not store worker mappings, task ids, or stage ownership in CCM Core.
 - Do not silently continue after `unsupported_capability`; report the platform limitation and choose a visible manual fallback with the human.
 - Prefer fewer workers with crisp contracts over many vague workers.
+
+## Related Skills
+
+- `bootstrap-git-orchestration`: create/adopt durable `docs/orchestration/<initiative-id>/` state before dispatch.
+- `process-orchestration-inbox`: process inbox, recall, decision, and handoff files before related work continues.
+- `recover-orchestration`: reconstruct state after restart, partial create, duplicate orchestrators, or failed archive/cleanup.
 
 ## Worker Brief Template
 

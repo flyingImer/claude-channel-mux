@@ -30,9 +30,15 @@ test('plugin ships CCM orchestration role skills', () => {
 
   const expectedSkills = [
     'operate-orchestrator-room',
+    'bootstrap-git-orchestration',
     'guide-orchestration',
     'orchestrate-workers',
+    'manage-worker-protocol',
     'work-in-worker-room',
+    'process-orchestration-inbox',
+    'audit-worker-output',
+    'integrate-worker-output',
+    'recover-orchestration',
   ]
   for (const skill of expectedSkills) {
     const body = readFileSync(`skills/${skill}/SKILL.md`, 'utf8')
@@ -49,6 +55,12 @@ test('plugin ships CCM orchestration role skills', () => {
   expect(readFileSync('skills/work-in-worker-room/SKILL.md', 'utf8')).toContain('Worker Report')
   expect(readFileSync('skills/guide-orchestration/SKILL.md', 'utf8')).toContain('Stage Contract')
   expect(readFileSync('skills/operate-orchestrator-room/SKILL.md', 'utf8')).toContain('/ccm orch status')
+  expect(readFileSync('skills/bootstrap-git-orchestration/SKILL.md', 'utf8')).toContain('docs/orchestration/<initiative-id>/')
+  expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Completion Reportback')
+  expect(readFileSync('skills/recover-orchestration/SKILL.md', 'utf8')).toContain('Create/Adopt/Repair')
+  expect(readFileSync('skills/integrate-worker-output/SKILL.md', 'utf8')).toContain('merge_failed')
+  expect(readFileSync('skills/process-orchestration-inbox/SKILL.md', 'utf8')).toContain('inbox/*.md.done')
+  expect(readFileSync('skills/audit-worker-output/SKILL.md', 'utf8')).toContain('Self-audit')
 })
 
 test('Codex slash commands fail closed unless raw is explicit', () => {

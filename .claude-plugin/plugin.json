@@ -1,7 +1,7 @@
 {
   "name": "claude-channel-mux",
   "description": "Multi-channel, multi-agent room multiplexer for Claude Code and Codex. Supports shared Slack/Telegram rooms, lazy agent slots, visible agent identity, and Agent SPI routing.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "keywords": [
     "claude-code",
     "codex",

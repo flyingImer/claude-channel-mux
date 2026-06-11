@@ -1,0 +1,4 @@
+interface:
+  display_name: "Process Orchestration Inbox"
+  short_description: "Handle inbox and recall files"
+  default_prompt: "Use $process-orchestration-inbox to process CCM inbox items, recall packets, decisions, and durable handoffs."

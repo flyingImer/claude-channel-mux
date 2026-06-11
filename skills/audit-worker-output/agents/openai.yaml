@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Worker Output"
+  short_description: "Audit CCM worker evidence"
+  default_prompt: "Use $audit-worker-output to run an independent audit worker over CCM worker reports, diffs, claims, or acceptance evidence."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Recover Orchestration"
+  short_description: "Repair CCM orchestration state"
+  default_prompt: "Use $recover-orchestration to reconstruct CCM orchestration state after restart, partial room creation, or failed cleanup."

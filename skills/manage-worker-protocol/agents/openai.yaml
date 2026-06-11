@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage Worker Protocol"
+  short_description: "Run CCM worker-room protocol"
+  default_prompt: "Use $manage-worker-protocol to brief, monitor, prompt, and interpret completion from CCM worker rooms."

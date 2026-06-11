@@ -1,0 +1,4 @@
+interface:
+  display_name: "Integrate Worker Output"
+  short_description: "Merge or reject worker output"
+  default_prompt: "Use $integrate-worker-output to capture, merge, validate, abandon, cleanup, or archive CCM worker output."
