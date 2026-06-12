@@ -5512,6 +5512,18 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     return false
   }
 
+  const meta = {
+    ...msg.meta,
+    chat_id: ck,
+    room_id: ck,
+    cwd: roomCwd(ck),
+    message_id: msg.messageId,
+    thread_id: threadId,
+    user: msg.userName,
+    user_id: msg.userId,
+    ...(msg.replyToId ? { reply_to_id: msg.replyToId } : {}),
+  }
+
   const command: AgentCommand = {
     commandId,
     roomId: ck,
@@ -5522,17 +5534,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     messageId: msg.messageId,
     cwd: roomCwd(ck),
     command: normalizedCommand,
-    meta: {
-      ...msg.meta,
-      chat_id: ck,
-      room_id: ck,
-      cwd: roomCwd(ck),
-      message_id: msg.messageId,
-      thread_id: threadId,
-      user: msg.userName,
-      user_id: msg.userId,
-      ...(msg.replyToId ? { reply_to_id: msg.replyToId } : {}),
-    },
+    meta: runtime === 'codex' ? codexTurnMeta(ck, uuid, meta) : meta,
   }
 
   try {
@@ -6152,7 +6154,13 @@ function isPermissionRequestMessage(msg: Record<string, unknown>): msg is { type
 }
 
 async function handleTool(msg: { tool: string; args: Record<string, unknown>; callId: string }, callerUuid: string): Promise<void> {
-  const route = resolveToolCallRoute(callerUuid, msg.args)
+  let route: { responseUuid: string; sessionId: string; channelKey: string }
+  try {
+    route = resolveToolCallRoute(callerUuid, msg.args)
+  } catch (err) {
+    sendToLive(callerUuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })
+    return
+  }
   const uuid = route.sessionId
   const ck = route.channelKey
   const visibleToolCommand = VISIBLE_TOOL_COMMAND_NAMES.has(msg.tool)

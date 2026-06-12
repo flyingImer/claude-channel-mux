@@ -6,6 +6,8 @@ import { CodexAppServerAgentDriver, codexEntriesFromTurns, codexNativeTurnId, co
 import type { CodexAppServerClientOptions, JsonObject } from '../agents/codex/app-server-client.ts'
 import { codexResolvedConfigFromEnv, type CodexResolvedConfig } from '../agents/codex/config.ts'
 import type { AgentCommand, AgentCommandResult, AgentEvent, AgentSession, AgentSnapshotPendingItem, AgentTurn } from '../agents/types.ts'
+import { slackFileMetadata } from '../adapters/slack.ts'
+import { telegramInboundMessage } from '../adapters/telegram.ts'
 
 type TestCodexClient = {
   start?: () => Promise<void>
@@ -428,6 +430,160 @@ test('Codex goal command interrupts active turn and starts replacement goal turn
   expect(String(calls[1].params.input[0].text)).toContain('ship better UX')
   expect(runtime.turnChannels.get('native-goal')).toBe('test:room')
   expect(runtime.turnThreads.get('native-goal')).toBe('msg')
+})
+
+test('Codex goal command turn preserves Slack attachment metadata for download', async () => {
+  const d = driver()
+  const session = codexSession('goal-session', 'goal-thread')
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const client = {
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'turn/start') return { result: { turn: { id: 'native-goal' } } }
+      return { result: {} }
+    },
+  }
+  d.runtimes.set('goal-session', testRuntime(session, client))
+  const command: AgentCommand = {
+    commandId: 'goal-cmd', roomId: 'slack:C123', channelKey: 'slack:C123', platform: 'slack', channelId: 'C123', threadId: '171000.1', messageId: '171000.1', cwd: '/tmp', command: '/goal catch up additional context from the attachment',
+    meta: {
+      ...slackFileMetadata([{ id: 'FSLACK1', name: 'context.md', mimetype: 'text/markdown', size: 4096 }]),
+      chat_id: 'slack:C123',
+      message_id: '171000.1',
+      thread_id: '171000.1',
+      ccm_room_token: 'room-token',
+    },
+  }
+
+  await d.sendCommand({ session, command })
+
+  const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
+  expect(text).toContain('<ccm_turn')
+  expect(text).toContain('ccm_room_token="room-token"')
+  expect(text).toContain('<message_meta trust="untrusted">')
+  expect(text).toContain('"attachment_file_id":"FSLACK1"')
+  expect(text).toContain('"attachment_name":"context.md"')
+  expect(text).toContain('"attachment_mime":"text/markdown"')
+  expect(text).toContain('"attachment_size":"4096"')
+  expect(text).toContain('<current_message>Replace the current CCM Codex goal')
+})
+
+test('Codex raw command turn preserves Slack attachment metadata for download', async () => {
+  const d = driver()
+  const session = codexSession('raw-slack-session', 'raw-slack-thread')
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const client = {
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'turn/start') return { result: { turn: { id: 'native-raw-slack' } } }
+      return { result: {} }
+    },
+  }
+  d.runtimes.set('raw-slack-session', testRuntime(session, client))
+  const command: AgentCommand = {
+    commandId: 'raw-slack-cmd', roomId: 'slack:C123', channelKey: 'slack:C123', platform: 'slack', channelId: 'C123', threadId: '171000.1', messageId: '171000.1', cwd: '/tmp', command: '/raw /goal use attached context',
+    meta: {
+      ...slackFileMetadata([{ id: 'FSLACKRAW', name: 'raw-context.md', mimetype: 'text/markdown', size: 8192 }]),
+      chat_id: 'slack:C123',
+      message_id: '171000.1',
+      thread_id: '171000.1',
+      ccm_room_token: 'room-token',
+    },
+  }
+
+  await d.sendCommand({ session, command })
+
+  const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
+  expect(text).toContain('<ccm_turn')
+  expect(text).toContain('"attachment_file_id":"FSLACKRAW"')
+  expect(text).toContain('"attachment_name":"raw-context.md"')
+  expect(text).toContain('<current_message>/goal use attached context</current_message>')
+})
+
+test('Codex raw command turn preserves Telegram attachment metadata for download', async () => {
+  const d = driver()
+  const session = codexSession('raw-session', 'raw-thread')
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const client = {
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'turn/start') return { result: { turn: { id: 'native-raw' } } }
+      return { result: {} }
+    },
+  }
+  d.runtimes.set('raw-session', testRuntime(session, client))
+  const inbound = telegramInboundMessage({
+    message_id: 7,
+    date: 171000,
+    text: '/cx_raw /goal use attached diagram',
+    chat: { id: -1001 },
+    from: { id: 9, username: 'ada' },
+    document: { file_id: 'TGFILE1', file_name: 'diagram.png', mime_type: 'image/png', file_size: 2400000 },
+  }, 'BOT', '')
+  expect(inbound).toBeDefined()
+  const command: AgentCommand = {
+    commandId: 'raw-cmd', roomId: 'telegram:-1001', channelKey: 'telegram:-1001', platform: 'telegram', channelId: '-1001', threadId: '7', messageId: '7', cwd: '/tmp', command: '/raw /goal use attached diagram',
+    meta: {
+      ...inbound!.meta,
+      chat_id: 'telegram:-1001',
+      message_id: '7',
+      thread_id: '7',
+      ccm_room_token: 'telegram-token',
+    },
+  }
+
+  await d.sendCommand({ session, command })
+
+  const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
+  expect(text).toContain('<ccm_turn')
+  expect(text).toContain('ccm_room_token="telegram-token"')
+  expect(text).toContain('"attachment_file_id":"TGFILE1"')
+  expect(text).toContain('"attachment_name":"diagram.png"')
+  expect(text).toContain('"attachment_mime":"image/png"')
+  expect(text).toContain('"attachment_size":"2400000"')
+  expect(text).toContain('<agent_instructions source="claude-channel-mux" priority="internal">')
+  expect(text).toContain('<current_message>/goal use attached diagram</current_message>')
+})
+
+test('Codex goal command turn preserves Telegram attachment metadata for download', async () => {
+  const d = driver()
+  const session = codexSession('goal-telegram-session', 'goal-telegram-thread')
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const client = {
+    request: async (method: string, params: JsonObject) => {
+      calls.push({ method, params })
+      if (method === 'turn/start') return { result: { turn: { id: 'native-goal-telegram' } } }
+      return { result: {} }
+    },
+  }
+  d.runtimes.set('goal-telegram-session', testRuntime(session, client))
+  const inbound = telegramInboundMessage({
+    message_id: 8,
+    date: 171001,
+    text: '/cx_goal summarize attached context',
+    chat: { id: -1002 },
+    from: { id: 10, username: 'lin' },
+    document: { file_id: 'TGGOAL1', file_name: 'context.pdf', mime_type: 'application/pdf', file_size: 12345 },
+  }, 'BOT', '')
+  expect(inbound).toBeDefined()
+  const command: AgentCommand = {
+    commandId: 'goal-telegram-cmd', roomId: 'telegram:-1002', channelKey: 'telegram:-1002', platform: 'telegram', channelId: '-1002', threadId: '8', messageId: '8', cwd: '/tmp', command: '/goal summarize attached context',
+    meta: {
+      ...inbound!.meta,
+      chat_id: 'telegram:-1002',
+      message_id: '8',
+      thread_id: '8',
+      ccm_room_token: 'telegram-token',
+    },
+  }
+
+  await d.sendCommand({ session, command })
+
+  const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
+  expect(text).toContain('<ccm_turn')
+  expect(text).toContain('"attachment_file_id":"TGGOAL1"')
+  expect(text).toContain('"attachment_name":"context.pdf"')
+  expect(text).toContain('<current_message>Replace the current CCM Codex goal')
 })
 
 test('Codex snapshot records typed app-server read/config failures', async () => {

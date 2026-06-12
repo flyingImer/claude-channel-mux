@@ -295,11 +295,14 @@ export class CodexAppServerAgentDriver implements AgentDriver {
       if (interrupted) {
         await runtime.client.request('turn/interrupt', { threadId: runtime.threadId, turnId: interrupted }, 15_000).catch(() => ({}))
       }
-      const nativeTurnId = await this.startPlainTurn(runtime, input.command, [
+      const text = [
         'Replace the current CCM Codex goal with the following goal. Stop pursuing the previous goal unless it is directly needed for this replacement.',
         '',
         goal,
-      ].join('\n'))
+      ].join('\n')
+      const nativeTurnId = this.commandNeedsTurnEnvelope(input.command)
+        ? await this.startCommandTurn(runtime, input.command, text)
+        : await this.startPlainTurn(runtime, input.command, text)
       return { commandId, nativeCommandId: nativeTurnId, display: interrupted ? `Replacing Codex goal; interrupted active turn ${interrupted}.` : 'Replacing Codex goal.' }
     }
 
@@ -700,8 +703,52 @@ export class CodexAppServerAgentDriver implements AgentDriver {
     return nativeTurnId
   }
 
+  private commandTurn(command: import('../types.js').AgentCommand, text: string): AgentTurn {
+    return {
+      turnId: command.commandId,
+      roomId: command.roomId,
+      channelKey: command.channelKey,
+      platform: command.platform,
+      channelId: command.channelId,
+      threadId: command.threadId,
+      messageId: command.messageId,
+      cwd: command.cwd,
+      text,
+      addressedAgent: 'codex',
+      defaultAgent: 'codex',
+      peerAgents: [],
+      meta: command.meta,
+    }
+  }
+
+  private async startCommandTurn(runtime: CodexRuntime, command: import('../types.js').AgentCommand, text: string): Promise<string> {
+    const response = await runtime.client.request('turn/start', {
+      threadId: runtime.threadId,
+      input: [{ type: 'text', text: this.formatTurn(this.commandTurn(command, text)), text_elements: [] }],
+      cwd: command.cwd,
+      ...(runtime.effectiveModel ? { model: runtime.effectiveModel } : {}),
+      approvalPolicy: runtime.config.approvalPolicy,
+      sandboxPolicy: codexTurnSandboxPolicy(command.cwd, runtime.config),
+    }, 120_000)
+    const nativeTurnId = codexNativeTurnId(response, command.commandId)
+    runtime.activeTurns.set(nativeTurnId, command.commandId)
+    runtime.turnThreads.set(nativeTurnId, command.threadId)
+    runtime.turnChannels.set(nativeTurnId, command.channelKey)
+    runtime.latestNativeTurnId = nativeTurnId
+    runtime.session.status = 'running'
+    this.emit({ type: 'status', session: runtime.session, status: 'running' })
+    return nativeTurnId
+  }
+
+  private commandNeedsTurnEnvelope(command: import('../types.js').AgentCommand): boolean {
+    return ['attachment_file_id', 'attachment_files']
+      .some(key => typeof command.meta[key] === 'string' && command.meta[key] !== '')
+  }
+
   private async sendSlashCommandAsTurn(runtime: CodexRuntime, command: import('../types.js').AgentCommand): Promise<AgentCommandResult> {
-    const nativeTurnId = await this.startPlainTurn(runtime, command, command.command)
+    const nativeTurnId = this.commandNeedsTurnEnvelope(command)
+      ? await this.startCommandTurn(runtime, command, command.command)
+      : await this.startPlainTurn(runtime, command, command.command)
     return {
       commandId: command.commandId,
       nativeCommandId: nativeTurnId,
