@@ -15,3 +15,7 @@ export function agentCommandBodyAfterPrefix(text: string, prefix: 'cc' | 'cx'): 
   if (!match) return undefined
   return normalized.slice(match[0].length).trim()
 }
+
+export function formatParsedAgentCommand(command: string): string {
+  return `🧭 Parsed command:\n\`\`\`\n${command}\n\`\`\``
+}

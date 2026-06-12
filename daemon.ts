@@ -53,7 +53,7 @@ import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanSt
 import { findZellijSessionLine } from './zellij.js'
 import { commandLine, forwardedEnvExports, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
-import { agentCommandBodyAfterPrefix, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
+import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
 import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
@@ -4124,12 +4124,12 @@ type Cmd =
   | { t: 'msg_many'; text: string; runtimes: AgentRuntimeKind[]; cue?: string }
   | { t: 'msg'; text: string; runtime?: AgentRuntimeKind; cue?: string }
 
-function firstLine(text: string): string {
-  return text.split(/\r?\n/, 1)[0] ?? ''
-}
-
 function commandPreview(command: string): string {
   return redactSensitiveText(command).replace(/\r/g, '').slice(0, 500)
+}
+
+function parsedCommandNotice(runtime: AgentRuntimeKind, command: string): string {
+  return formatAgentReply(runtime, `${formatParsedAgentCommand(commandPreview(command))}\nExecuting on ${agentName(runtime)}.`)
 }
 
 function auditInboundParsedCommand(ck: string, msg: InboundMessage, cmd: Cmd): void {
@@ -5430,7 +5430,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     raw_slash_command: msg.meta?.command,
     raw_slash_text: typeof msg.meta?.raw_text === 'string' ? commandPreview(msg.meta.raw_text) : undefined,
   })
-  await sendChannelNotice(ck, formatAgentReply(runtime, `🧭 Parsed command: \`${firstLine(commandPreview(normalizedCommand))}\`\nExecuting on ${agentName(runtime)}.`), commandNoticeOpts, `${runtime} command parsed notice`)
+  await sendChannelNotice(ck, parsedCommandNotice(runtime, normalizedCommand), commandNoticeOpts, `${runtime} command parsed notice`)
   if (!commandVerb || commandVerb === 'help') {
     await sendChannelNotice(ck, formatAgentReply(runtime, renderAgentCommandHelp(runtime)), commandNoticeOpts, `${runtime} command help`)
     return true
@@ -5674,7 +5674,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         raw_slash_text: typeof msg.meta?.raw_text === 'string' ? commandPreview(msg.meta.raw_text) : undefined,
         passthrough: true,
       })
-      await sendChannelNotice(ck, formatAgentReply(runtime, `🧭 Parsed command: \`${firstLine(commandPreview(cmd.command))}\`\nExecuting on ${agentName(runtime)}.`), commandNoticeOpts, `${runtime} command parsed notice`)
+      await sendChannelNotice(ck, parsedCommandNotice(runtime, cmd.command), commandNoticeOpts, `${runtime} command parsed notice`)
       const uuid = bindingUuid(ck, runtime)
       if (!uuid) {
         await sendWithButtons(ck, formatAgentReply('claude', 'No Claude agent slot session in this room.'), [{ text: '🚀 Start Claude', data: 'cmd:new:claude' }], commandNoticeOpts)

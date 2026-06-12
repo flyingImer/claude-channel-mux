@@ -134,7 +134,7 @@ test('shared help uses capability specs for both agents', () => {
 
 test('command parsing helpers are shared and behavior-tested', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain("import { agentCommandBodyAfterPrefix, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'")
+  expect(daemon).toContain("import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'")
   expect(daemon).toContain('const commandVerb = parseAgentCommandName(normalizedCommand)')
   expect(daemon).toContain("const cxSub = agentCommandBodyAfterPrefix(c, 'cx')")
   expect(daemon).not.toContain('function parseAgentCommandName(rawCommand: string): string')
@@ -2824,7 +2824,11 @@ test('slash command audit and command visibility use central daemon paths', () =
   expect(onMessageBlock.indexOf('const cmd = parseCmd(msg.text)')).toBeLessThan(onMessageBlock.indexOf('auditInboundParsedCommand(ck, msg, cmd)'))
   expect(commandBlock).toContain("event: 'agent_command_received'")
   expect(commandBlock).toContain("event: 'agent_command_executed'")
-  expect(commandBlock).toContain('🧭 Parsed command:')
+  expect(daemon).toContain('function parsedCommandNotice(runtime: AgentRuntimeKind, command: string): string')
+  expect(daemon).toContain('formatParsedAgentCommand(commandPreview(command))')
+  expect(readFileSync('commands.ts', 'utf8')).toContain('export function formatParsedAgentCommand(command: string): string')
+  expect(daemon).not.toContain('function firstLine(text: string)')
+  expect(commandBlock).toContain('parsedCommandNotice(runtime, normalizedCommand)')
   expect(daemon).toContain("'capture_worker_report'")
   expect(toolBlock).toContain('const visibleToolCommand = VISIBLE_TOOL_COMMAND_NAMES.has(msg.tool)')
   expect(toolBlock).toContain("event: 'agent_tool_command_received'")

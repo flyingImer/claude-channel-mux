@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { agentCommandBodyAfterPrefix, parseAgentCommandArgs, parseAgentCommandName } from '../commands.ts'
+import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from '../commands.ts'
 
 test('parseAgentCommandName accepts slash and bare command forms', () => {
   expect(parseAgentCommandName('/model gpt-5.4')).toBe('model')
@@ -21,4 +21,9 @@ test('agentCommandBodyAfterPrefix preserves multiline slash command bodies', () 
   expect(agentCommandBodyAfterPrefix(`/cc ${body}`, 'cc')).toBe(body)
   expect(agentCommandBodyAfterPrefix(`/cx_goal first line\nsecond line`, 'cx')).toBe('goal first line\nsecond line')
   expect(agentCommandBodyAfterPrefix('<@U123> /cx goal one\ntwo', 'cx')).toBe('goal one\ntwo')
+})
+
+test('formatParsedAgentCommand preserves multiline command visibility', () => {
+  const command = '/raw /goal first line\nsecond line\nthird line'
+  expect(formatParsedAgentCommand(command)).toBe('🧭 Parsed command:\n```\n/raw /goal first line\nsecond line\nthird line\n```')
 })
