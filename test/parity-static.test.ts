@@ -134,8 +134,9 @@ test('shared help uses capability specs for both agents', () => {
 
 test('command parsing helpers are shared and behavior-tested', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(daemon).toContain("import { parseAgentCommandArgs, parseAgentCommandName } from './commands.js'")
+  expect(daemon).toContain("import { agentCommandBodyAfterPrefix, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'")
   expect(daemon).toContain('const commandVerb = parseAgentCommandName(normalizedCommand)')
+  expect(daemon).toContain("const cxSub = agentCommandBodyAfterPrefix(c, 'cx')")
   expect(daemon).not.toContain('function parseAgentCommandName(rawCommand: string): string')
 })
 
@@ -1970,7 +1971,7 @@ test('codex nav and command proxy replies use observable channel notice helper',
   expect(navBlock).toContain("'codex nav action hint'")
   expect(navBlock).not.toContain('adapter?.sendMessage(localId(ck)')
   const commandBlock = daemon.slice(daemon.indexOf('async function deliverAgentCommand'), daemon.indexOf('async function onMessage'))
-  expect(commandBlock).toContain('const commandNoticeOpts = { replyTo: threadId, broadcast: true }')
+  expect(commandBlock).toContain('const commandNoticeOpts = threadId ? { replyTo: threadId, broadcast: true } : undefined')
   expect(commandBlock).toContain('`${runtime} command proxy unavailable notice`')
   expect(commandBlock).toContain('`${runtime} command result notice`')
   expect(commandBlock).toContain('`${runtime} command failure notice`')
@@ -2014,7 +2015,7 @@ test('agent read-only commands are pure queries before start or passthrough', ()
   expect(snapshotIdx).toBeGreaterThan(statusIdx)
   expect(transcriptIdx).toBeGreaterThan(snapshotIdx)
   expect(navIdx).toBeGreaterThan(transcriptIdx)
-  expect(block).toContain("sendChannelNotice(ck, formatAgentReply(runtime, roomSummary(ck).join('\\n')), undefined, `${runtime} status summary`)")
+  expect(block).toContain("sendChannelNotice(ck, formatAgentReply(runtime, roomSummary(ck).join('\\n')), commandNoticeOpts, `${runtime} status summary`)")
   expect(block).toContain('const codexUuid = bindingUuid(ck, runtime)')
   expect(block).toContain('`${runtime} status not started notice`')
   expect(block).toContain('`${runtime} status not loaded notice`')
@@ -2051,8 +2052,8 @@ test('agent command help and model notices use observable channel notice helper'
 test('path binding and slash passthrough confirmations use observable channel notice helper', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const slashBlock = daemon.slice(daemon.indexOf("    case 'slash':"), daemon.indexOf("    case 'new':"))
-  expect(slashBlock).toContain("undefined, 'claude slash passthrough notice')")
-  expect(slashBlock).toContain("undefined, 'claude slash passthrough failure notice')")
+  expect(slashBlock).toContain("commandNoticeOpts, 'claude slash passthrough notice')")
+  expect(slashBlock).toContain("commandNoticeOpts, 'claude slash passthrough failure notice')")
   expect(slashBlock).toContain('const writeOk = writeChars(paneId, cmd.command)')
   expect(slashBlock).toContain("const enterOk = writeOk ? sendKeys(paneId, 'Enter') : false")
   expect(slashBlock).toContain('if (!writeOk || !enterOk)')
@@ -2810,6 +2811,27 @@ test('Slack slash inbound requires channel and user identity', () => {
   expect(slack).toContain('userName: stringValue(payload.user_name) || userId')
 })
 
+test('slash command audit and command visibility use central daemon paths', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const slack = readFileSync('adapters/slack.ts', 'utf8')
+  const onMessageBlock = daemon.slice(daemon.indexOf('async function onMessage'), daemon.indexOf('async function routeVisiblePeerMentions'))
+  const commandBlock = daemon.slice(daemon.indexOf('async function deliverAgentCommand'), daemon.indexOf('async function onMessage'))
+  const toolBlock = daemon.slice(daemon.indexOf('async function handleTool'), daemon.indexOf('// ---------------------------------------------------------------------------\n// Permission request'))
+  expect(slack).toContain("meta: { ts: new Date().toISOString(), source: 'slack_slash_command', command, raw_text: text }")
+  expect(daemon).toContain("event: 'slack_slash_command_received'")
+  expect(onMessageBlock).toContain('const cmd = parseCmd(msg.text)')
+  expect(onMessageBlock).toContain('auditInboundParsedCommand(ck, msg, cmd)')
+  expect(onMessageBlock.indexOf('const cmd = parseCmd(msg.text)')).toBeLessThan(onMessageBlock.indexOf('auditInboundParsedCommand(ck, msg, cmd)'))
+  expect(commandBlock).toContain("event: 'agent_command_received'")
+  expect(commandBlock).toContain("event: 'agent_command_executed'")
+  expect(commandBlock).toContain('🧭 Parsed command:')
+  expect(daemon).toContain("'capture_worker_report'")
+  expect(toolBlock).toContain('const visibleToolCommand = VISIBLE_TOOL_COMMAND_NAMES.has(msg.tool)')
+  expect(toolBlock).toContain("event: 'agent_tool_command_received'")
+  expect(toolBlock).toContain("event: 'agent_tool_command_executed'")
+  expect(toolBlock).toContain('🧭 Parsed tool command:')
+})
+
 
 test('channel tag message id extraction avoids any casts', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
@@ -2886,7 +2908,8 @@ test('reply tool keeps Slack thread broadcast parity', () => {
 test('tool errors clear active typing before returning to agent', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const block = daemon.slice(daemon.indexOf('async function handleTool'), daemon.indexOf('// ---------------------------------------------------------------------------\n// Permission request'))
-  expect(block).toContain("} catch (err) {\n    await clearAgentTyping(uuid)\n    sendToLive(route.responseUuid, { type: 'tool_error'")
+  expect(block).toContain("} catch (err) {\n    await clearAgentTyping(uuid)")
+  expect(block.indexOf('await clearAgentTyping(uuid)', block.indexOf('} catch (err) {'))).toBeLessThan(block.indexOf("sendToLive(route.responseUuid, { type: 'tool_error'"))
 })
 
 test('agent replies are visibly identity-prefixed and idempotent', () => {

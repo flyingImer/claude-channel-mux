@@ -170,7 +170,7 @@ export function slackSlashInboundMessage(body: unknown): InboundMessage | undefi
     userName: stringValue(payload.user_name) || userId,
     text: normalizeSlackSlashCommandText(command, text),
     messageId: '',
-    meta: { ts: new Date().toISOString() },
+    meta: { ts: new Date().toISOString(), source: 'slack_slash_command', command, raw_text: text },
   }
 }
 

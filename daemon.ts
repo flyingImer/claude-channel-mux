@@ -53,7 +53,7 @@ import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanSt
 import { findZellijSessionLine } from './zellij.js'
 import { commandLine, forwardedEnvExports, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
-import { parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
+import { agentCommandBodyAfterPrefix, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
 import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
@@ -4124,6 +4124,33 @@ type Cmd =
   | { t: 'msg_many'; text: string; runtimes: AgentRuntimeKind[]; cue?: string }
   | { t: 'msg'; text: string; runtime?: AgentRuntimeKind; cue?: string }
 
+function firstLine(text: string): string {
+  return text.split(/\r?\n/, 1)[0] ?? ''
+}
+
+function commandPreview(command: string): string {
+  return redactSensitiveText(command).replace(/\r/g, '').slice(0, 500)
+}
+
+function auditInboundParsedCommand(ck: string, msg: InboundMessage, cmd: Cmd): void {
+  if (msg.meta?.source !== 'slack_slash_command') return
+  auditEvent({
+    event: 'slack_slash_command_received',
+    room_id: ck,
+    platform: adapterFor(ck)?.platform ?? '',
+    channel_id: localId(ck),
+    thread_id: msg.replyToId ?? msg.messageId,
+    message_id: msg.messageId,
+    user_id: msg.userId ? createHash('sha256').update(msg.userId).digest('hex').slice(0, 16) : undefined,
+    command: msg.meta.command,
+    raw_text: typeof msg.meta.raw_text === 'string' ? commandPreview(msg.meta.raw_text) : undefined,
+    normalized_text: commandPreview(msg.text),
+    parsed_type: cmd.t,
+  })
+}
+
+const VISIBLE_TOOL_COMMAND_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report', 'ask_peer', 'chime_in'])
+
 function parseRuntimePrefix(args: string): { runtime?: AgentRuntimeKind; rest: string } {
   const m = args.match(/^(claude|cc|codex|cx)(?:\s+|$)(.*)$/i)
   if (!m) return { rest: args }
@@ -4234,9 +4261,9 @@ function parseCmd(text: string): Cmd {
   }
 
   // /cc xxx — Claude Code native slash command passthrough, with common CCM controls intercepted.
-  const ccMatch = c.match(/^\/cc[\s_]+(.+)/i)
-  if (ccMatch) {
-    const sub = ccMatch[1].trim()
+  const ccSub = agentCommandBodyAfterPrefix(c, 'cc')
+  if (ccSub !== undefined) {
+    const sub = ccSub.trim()
     if (/^help$/i.test(sub)) return { t: 'agent_command', runtime: 'claude', command: '/help' }
     if (/^(screen|ss)$/i.test(sub)) return { t: 'agent_command', runtime: 'claude', command: '/ss' }
     if (/^status$/i.test(sub)) return { t: 'agent_command', runtime: 'claude', command: '/status' }
@@ -4247,9 +4274,9 @@ function parseCmd(text: string): Cmd {
   }
 
   // /cx xxx — Codex CLI-compatible command proxy over app-server
-  const cxMatch = c.match(/^\/cx[\s_]+(.+)/i)
-  if (cxMatch) {
-    const sub = cxMatch[1].trim()
+  const cxSub = agentCommandBodyAfterPrefix(c, 'cx')
+  if (cxSub !== undefined) {
+    const sub = cxSub.trim()
     if (/^help$/i.test(sub)) return { t: 'agent_command', runtime: 'codex', command: '/help' }
     if (/^(screen|ss)$/i.test(sub)) return { t: 'agent_command', runtime: 'codex', command: '/ss' }
     if (/^nav(?:\s+.*)?$/i.test(sub)) return { t: 'agent_command', runtime: 'codex', command: '/' + sub }
@@ -5385,8 +5412,27 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
   const normalizedCommand = rawCommand.startsWith('/') ? rawCommand : `/${rawCommand}`
   const commandName = normalizedCommand.replace(/^\//, '').trim()
   const commandVerb = parseAgentCommandName(normalizedCommand)
+  const threadId = msg.replyToId ?? msg.messageId
+  const commandNoticeOpts = threadId ? { replyTo: threadId, broadcast: true } : undefined
+  const commandId = randomUUID()
+  auditEvent({
+    event: 'agent_command_received',
+    command_id: commandId,
+    room_id: ck,
+    platform: adapter?.platform ?? '',
+    channel_id: id,
+    thread_id: threadId,
+    message_id: msg.messageId,
+    runtime,
+    command: commandPreview(normalizedCommand),
+    command_name: commandVerb,
+    source: msg.meta?.source,
+    raw_slash_command: msg.meta?.command,
+    raw_slash_text: typeof msg.meta?.raw_text === 'string' ? commandPreview(msg.meta.raw_text) : undefined,
+  })
+  await sendChannelNotice(ck, formatAgentReply(runtime, `🧭 Parsed command: \`${firstLine(commandPreview(normalizedCommand))}\`\nExecuting on ${agentName(runtime)}.`), commandNoticeOpts, `${runtime} command parsed notice`)
   if (!commandVerb || commandVerb === 'help') {
-    await sendChannelNotice(ck, formatAgentReply(runtime, renderAgentCommandHelp(runtime)), undefined, `${runtime} command help`)
+    await sendChannelNotice(ck, formatAgentReply(runtime, renderAgentCommandHelp(runtime)), commandNoticeOpts, `${runtime} command help`)
     return true
   }
   const driver = agentRegistry.get(runtime)
@@ -5396,7 +5442,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
       `Unsupported Codex command: \`/cx ${commandName}\`.`,
       'CCM only proxies source-aligned Codex controls by default to avoid a fake TUI mismatch.',
       'Use `/cx help` for supported commands, or `/cx raw /command ...` to explicitly try an experimental raw Codex turn.',
-    ].join('\n')), undefined, 'codex unsupported command notice')
+    ].join('\n')), commandNoticeOpts, 'codex unsupported command notice')
     return false
   }
   if (runtime === 'codex' && commandVerb === 'model') {
@@ -5405,31 +5451,31 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
       clearAgentMetaField(ck, runtime, 'model')
       const liveUuid = bindingUuid(ck, runtime)
       if (liveUuid) codexDriver.setModelOverride(liveUuid, undefined)
-      await sendChannelNotice(ck, formatAgentReply(runtime, 'Codex model override cleared for this CCM room. Future Codex starts/resumes use Codex config default.'), undefined, 'codex model reset notice')
+      await sendChannelNotice(ck, formatAgentReply(runtime, 'Codex model override cleared for this CCM room. Future Codex starts/resumes use Codex config default.'), commandNoticeOpts, 'codex model reset notice')
       return true
     }
     if (model) {
       setAgentMeta(ck, runtime, { model })
       const liveUuid = bindingUuid(ck, runtime)
       if (liveUuid) codexDriver.setModelOverride(liveUuid, model)
-      await sendChannelNotice(ck, formatAgentReply(runtime, `Codex model override for this CCM room set to \`${model}\`. It applies to status/snapshot immediately and to model execution on the next Codex start/resume; global Codex config was not changed. Use \`/cx model reset\` to clear it.`), undefined, 'codex model set notice')
+      await sendChannelNotice(ck, formatAgentReply(runtime, `Codex model override for this CCM room set to \`${model}\`. It applies to status/snapshot immediately and to model execution on the next Codex start/resume; global Codex config was not changed. Use \`/cx model reset\` to clear it.`), commandNoticeOpts, 'codex model set notice')
       return true
     }
-    await sendChannelNotice(ck, formatAgentReply(runtime, `Codex model: ${configuredCodexModel(ck)}${agentMeta(ck, 'codex')?.model ? ' (CCM room override)' : ''}`), undefined, 'codex model status')
+    await sendChannelNotice(ck, formatAgentReply(runtime, `Codex model: ${configuredCodexModel(ck)}${agentMeta(ck, 'codex')?.model ? ' (CCM room override)' : ''}`), commandNoticeOpts, 'codex model status')
     return true
   }
   if (/^status$/i.test(commandName)) {
     if (runtime === 'claude') {
-      await sendChannelNotice(ck, formatAgentReply(runtime, roomSummary(ck).join('\n')), undefined, `${runtime} status summary`)
+      await sendChannelNotice(ck, formatAgentReply(runtime, roomSummary(ck).join('\n')), commandNoticeOpts, `${runtime} status summary`)
       return true
     }
     const codexUuid = bindingUuid(ck, runtime)
     if (!codexUuid) {
-      await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not started in this room.`), undefined, `${runtime} status not started notice`)
+      await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not started in this room.`), commandNoticeOpts, `${runtime} status not started notice`)
       return false
     }
     if (!codexSessions.get(codexUuid)) {
-      await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not currently loaded. Resume or cue it first.`), undefined, `${runtime} status not loaded notice`)
+      await sendChannelNotice(ck, formatAgentReply(runtime, `${agentName(runtime)} is not currently loaded. Resume or cue it first.`), commandNoticeOpts, `${runtime} status not loaded notice`)
       return false
     }
   }
@@ -5448,9 +5494,6 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
   const uuid = await ensureRoomAgentReady(ck, runtime, false)
   if (!uuid) return false
 
-  const threadId = msg.replyToId ?? msg.messageId
-  const commandNoticeOpts = { replyTo: threadId, broadcast: true }
-
   const session = runtime === 'codex'
     ? codexSessions.get(uuid)
     : claudeSessions.get(uuid) ?? claudeDriver.get(uuid)
@@ -5466,7 +5509,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
   }
 
   const command: AgentCommand = {
-    commandId: randomUUID(),
+    commandId,
     roomId: ck,
     channelKey: ck,
     platform: adapter?.platform ?? '',
@@ -5490,6 +5533,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
 
   try {
     const result = await driver.sendCommand({ session, command })
+    auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: commandVerb, ok: true })
     if (runtime === 'codex' && commandVerb === 'model') {
       const model = parseAgentCommandArgs(normalizedCommand)
       if (model) {
@@ -5500,6 +5544,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     if (result.display) await sendChannelNotice(ck, formatAgentReply(runtime, result.display), commandNoticeOpts, `${runtime} command result notice`)
     return true
   } catch (err) {
+    auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: commandVerb, ok: false, error: errorMessage(err) })
     await sendChannelNotice(ck, formatAgentReply(runtime, `❌ Command failed: ${errorMessage(err)}`), commandNoticeOpts, `${runtime} command failure notice`)
     return false
   }
@@ -5509,6 +5554,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
   const pendingReply = pendingCodexRequestForReply(ck, msg.replyToId)
   if (pendingReply && await resolveCodexServerRequestWithText(ck, msg, pendingReply[0], pendingReply[1])) return
   const cmd = parseCmd(msg.text)
+  auditInboundParsedCommand(ck, msg, cmd)
   const adapter = adapterFor(ck)
   const id = localId(ck)
 
@@ -5609,16 +5655,36 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
     case 'slash': {
       // /cc commands are Claude Code terminal commands; Codex app-server has no zellij pane here.
       const runtime: AgentRuntimeKind = 'claude'
+      const threadId = msg.replyToId ?? msg.messageId
+      const commandNoticeOpts = threadId ? { replyTo: threadId, broadcast: true } : undefined
+      const commandId = randomUUID()
+      auditEvent({
+        event: 'agent_command_received',
+        command_id: commandId,
+        room_id: ck,
+        platform: adapter?.platform ?? '',
+        channel_id: id,
+        thread_id: threadId,
+        message_id: msg.messageId,
+        runtime,
+        command: commandPreview(cmd.command),
+        command_name: parseAgentCommandName(cmd.command),
+        source: msg.meta?.source,
+        raw_slash_command: msg.meta?.command,
+        raw_slash_text: typeof msg.meta?.raw_text === 'string' ? commandPreview(msg.meta.raw_text) : undefined,
+        passthrough: true,
+      })
+      await sendChannelNotice(ck, formatAgentReply(runtime, `🧭 Parsed command: \`${firstLine(commandPreview(cmd.command))}\`\nExecuting on ${agentName(runtime)}.`), commandNoticeOpts, `${runtime} command parsed notice`)
       const uuid = bindingUuid(ck, runtime)
       if (!uuid) {
-        await sendWithButtons(ck, formatAgentReply('claude', 'No Claude agent slot session in this room.'), [{ text: '🚀 Start Claude', data: 'cmd:new:claude' }])
+        await sendWithButtons(ck, formatAgentReply('claude', 'No Claude agent slot session in this room.'), [{ text: '🚀 Start Claude', data: 'cmd:new:claude' }], commandNoticeOpts)
         return
       }
       const paneId = resolvePaneId(uuid.slice(0, 8))
       if (paneId === null) {
         await sendWithButtons(ck, formatAgentReply('claude', `Claude agent slot session \`${uuid.slice(0, 8)}\` is not running.`), [
           { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
-        ])
+        ], commandNoticeOpts)
         return
       }
       const before = dumpScreen(paneId)
@@ -5626,10 +5692,12 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       const writeOk = writeChars(paneId, cmd.command)
       const enterOk = writeOk ? sendKeys(paneId, 'Enter') : false
       if (!writeOk || !enterOk) {
-        await sendChannelNotice(ck, formatAgentReply('claude', `❌ Failed to send \`${cmd.command}\` to Claude session. Try \`/cc ss\` or resume the session.`), undefined, 'claude slash passthrough failure notice')
+        auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: parseAgentCommandName(cmd.command), ok: false, error: 'failed_to_send_keys' })
+        await sendChannelNotice(ck, formatAgentReply('claude', `❌ Failed to send \`${cmd.command}\` to Claude session. Try \`/cc ss\` or resume the session.`), commandNoticeOpts, 'claude slash passthrough failure notice')
         return
       }
-      await sendChannelNotice(ck, formatAgentReply('claude', `⚡ Sent \`${cmd.command}\` to Claude session.`), undefined, 'claude slash passthrough notice')
+      auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: parseAgentCommandName(cmd.command), ok: true })
+      await sendChannelNotice(ck, formatAgentReply('claude', `⚡ Sent \`${cmd.command}\` to Claude session.`), commandNoticeOpts, 'claude slash passthrough notice')
       // Detect interactive output (scroll views, confirms) immediately instead
       // of waiting for the 3s screen watcher poll. Without this, commands like
       // /btw leave the session stuck with no nav buttons in the channel.
@@ -6083,11 +6151,19 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
   const route = resolveToolCallRoute(callerUuid, msg.args)
   const uuid = route.sessionId
   const ck = route.channelKey
+  const visibleToolCommand = VISIBLE_TOOL_COMMAND_NAMES.has(msg.tool)
   try {
     let result: string
     const adapter = adapterFor(ck)
     const id = localId(ck)
     if (!adapter) throw new Error(`No adapter for ${ck}`)
+    if (visibleToolCommand) {
+      const roomId = optionalString(msg.args.room_id)
+      auditEvent({ event: 'agent_tool_command_received', call_id: msg.callId, tool: msg.tool, room_id: ck, target_room_id: roomId, from_session_id: uuid, from_agent: runtimeForUuid(uuid), args_preview: commandPreview(JSON.stringify(msg.args)) })
+      await sendChannelNotice(ck, formatAgentReply(runtimeForUuid(uuid), `🧭 Parsed tool command: \`${msg.tool}\`${roomId ? ` → ${roomId}` : ''}.`), undefined, 'agent tool command parsed notice').catch(err => {
+        process.stderr.write(`daemon: tool command parsed notice failed for ${ck}: ${errorMessage(err)}\n`)
+      })
+    }
 
     switch (msg.tool) {
       case 'reply': {
@@ -6305,9 +6381,11 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
       default:
         throw new Error(`unknown tool: ${msg.tool}`)
     }
+    if (visibleToolCommand) auditEvent({ event: 'agent_tool_command_executed', call_id: msg.callId, tool: msg.tool, room_id: ck, from_session_id: uuid, from_agent: runtimeForUuid(uuid), ok: true })
     sendToLive(route.responseUuid, { type: 'tool_result', callId: msg.callId, result })
   } catch (err) {
     await clearAgentTyping(uuid)
+    if (visibleToolCommand) auditEvent({ event: 'agent_tool_command_executed', call_id: msg.callId, tool: msg.tool, room_id: ck, from_session_id: uuid, from_agent: runtimeForUuid(uuid), ok: false, error: errorMessage(err) })
     sendToLive(route.responseUuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })
   }
 }

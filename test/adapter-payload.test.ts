@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test'
 import type { WebClient } from '@slack/web-api'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
-import { SlackAdapter, slackInteractionCallback } from '../adapters/slack.ts'
+import { SlackAdapter, slackInteractionCallback, slackSlashInboundMessage } from '../adapters/slack.ts'
 import { TelegramAdapter } from '../adapters/telegram.ts'
 
 
@@ -19,6 +19,22 @@ function blockText(block: Record<string, unknown> | undefined): string {
   const text = recordValue(block?.text)
   return typeof text?.text === 'string' ? text.text : ''
 }
+
+test('Slack slash inbound messages preserve multiline raw command metadata', () => {
+  const rawText = 'goal first line\nsecond line\nthird line'
+  const message = slackSlashInboundMessage({
+    command: '/cx',
+    text: rawText,
+    channel_id: 'C123',
+    user_id: 'U123',
+    user_name: 'alice',
+  })
+
+  expect(message?.text).toBe(`/cx ${rawText}`)
+  expect(message?.meta.source).toBe('slack_slash_command')
+  expect(message?.meta.command).toBe('/cx')
+  expect(message?.meta.raw_text).toBe(rawText)
+})
 
 test('Slack send/edit payloads preserve forwarded markdown styling and thread broadcast', async () => {
   const slack = new SlackAdapter({ botToken: 'xoxb-test', appToken: 'xapp-test', inboxDir: '/tmp' })
