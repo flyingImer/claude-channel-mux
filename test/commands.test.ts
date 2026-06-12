@@ -27,3 +27,11 @@ test('formatParsedAgentCommand preserves multiline command visibility', () => {
   const command = '/raw /goal first line\nsecond line\nthird line'
   expect(formatParsedAgentCommand(command)).toBe('🧭 Parsed command:\n```\n/raw /goal first line\nsecond line\nthird line\n```')
 })
+
+test('formatParsedAgentCommand preserves long command visibility', () => {
+  const tail = 'x'.repeat(900)
+  const command = `/raw /goal first line\n${tail}`
+  const formatted = formatParsedAgentCommand(command)
+  expect(formatted).toContain(tail)
+  expect(formatted).not.toContain('…')
+})

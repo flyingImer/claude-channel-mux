@@ -4128,8 +4128,12 @@ function commandPreview(command: string): string {
   return redactSensitiveText(command).replace(/\r/g, '').slice(0, 500)
 }
 
+function visibleCommandText(command: string): string {
+  return redactSensitiveText(command).replace(/\r/g, '')
+}
+
 function parsedCommandNotice(runtime: AgentRuntimeKind, command: string): string {
-  return formatAgentReply(runtime, `${formatParsedAgentCommand(commandPreview(command))}\nExecuting on ${agentName(runtime)}.`)
+  return formatAgentReply(runtime, `${formatParsedAgentCommand(visibleCommandText(command))}\nExecuting on ${agentName(runtime)}.`)
 }
 
 function auditInboundParsedCommand(ck: string, msg: InboundMessage, cmd: Cmd): void {
