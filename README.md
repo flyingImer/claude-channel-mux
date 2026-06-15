@@ -182,6 +182,8 @@ The plugin ships skills for both setup work and Agent Control Path operation:
 | `operate-orchestrator-room` | Human/operator setup, status, smoke tests, and troubleshooting |
 | `bootstrap-git-orchestration` | Seed or adopt durable `docs/orchestration/<initiative-id>/` state |
 | `guide-orchestration` | Define stage contracts, acceptance bars, audits, and human decision points |
+| `export-gp-packet` | Package ChatGPT/Guiding Principal advisory context for later import |
+| `import-gp-packet` | Persist and reconcile GP packets against durable Git context |
 | `orchestrate-workers` | Coordinate visible CCM worker rooms from a flagged orchestrator room |
 | `manage-worker-protocol` | Start, brief, monitor, prompt, stop, and interpret worker rooms |
 | `work-in-worker-room` | Execute a bounded worker task and report back to the orchestrator |
@@ -210,6 +212,7 @@ Create a new Git-backed orchestration structure with `bun run orchestration:new 
 Pass `--root <repo>/docs/orchestration` when bootstrapping another repo; the command copies the portable root instructions, state machine, and templates before creating the initiative.
 Adopt or repair an existing partial initiative with `bun run orchestration:adopt -- <initiative-id> [--repair]`.
 Capture pasted human, ChatGPT, or Guiding Principal context with `bun run orchestration:inbox -- <initiative-id> --kind intake|inbox --from <actor> --source-ref <ref>` so attribution and unread inbox semantics are durable.
+For ChatGPT-as-Guiding-Principal handoff, use `export-gp-packet` to produce a standardized advisory packet, then use `import-gp-packet` from the Orchestrator side to persist the raw packet, reconcile it with `intake.md`, `stage.md`, `state.md`, `decisions/`, unread inbox, and repo evidence, and write a conflict artifact instead of silently choosing between GP advice and durable Git state.
 Validate scaffold shape with `bun run validate:orchestration -- --root <repo>/docs/orchestration`; add `--ready` when checking that an initiative has no unresolved template placeholders before live dispatch.
 
 The lean path is intentional: start from durable intake, stage, worker state, orchestration state, and repo policy; add inbox, recall, audit, and recovery artifacts only when new context, uncertainty, risk, or failure makes them necessary.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Import GP Packet"
+  short_description: "Persist and reconcile GP packets"
+  default_prompt: "Use $import-gp-packet to import a Guiding Principal packet, persist raw content, reconcile durable state, and block material conflicts."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Export GP Packet"
+  short_description: "Package GP advisory context"
+  default_prompt: "Use $export-gp-packet to export Guiding Principal advice as a standardized advisory packet."

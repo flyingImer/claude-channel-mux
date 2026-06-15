@@ -78,7 +78,7 @@ function nextInboxPath(inboxDir: string, at: string, title: string): string {
 }
 
 function ensureInitiativeDirs(initiativeDir: string) {
-  for (const dir of ['', 'inbox', 'recall', 'decisions', 'reports', 'source-material']) {
+  for (const dir of ['', 'inbox', 'recall', 'decisions', 'reports', 'source-material', 'conflicts']) {
     mkdirSync(join(initiativeDir, dir), { recursive: true })
   }
 }

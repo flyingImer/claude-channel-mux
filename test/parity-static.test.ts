@@ -32,6 +32,8 @@ test('plugin ships CCM orchestration role skills', () => {
     'operate-orchestrator-room',
     'bootstrap-git-orchestration',
     'guide-orchestration',
+    'export-gp-packet',
+    'import-gp-packet',
     'orchestrate-workers',
     'manage-worker-protocol',
     'work-in-worker-room',
@@ -65,10 +67,15 @@ test('plugin ships CCM orchestration role skills', () => {
   expect(readFileSync('skills/bootstrap-git-orchestration/SKILL.md', 'utf8')).toContain('bun run orchestration:new')
   expect(readFileSync('skills/bootstrap-git-orchestration/SKILL.md', 'utf8')).toContain('bun run orchestration:adopt')
   expect(readFileSync('skills/bootstrap-git-orchestration/SKILL.md', 'utf8')).toContain('docs/checklists/git-orchestration-bootstrap.md')
+  expect(readFileSync('skills/bootstrap-git-orchestration/SKILL.md', 'utf8')).toContain('conflicts/')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('prompts/ccm/')
   expect(readFileSync('skills/work-in-worker-room/SKILL.md', 'utf8')).toContain('docs/orchestration/_templates/worker-report.md')
   expect(readFileSync('skills/guide-orchestration/SKILL.md', 'utf8')).toContain('docs/orchestration/_templates/guiding-principal-response.md')
   expect(readFileSync('skills/guide-orchestration/SKILL.md', 'utf8')).toContain('not a routine approval gate')
+  expect(readFileSync('skills/export-gp-packet/SKILL.md', 'utf8')).toContain('docs/orchestration/_templates/gp-packet.md')
+  expect(readFileSync('skills/export-gp-packet/SKILL.md', 'utf8')).toContain('Do not read, reconcile, mutate, or validate repo files')
+  expect(readFileSync('skills/import-gp-packet/SKILL.md', 'utf8')).toContain('bun run orchestration:inbox')
+  expect(readFileSync('skills/import-gp-packet/SKILL.md', 'utf8')).toContain('docs/orchestration/_templates/conflict.md')
   expect(readFileSync('skills/audit-worker-output/SKILL.md', 'utf8')).toContain('docs/orchestration/_templates/audit-report.md')
   expect(readFileSync('skills/recover-orchestration/SKILL.md', 'utf8')).toContain('docs/orchestration/_templates/recovery-note.md')
 })

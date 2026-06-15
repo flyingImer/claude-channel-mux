@@ -25,7 +25,7 @@ type Options = {
   force: boolean
 }
 
-const requiredDirs = ['inbox', 'recall', 'decisions', 'reports', 'source-material']
+const requiredDirs = ['inbox', 'recall', 'decisions', 'reports', 'source-material', 'conflicts']
 const requiredFiles = ['intake.md', 'stage.md', 'workers.md', 'state.md']
 const rootHarnessFiles = ['AGENTS.md', 'state-machine.md']
 const rootHarnessTemplateFiles = [
@@ -36,6 +36,8 @@ const rootHarnessTemplateFiles = [
   'inbox-item.md',
   'recall-packet.md',
   'guiding-principal-response.md',
+  'gp-packet.md',
+  'conflict.md',
   'worker-report.md',
   'audit-report.md',
   'recovery-note.md',

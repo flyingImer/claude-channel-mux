@@ -31,6 +31,8 @@ const requiredTemplates = [
   'inbox-item.md',
   'recall-packet.md',
   'guiding-principal-response.md',
+  'gp-packet.md',
+  'conflict.md',
   'worker-report.md',
   'audit-report.md',
   'recovery-note.md',
@@ -46,6 +48,7 @@ const requiredInitiativeEntries = [
   'decisions',
   'reports',
   'source-material',
+  'conflicts',
 ]
 
 const requiredInitiativeFileText: Record<string, string[]> = {
@@ -70,6 +73,8 @@ const requiredTemplateText: Record<string, string[]> = {
   'worker-report.md': ['# Worker Report:', '## Verification', '## Next Step'],
   'audit-report.md': ['# Audit Report:', '## Blocking', '## Recommended Orchestrator Action'],
   'guiding-principal-response.md': ['# Guiding Principal Response:', '## Decision Or Framing', '## Orchestrator Sanity Check'],
+  'gp-packet.md': ['# Guiding Principal Packet:', 'Status: advisory input, not source of truth', '## Repo Sanity Checks', '## Export Instructions'],
+  'conflict.md': ['# Orchestration Conflict:', '## GP Says', '## Git And Durable State Say', '## Blocking Rule'],
   'recovery-note.md': ['# Recovery Note:', '## External Facts', '## Next Action'],
 }
 

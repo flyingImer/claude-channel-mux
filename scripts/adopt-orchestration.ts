@@ -8,7 +8,7 @@ Validates an existing Git-backed CCM orchestration initiative. With --repair, cr
 `
 
 const requiredFiles = ['intake.md', 'stage.md', 'workers.md', 'state.md']
-const requiredDirs = ['inbox', 'recall', 'decisions', 'reports', 'source-material']
+const requiredDirs = ['inbox', 'recall', 'decisions', 'reports', 'source-material', 'conflicts']
 
 function fail(message: string): never {
   console.error(`${message}\n\n${usage}`)

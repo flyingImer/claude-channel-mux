@@ -29,6 +29,7 @@ docs/orchestration/<initiative-id>/
   decisions/
   reports/
   source-material/
+  conflicts/
 ```
 
 Seed files with durable facts, not chat vibes:
@@ -37,6 +38,7 @@ Seed files with durable facts, not chat vibes:
 - `stage.md`: current stage contract, non-goals, acceptance evidence, audit requirement.
 - `workers.md`: worker index with `worker_task_id`, desired room name, state, branch/worktree, room ids.
 - `state.md`: coordination branch, active orchestrator diagnostic identity, next-loop hints.
+- `conflicts/`: material mismatches between GP/human advice, durable state, repo evidence, active workers, or policy.
 
 ## Bootstrap Workflow
 

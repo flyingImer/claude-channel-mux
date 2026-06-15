@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -12,6 +12,8 @@ const templateNames = [
   'inbox-item.md',
   'recall-packet.md',
   'guiding-principal-response.md',
+  'gp-packet.md',
+  'conflict.md',
   'worker-report.md',
   'audit-report.md',
   'recovery-note.md',
@@ -33,12 +35,14 @@ test('orchestration workspace instructions enforce role and source-of-truth boun
     'Keep each loop to one next action',
     'Workers must not edit orchestration bookkeeping',
     'Guiding Principal or human input belongs in',
+    'source-material/` with attribution',
     'Humans and Guiding Principal are not expected to participate in worker-room execution',
     'required intervention to bind, start, prompt, debug, or unblock worker execution is an orchestration failure',
     'Guiding Principal responses provide human-context judgment',
     'isOrchestrator: true',
     'unsupported_capability',
     'Archive only after output is consumed',
+    'conflicts/` note',
     'Do not grant worker rooms `isOrchestrator` transitively',
     'state-machine.md',
   ]) {
@@ -77,6 +81,10 @@ test('canonical orchestration templates cover the durable initiative layout', ()
   expect(readFileSync('docs/orchestration/_templates/guiding-principal-response.md', 'utf8')).toContain('Orchestrator Sanity Check')
   expect(readFileSync('docs/orchestration/_templates/guiding-principal-response.md', 'utf8')).toContain('Source References')
   expect(readFileSync('docs/orchestration/_templates/guiding-principal-response.md', 'utf8')).toContain('Constraints')
+  expect(readFileSync('docs/orchestration/_templates/gp-packet.md', 'utf8')).toContain('advisory input, not source of truth')
+  expect(readFileSync('docs/orchestration/_templates/gp-packet.md', 'utf8')).toContain('Repo Sanity Checks')
+  expect(readFileSync('docs/orchestration/_templates/conflict.md', 'utf8')).toContain('Git And Durable State Say')
+  expect(readFileSync('docs/orchestration/_templates/conflict.md', 'utf8')).toContain('Do not silently resolve')
   expect(readFileSync('docs/orchestration/_templates/audit-report.md', 'utf8')).toContain('Blocking')
 })
 
@@ -164,6 +172,9 @@ test('orchestration checklists cover preflight dispatch integration and recovery
 })
 
 test('orchestration inbox script captures attributed intake and Guiding Principal supplements', () => {
+  const script = readFileSync('scripts/orchestration-inbox.ts', 'utf8')
+  expect(script).toContain("'conflicts'")
+
   const tempRoot = mkdtempSync(join(tmpdir(), 'ccm-orchestration-'))
   const bodyPath = join(tempRoot, 'body.md')
   writeFileSync(bodyPath, 'Human context about reader-facing framing.\n')
@@ -410,6 +421,25 @@ test('adopt orchestration script validates existing initiatives without overwrit
   ], { encoding: 'utf8' })
   expect(output).toContain('adopted')
   expect(readFileSync(intakePath, 'utf8')).toBe(before)
+
+  rmSync(join(tempRoot, 'demo', 'conflicts'), { recursive: true, force: true })
+  expect(() => execFileSync('bun', [
+    'scripts/adopt-orchestration.ts',
+    'demo',
+    '--root',
+    tempRoot,
+  ], { encoding: 'utf8', stdio: 'pipe' })).toThrow()
+
+  const repairOutput = execFileSync('bun', [
+    'scripts/adopt-orchestration.ts',
+    'demo',
+    '--root',
+    tempRoot,
+    '--repair',
+  ], { encoding: 'utf8' })
+  expect(repairOutput).toContain('created directories: conflicts')
+  expect(existsSync(join(tempRoot, 'demo', 'conflicts'))).toBe(true)
+  expect(execFileSync('bun', ['scripts/validate-orchestration.ts', '--root', tempRoot], { encoding: 'utf8' })).toContain('orchestration validation passed')
 })
 
 test('orchestration validation is wired into package validation', () => {
