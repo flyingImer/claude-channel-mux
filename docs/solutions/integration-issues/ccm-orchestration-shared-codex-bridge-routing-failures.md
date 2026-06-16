@@ -16,6 +16,8 @@ severity: critical
 tags: [ccm-orchestration, shared-codex-bridge, room-capability-token, daemon-singleton, agent-control-path]
 ---
 
+> Superseded on 2026-06-16: this incident originally fixed token propagation, but repeated native Codex TUI/internal-goal failures showed the token model blocks valid TUI-originated tasks. Shared Codex bridge calls now route by explicit `chat_id` plus the current Codex room binding.
+
 # CCM orchestration shared Codex bridge routing failures
 
 ## Problem

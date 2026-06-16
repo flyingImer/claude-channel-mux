@@ -1,5 +1,7 @@
 # Shared Codex App-Server Capability Routing Plan
 
+> Superseded on 2026-06-16: room-session capability tokens were removed. Shared Codex bridge tool calls now route by explicit `chat_id` plus the current Codex room binding, then reuse bound-room authorization. Keep this document as historical design context only.
+
 Date: 2026-06-09
 
 ## Objective

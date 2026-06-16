@@ -33,7 +33,7 @@ import { homedir } from 'os'
 import { join, basename, resolve as resolvePath } from 'path'
 import { createServer, type Server as NetServer, type Socket } from 'net'
 import { execFile, execFileSync, spawn, type ChildProcess } from 'child_process'
-import { createHash, randomBytes, randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { promisify } from 'util'
 import type { ButtonItem, ChannelAdapter, InboundMessage, SendOptions } from './adapters/types.js'
 import { SlackAdapter } from './adapters/slack.js'
@@ -164,7 +164,6 @@ const CODEX_PENDING_REQUESTS_FILE = join(STATE_DIR, 'codex-pending-requests.json
 const COLLAB_STATE_FILE = join(STATE_DIR, 'collabs.json')
 const RECENT_AGENT_REPLIES_FILE = join(STATE_DIR, 'recent-agent-replies.json')
 const AUDIT_LOG_FILE = join(STATE_DIR, 'audit.jsonl')
-const CODEX_ROOM_TOKENS_FILE = join(STATE_DIR, 'codex-room-tokens.json')
 const SHARED_CODEX_BRIDGE_ID = 'ccm-shared-codex-app-server'
 // Page size now comes from adapter.pageSize
 const CC_PROJECTS_DIR = join(homedir(), '.claude', 'projects')
@@ -417,83 +416,6 @@ function migrateBindingsFile(): void {
   if (JSON.stringify(raw) !== JSON.stringify(sanitized)) saveBindings(sanitized)
 }
 
-type CodexRoomToken = {
-  token: string
-  tokenHash: string
-  sessionId: string
-  chatId: string
-  bindingGeneration: string
-  createdAt: number
-  lastUsedAt?: number
-}
-
-function tokenHash(token: string): string {
-  return createHash('sha256').update(token).digest('hex')
-}
-
-function tokenFingerprint(tokenOrHash: string): string {
-  return tokenOrHash.slice(0, 12)
-}
-
-function codexRoomTokensFromJson(value: unknown): Map<string, CodexRoomToken> {
-  const record = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  const tokens = new Map<string, CodexRoomToken>()
-  for (const [hash, raw] of Object.entries(record)) {
-    const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined
-    if (!item) continue
-    const token = typeof item.token === 'string' ? item.token : undefined
-    const sessionId = typeof item.sessionId === 'string' ? item.sessionId : undefined
-    const chatId = typeof item.chatId === 'string' ? item.chatId : undefined
-    const bindingGeneration = typeof item.bindingGeneration === 'string' ? item.bindingGeneration : undefined
-    const createdAt = typeof item.createdAt === 'number' && Number.isFinite(item.createdAt) ? item.createdAt : undefined
-    const lastUsedAt = typeof item.lastUsedAt === 'number' && Number.isFinite(item.lastUsedAt) ? item.lastUsedAt : undefined
-    if (!token || !sessionId || !chatId || !bindingGeneration || createdAt === undefined) continue
-    tokens.set(hash, { token, tokenHash: hash, sessionId, chatId, bindingGeneration, createdAt, ...(lastUsedAt === undefined ? {} : { lastUsedAt }) })
-  }
-  return tokens
-}
-
-const codexRoomTokens = codexRoomTokensFromJson(readJsonValueFile(CODEX_ROOM_TOKENS_FILE))
-
-function saveCodexRoomTokens(): void {
-  const tmp = CODEX_ROOM_TOKENS_FILE + '.tmp'
-  writeFileSync(tmp, JSON.stringify(Object.fromEntries(codexRoomTokens), null, 2) + '\n', { mode: 0o600 })
-  renameSync(tmp, CODEX_ROOM_TOKENS_FILE)
-}
-
-function newCodexRoomToken(ck: string, sessionId: string, bindingGeneration: string): string {
-  for (const [hash, token] of codexRoomTokens) {
-    if (token.chatId === ck) codexRoomTokens.delete(hash)
-  }
-  const token = randomBytes(32).toString('base64url')
-  const hash = tokenHash(token)
-  codexRoomTokens.set(hash, { token, tokenHash: hash, sessionId, chatId: ck, bindingGeneration, createdAt: Date.now() })
-  saveCodexRoomTokens()
-  return token
-}
-
-function invalidateCodexRoomToken(ck: string, sessionId?: string): void {
-  let changed = false
-  for (const [hash, token] of codexRoomTokens) {
-    if (token.chatId !== ck) continue
-    if (sessionId && token.sessionId !== sessionId) continue
-    codexRoomTokens.delete(hash)
-    changed = true
-  }
-  if (changed) saveCodexRoomTokens()
-}
-
-function codexRoomTokenForSession(ck: string, sessionId: string): string | undefined {
-  for (const token of codexRoomTokens.values()) {
-    if (token.chatId === ck && token.sessionId === sessionId) return token.token
-  }
-  return undefined
-}
-
-function codexTurnMeta(ck: string, sessionId: string, meta: Record<string, unknown>): Record<string, unknown> {
-  const token = codexRoomTokenForSession(ck, sessionId)
-  return token ? { ...meta, ccm_room_token: token } : meta
-}
 
 function restoreBindingSnapshot(ck: string, snapshot: ChannelBinding | undefined): void {
   const b = loadBindings()
@@ -516,9 +438,8 @@ function setBindingSession(ck: string, runtime: AgentRuntimeKind, uuid: string, 
   const binding = normalizeBinding(b[ck])
   binding.sessions[runtime] = uuid
   if (runtime === 'codex') {
-    const bindingGeneration = randomUUID()
-    binding.agentMeta.codex = { ...(binding.agentMeta.codex ?? {}), bindingGeneration }
-    newCodexRoomToken(ck, uuid, bindingGeneration)
+    const { bindingGeneration: _bindingGeneration, ...keptMeta } = binding.agentMeta.codex ?? {}
+    binding.agentMeta.codex = keptMeta
   }
   if (makeActive) {
     binding.active = runtime
@@ -537,7 +458,6 @@ function removeBindingSession(ck: string, runtime?: AgentRuntimeKind): { uuid: s
   const uuid = binding.sessions[targetRuntime]
   if (!uuid) return null
   delete binding.sessions[targetRuntime]
-  if (targetRuntime === 'codex') invalidateCodexRoomToken(ck, uuid)
   if (binding.active === targetRuntime) {
     const fallbackRuntime = AGENT_RUNTIMES.find(r => !!binding.sessions[r])
     if (fallbackRuntime) binding.active = fallbackRuntime
@@ -576,43 +496,15 @@ function canonicalToolChannelKey(uuid: string, requestedCk: string): string {
   throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to session ${uuid.slice(0, 8)}; bound room(s): ${boundRooms.join(', ')}`)
 }
 
-function resolveSharedCodexToolCall(args: Record<string, unknown>): { sessionId: string; channelKey: string } {
-  const rawToken = optionalString(args.ccm_room_token)
-  const requestedCk = optionalString(args.chat_id) ?? ''
-  if (!rawToken) {
-    auditEvent({ event: 'capability_token_missing', requested_room_id: requestedCk, from_agent: 'codex' })
-    throw new Error('Shared Codex bridge tool call missing ccm_room_token; send the request through the CCM room with `/cx goal ...` or `codex:` so the turn includes <ccm_turn ccm_room_token="...">')
-  }
-  if (rawToken === SHARED_CODEX_BRIDGE_ID) {
-    auditEvent({ event: 'capability_token_bridge_id_used', requested_room_id: requestedCk, from_agent: 'codex' })
-    throw new Error('ccm-shared-codex-app-server is a shared bridge id, not a ccm_room_token; use the opaque token from <ccm_turn> by sending the request through CCM `/cx goal ...` or `codex:`')
-  }
-  const hash = tokenHash(rawToken)
-  const token = codexRoomTokens.get(hash)
-  if (!token) {
-    auditEvent({ event: 'capability_token_unknown', token_fingerprint: tokenFingerprint(hash), requested_room_id: requestedCk, from_agent: 'codex' })
-    throw new Error('Shared Codex bridge tool call used an unknown ccm_room_token')
-  }
-  if (requestedCk && requestedCk !== token.chatId) {
-    auditEvent({ event: 'capability_token_chat_mismatch', token_fingerprint: tokenFingerprint(hash), requested_room_id: requestedCk, token_room_id: token.chatId, from_session_id: token.sessionId, from_agent: 'codex' })
-    throw new Error(`Tool chat_id ${requestedCk} does not match ccm_room_token room ${token.chatId}`)
-  }
-  const binding = normalizeBinding(loadBindings()[token.chatId])
-  const currentSession = binding.sessions.codex
-  const currentGeneration = binding.agentMeta.codex?.bindingGeneration
-  if (currentSession !== token.sessionId || currentGeneration !== token.bindingGeneration) {
-    auditEvent({ event: 'capability_token_binding_stale', token_fingerprint: tokenFingerprint(hash), token_room_id: token.chatId, from_session_id: token.sessionId, current_session_id: currentSession, from_agent: 'codex' })
-    throw new Error('Shared Codex bridge tool call used a stale ccm_room_token')
-  }
-  token.lastUsedAt = Date.now()
-  saveCodexRoomTokens()
-  return { sessionId: token.sessionId, channelKey: token.chatId }
-}
-
 function resolveToolCallRoute(callerUuid: string, args: Record<string, unknown>): { responseUuid: string; sessionId: string; channelKey: string } {
   if (callerUuid === SHARED_CODEX_BRIDGE_ID) {
-    const resolved = resolveSharedCodexToolCall(args)
-    return { responseUuid: callerUuid, sessionId: resolved.sessionId, channelKey: resolved.channelKey }
+    const requestedCk = stringValue(args.chat_id)
+    const sessionId = bindingUuid(requestedCk, 'codex')
+    if (!sessionId) {
+      auditEvent({ event: 'tool_chat_id_mismatch', reason: 'shared_codex_room_not_bound', requested_room_id: requestedCk, from_session_id: callerUuid, from_agent: 'codex' })
+      throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to a Codex session`)
+    }
+    return { responseUuid: callerUuid, sessionId, channelKey: canonicalToolChannelKey(sessionId, requestedCk) }
   }
   const requestedCk = stringValue(args.chat_id)
   return { responseUuid: callerUuid, sessionId: callerUuid, channelKey: canonicalToolChannelKey(callerUuid, requestedCk) }
@@ -2393,7 +2285,7 @@ async function injectObserverChimeIn(chime: ObserverChimeIn): Promise<string> {
     addressedAgent: chime.toRuntime,
     defaultAgent: binding.active,
     peerAgents: agentPeerPointers(binding, chime.toRuntime, chime.roomId, chime.threadId),
-    meta: codexTurnMeta(chime.roomId, chime.toUuid, {
+    meta: {
       chat_id: chime.roomId,
       room_id: chime.roomId,
       cwd: roomCwd(chime.roomId),
@@ -2406,7 +2298,7 @@ async function injectObserverChimeIn(chime: ObserverChimeIn): Promise<string> {
       chime_in_from_agent: chime.fromRuntime,
       chime_in_from_session_id: chime.fromUuid,
       peer_agents: JSON.stringify(agentPeerPointers(binding, chime.toRuntime, chime.roomId, chime.threadId)),
-    }),
+    },
   }
   auditEvent({ event: 'chime_in_payload', chime_id: chime.chimeId, collab_id: chime.collabId, room_id: chime.roomId, thread_id: chime.threadId, from_agent: chime.fromRuntime, to_agent: chime.toRuntime, from_session_id: chime.fromUuid, to_session_id: chime.toUuid, message_id: chime.messageId, bytes: payloadBytes(turn.text), peer_agents_bytes: payloadBytes(JSON.stringify(turn.peerAgents)), truncated: payload.truncated })
   const nativeTurnId = await agentRegistry.get(chime.toRuntime).sendTurn({ session, turn })
@@ -2507,7 +2399,7 @@ async function injectPeerReply(inflight: AskPeerInflight, text: string, messageI
       addressedAgent: inflight.fromRuntime,
       defaultAgent: binding.active,
       peerAgents: agentPeerPointers(binding, inflight.fromRuntime, inflight.roomId, inflight.threadId),
-      meta: inflight.fromRuntime === 'codex' ? codexTurnMeta(inflight.roomId, inflight.fromUuid, {
+      meta: inflight.fromRuntime === 'codex' ? {
         chat_id: inflight.roomId,
         room_id: inflight.roomId,
         cwd: roomCwd(inflight.roomId),
@@ -2520,7 +2412,7 @@ async function injectPeerReply(inflight: AskPeerInflight, text: string, messageI
         peer_reply_from_agent: inflight.peer,
         peer_reply_from_session_id: inflight.peerUuid,
         peer_agents: JSON.stringify(agentPeerPointers(binding, inflight.fromRuntime, inflight.roomId, inflight.threadId)),
-      }) : {
+      } : {
         chat_id: inflight.roomId,
         room_id: inflight.roomId,
         cwd: roomCwd(inflight.roomId),
@@ -4135,7 +4027,6 @@ async function killSessionIfUnboundEverywhere(uuid: string, runtime: AgentRuntim
 
 async function stopRoomMappedSession(ck: string, runtime: AgentRuntimeKind, uuid: string): Promise<void> {
   setAgentDesiredRunning(ck, runtime, false)
-  if (runtime === 'codex') invalidateCodexRoomToken(ck, uuid)
   await killSession(uuid)
 }
 
@@ -4151,7 +4042,6 @@ function roomHasResettableState(ck: string): boolean {
 async function deleteRoomState(ck: string): Promise<void> {
   const binding = normalizeBinding(loadBindings()[ck])
   for (const entry of bindingSessionEntries(binding)) {
-    if (entry.runtime === 'codex') invalidateCodexRoomToken(ck, entry.uuid)
     await killSession(entry.uuid)
   }
   const b = loadBindings()
@@ -4857,7 +4747,7 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
       addressedAgent: runtime,
       defaultAgent: binding.active,
       peerAgents,
-      meta: codexTurnMeta(ck, uuid, meta),
+      meta: meta,
     }
     try {
       await agentRegistry.get(runtime).sendTurn({ session, turn })
@@ -5614,7 +5504,7 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     messageId: msg.messageId,
     cwd: roomCwd(ck),
     command: normalizedCommand,
-    meta: runtime === 'codex' ? codexTurnMeta(ck, uuid, meta) : meta,
+    meta,
   }
 
   try {
@@ -6114,7 +6004,7 @@ async function routeCue(cue: AgentCue): Promise<string> {
     addressedAgent: peer,
     defaultAgent: binding.active,
     peerAgents,
-    meta: peer === 'codex' ? codexTurnMeta(ck, peerUuid, {
+    meta: peer === 'codex' ? {
       chat_id: ck,
       room_id: ck,
       cwd: roomCwd(ck),
@@ -6131,7 +6021,7 @@ async function routeCue(cue: AgentCue): Promise<string> {
       asked_by_agent: fromRuntime,
       asked_by_session_id: fromUuid,
       peer_agents: JSON.stringify(peerAgents),
-    }) : {
+    } : {
       chat_id: ck,
       room_id: ck,
       cwd: roomCwd(ck),

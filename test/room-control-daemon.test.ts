@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs'
 import { test, expect } from 'bun:test'
 
-test('MCP exposes the V1 room lifecycle and parent worker execution tools with room token fields', () => {
+test('MCP exposes the V1 room lifecycle and parent worker execution tools with bound-room routing', () => {
   const server = readFileSync('server.ts', 'utf8')
 
   expect(server).toContain("name: 'create_room_with_bot_invited'")
@@ -16,14 +16,13 @@ test('MCP exposes the V1 room lifecycle and parent worker execution tools with r
   expect(server).toContain('start or resume the assigned worker agent in a bound worker room from the current Orchestrator parent room')
   expect(server).toContain('send a bounded Worker Task to a started/bound worker room from the current Orchestrator parent room')
   expect(server).toContain('retrieve worker-room transcript/reportback facts from the current Orchestrator parent room')
-  expect(server).toContain('must match this call\\\'s ccm_room_token room')
   expect(server).toContain('do not use the desired/new worker room as chat_id')
-  expect(server).toContain("ccm_room_token")
+  expect(server).not.toContain("ccm_room_token")
   expect(server).not.toContain("name: 'create_telegram_room'")
   expect(server).not.toContain("name: 'adopt_room'")
 })
 
-test('daemon room control routes are gated by token, adapter, and orchestrator flag', () => {
+test('daemon room control routes are gated by bound room, adapter, and orchestrator flag', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
 
   expect(daemon).toContain('assertOrchestratorRoom(route.channelKey)')

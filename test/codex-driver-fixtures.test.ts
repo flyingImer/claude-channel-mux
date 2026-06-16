@@ -432,7 +432,7 @@ test('Codex goal command interrupts active turn and starts replacement goal turn
   expect(runtime.turnThreads.get('native-goal')).toBe('msg')
 })
 
-test('Codex goal command without attachments preserves CCM room token envelope', async () => {
+test('Codex goal command without attachments preserves CCM room envelope', async () => {
   const d = driver()
   const calls: Array<{ method: string; params: JsonObject }> = []
   const session = codexSession('goal-session', 'goal-thread')
@@ -446,14 +446,13 @@ test('Codex goal command without attachments preserves CCM room token envelope',
   d.runtimes.set('goal-session', testRuntime(session, client))
   const base = {
     commandId: 'goal-cmd', roomId: 'slack:C123', channelKey: 'slack:C123', platform: 'slack', channelId: 'C123', threadId: '171000.1', messageId: '171000.1', cwd: '/tmp',
-    meta: { chat_id: 'slack:C123', ccm_room_token: 'room-token' },
+    meta: { chat_id: 'slack:C123' },
   }
 
   await d.sendCommand({ session, command: { ...base, command: '/goal orchestrate worker rooms' } })
 
   const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
   expect(text).toContain('<ccm_turn')
-  expect(text).toContain('ccm_room_token="room-token"')
   expect(text).toContain('<message_meta trust="untrusted">')
   expect(text).toContain('<current_message>Replace the current CCM Codex goal')
 })
@@ -477,7 +476,6 @@ test('Codex goal command turn preserves Slack attachment metadata for download',
       chat_id: 'slack:C123',
       message_id: '171000.1',
       thread_id: '171000.1',
-      ccm_room_token: 'room-token',
     },
   }
 
@@ -485,7 +483,6 @@ test('Codex goal command turn preserves Slack attachment metadata for download',
 
   const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
   expect(text).toContain('<ccm_turn')
-  expect(text).toContain('ccm_room_token="room-token"')
   expect(text).toContain('<message_meta trust="untrusted">')
   expect(text).toContain('"attachment_file_id":"FSLACK1"')
   expect(text).toContain('"attachment_name":"context.md"')
@@ -513,7 +510,6 @@ test('Codex raw command turn preserves Slack attachment metadata for download', 
       chat_id: 'slack:C123',
       message_id: '171000.1',
       thread_id: '171000.1',
-      ccm_room_token: 'room-token',
     },
   }
 
@@ -554,7 +550,6 @@ test('Codex raw command turn preserves Telegram attachment metadata for download
       chat_id: 'telegram:-1001',
       message_id: '7',
       thread_id: '7',
-      ccm_room_token: 'telegram-token',
     },
   }
 
@@ -562,7 +557,6 @@ test('Codex raw command turn preserves Telegram attachment metadata for download
 
   const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
   expect(text).toContain('<ccm_turn')
-  expect(text).toContain('ccm_room_token="telegram-token"')
   expect(text).toContain('"attachment_file_id":"TGFILE1"')
   expect(text).toContain('"attachment_name":"diagram.png"')
   expect(text).toContain('"attachment_mime":"image/png"')
@@ -599,7 +593,6 @@ test('Codex goal command turn preserves Telegram attachment metadata for downloa
       chat_id: 'telegram:-1002',
       message_id: '8',
       thread_id: '8',
-      ccm_room_token: 'telegram-token',
     },
   }
 
@@ -745,15 +738,15 @@ test('Codex turn envelope includes whitelisted message meta but not arbitrary me
   expect(text).not.toContain('NOPE')
 })
 
-test('Codex turn envelope includes ccm_room_token for shared app-server tool calls', () => {
+test('Codex turn envelope omits legacy token metadata for shared app-server tool calls', () => {
   const d = driver()
   const text = d.formatTurn({
     turnId: 'turn', roomId: 'slack:C', channelKey: 'slack:C', platform: 'slack', channelId: 'C', threadId: 'T', messageId: 'M', cwd: '/tmp', text: 'hello',
     addressedAgent: 'codex', defaultAgent: 'claude', peerAgents: [],
-    meta: { ccm_room_token: 'opaque-token', chat_id: 'slack:C' },
+    meta: { legacy_room_token: 'opaque-token', chat_id: 'slack:C' },
   })
-  expect(text).toContain('ccm_room_token="opaque-token"')
-  expect(text).toContain('ccm_room_token')
+  expect(text).not.toContain('legacy_room_token')
+  expect(text).toContain('chat_id="slack:C"')
 })
 
 

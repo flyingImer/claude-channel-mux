@@ -16,7 +16,7 @@
             "required": { "const": ["chat_id", "parent_chat_id", "desired_room_name"] },
             "properties": {
               "type": "array",
-              "items": { "enum": ["chat_id", "ccm_room_token", "parent_chat_id", "desired_room_name"] }
+              "items": { "enum": ["chat_id", "parent_chat_id", "desired_room_name"] }
             }
           }
         },
@@ -27,7 +27,7 @@
             "required": { "const": ["chat_id", "room_id"] },
             "properties": {
               "type": "array",
-              "items": { "enum": ["chat_id", "ccm_room_token", "room_id"] }
+              "items": { "enum": ["chat_id", "room_id"] }
             }
           }
         },
@@ -38,7 +38,7 @@
             "required": { "const": ["chat_id", "room_id", "cwd", "runtime"] },
             "properties": {
               "type": "array",
-              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "cwd", "runtime"] }
+              "items": { "enum": ["chat_id", "room_id", "cwd", "runtime"] }
             }
           }
         },
@@ -49,7 +49,7 @@
             "required": { "const": ["chat_id", "room_id", "runtime"] },
             "properties": {
               "type": "array",
-              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "runtime"] }
+              "items": { "enum": ["chat_id", "room_id", "runtime"] }
             }
           }
         },
@@ -60,7 +60,7 @@
             "required": { "const": ["chat_id", "room_id", "runtime", "text"] },
             "properties": {
               "type": "array",
-              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "runtime", "text", "thread_id"] }
+              "items": { "enum": ["chat_id", "room_id", "runtime", "text", "thread_id"] }
             }
           }
         },
@@ -71,7 +71,7 @@
             "required": { "const": ["chat_id", "room_id", "runtime"] },
             "properties": {
               "type": "array",
-              "items": { "enum": ["chat_id", "ccm_room_token", "room_id", "runtime", "limit"] }
+              "items": { "enum": ["chat_id", "room_id", "runtime", "limit"] }
             }
           }
         }

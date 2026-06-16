@@ -15,6 +15,8 @@ severity: high
 tags: [codex, slack-attachments, ccm-room-token, mcp-tools, regression-test]
 ---
 
+> Superseded on 2026-06-16: attachment command turns still need the CCM envelope for attachment metadata, but no longer need room tokens. Shared Codex bridge calls now route by explicit `chat_id` plus the current Codex room binding.
+
 # Codex attachment command turns need room tokens
 
 ## Problem

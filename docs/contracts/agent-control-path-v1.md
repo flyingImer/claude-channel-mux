@@ -11,7 +11,7 @@ The product intent is hands-off execution after direction is set: humans and the
 Input:
 
 - `chat_id`: current orchestrator room channel key.
-- `ccm_room_token`: opaque room-session token when required by the runtime.
+- `chat_id`: current parent/orchestrator room key used for bound-session routing.
 - `parent_chat_id`: parent room channel key whose eligible ordinary members may be invited best-effort.
 - `desired_room_name`: Orchestrator-owned desired worker room name.
 
@@ -26,7 +26,7 @@ Result facts:
 Input:
 
 - `chat_id`: current orchestrator room channel key.
-- `ccm_room_token`: opaque room-session token when required by the runtime.
+- `chat_id`: current parent/orchestrator room key used for bound-session routing.
 - `room_id`: platform-local worker room id to archive.
 
 Result facts:
@@ -40,7 +40,7 @@ Result facts:
 Input:
 
 - `chat_id`: current orchestrator room channel key.
-- `ccm_room_token`: opaque room-session token when required by the runtime.
+- `chat_id`: current parent/orchestrator room key used for bound-session routing.
 - `room_id`: worker room channel key or platform-local id returned by create/adopt.
 - `cwd`: absolute working directory for the worker room.
 - `runtime`: default worker agent runtime, `claude` or `codex`.
@@ -56,7 +56,7 @@ Result facts:
 Input:
 
 - `chat_id`: current orchestrator room channel key.
-- `ccm_room_token`: opaque room-session token when required by the runtime.
+- `chat_id`: current parent/orchestrator room key used for bound-session routing.
 - `room_id`: worker room channel key or platform-local id.
 - `runtime`: worker agent runtime, `claude` or `codex`.
 
@@ -71,7 +71,7 @@ Result facts:
 Input:
 
 - `chat_id`: current orchestrator room channel key.
-- `ccm_room_token`: opaque room-session token when required by the runtime.
+- `chat_id`: current parent/orchestrator room key used for bound-session routing.
 - `room_id`: worker room channel key or platform-local id.
 - `runtime`: worker agent runtime, `claude` or `codex`.
 - `text`: bounded Worker Task prompt.
@@ -88,7 +88,7 @@ Result facts:
 Input:
 
 - `chat_id`: current orchestrator room channel key.
-- `ccm_room_token`: opaque room-session token when required by the runtime.
+- `chat_id`: current parent/orchestrator room key used for bound-session routing.
 - `room_id`: worker room channel key or platform-local id.
 - `runtime`: worker agent runtime, `claude` or `codex`.
 - `limit`: optional maximum transcript entries to return.

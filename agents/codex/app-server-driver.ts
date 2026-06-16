@@ -746,7 +746,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   private commandHasCcmRoomMetadata(command: import('../types.js').AgentCommand): boolean {
-    return ['ccm_room_token', 'chat_id', 'room_id']
+    return ['chat_id', 'room_id']
         .some(key => typeof command.meta[key] === 'string' && command.meta[key] !== '')
   }
 
@@ -857,12 +857,10 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   private formatTurn(turn: AgentTurn): string {
-    const ccmRoomToken = typeof turn.meta.ccm_room_token === 'string' ? turn.meta.ccm_room_token : ''
     const attrs = [
       `source="claude-channel-mux"`,
       `room_id="${escapeXmlAttr(turn.roomId)}"`,
       `chat_id="${escapeXmlAttr(turn.channelKey)}"`,
-      ...(ccmRoomToken ? [`ccm_room_token="${escapeXmlAttr(ccmRoomToken)}"`] : []),
       `cwd="${escapeXmlAttr(turn.cwd)}"`,
       `addressed_agent="${turn.addressedAgent}"`,
       `default_agent="${turn.defaultAgent}"`,
@@ -902,7 +900,6 @@ ${meta ? `<message_meta trust="untrusted">${meta}</message_meta>\n` : ''}${attac
       'user_id',
       'chat_id',
       'room_id',
-      'ccm_room_token',
     ]
     const picked: Record<string, string> = {}
     for (const key of allowed) {

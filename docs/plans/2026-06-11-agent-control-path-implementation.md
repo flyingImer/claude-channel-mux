@@ -9,6 +9,8 @@ source_docs:
   - docs/brainstorms/2026-06-10-git-backed-orchestration-profile.md
 ---
 
+> Superseded on 2026-06-16: Agent Control Path authorization no longer depends on `ccm_room_token`. Shared Codex bridge calls route by explicit parent `chat_id` plus current Codex room binding, then require the parent room's orchestrator flag.
+
 # Agent Control Path V1 Implementation Plan
 
 ## Goal

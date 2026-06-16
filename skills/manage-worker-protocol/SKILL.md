@@ -9,7 +9,7 @@ Use this for Orchestrator-to-Worker operations after bootstrap. Keep worker room
 
 This protocol only applies to visible CCM Worker Rooms controlled by the Orchestrator parent room. Do not use Codex native subagents, `spawn_agent`, model-side delegation, or hidden parallel agents as worker execution.
 
-Worker-room lifecycle tools require the opaque `ccm_room_token` from the current `<ccm_turn>`. Native Codex `/goal` turns and Codex goal continuations do not carry that token. Never pass `CC_CHANNEL_SESSION_UUID`, `CODEX_CHANNEL_SESSION_UUID`, or `ccm-shared-codex-app-server` as `ccm_room_token`; ask for a fresh CCM-delivered `/cx goal ...` or `codex:` cue instead.
+Worker-room lifecycle tools require the opaque `chat_id` from the current `<ccm_turn>`. Native Codex `/goal` turns and Codex goal continuations do not carry that token. Never pass `CC_CHANNEL_SESSION_UUID`, `CODEX_CHANNEL_SESSION_UUID`, or `ccm-shared-codex-app-server` as `chat_id`; ask for a fresh CCM-delivered `/cx goal ...` or `codex:` cue instead.
 
 ## Protocol Steps
 
