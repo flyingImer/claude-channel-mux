@@ -9,6 +9,7 @@ export type CodexWorktreeMode = string
 export type CodexResolvedConfig = {
   command: string[]
   launchArgs: string[]
+  configArgs: string[]
   appServerListen: CodexAppServerListen
   worktreeMode: CodexWorktreeMode
   home: string
@@ -27,6 +28,17 @@ export function codexLaunchArgs(model?: string): string[] {
   const args: string[] = []
   if (model) args.push('-m', model)
   return args
+}
+
+export function codexConfigArgsFromEnv(env: NodeJS.ProcessEnv): string[] {
+  const raw = (env.CCM_CODEX_CONFIG_ARGS ?? env.CHANNEL_DAEMON_CODEX_CONFIG_ARGS ?? '').trim()
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) && parsed.every(item => typeof item === 'string') ? parsed : []
+  } catch {
+    return []
+  }
 }
 
 export function codexApprovalPolicyFromEnv(env: NodeJS.ProcessEnv): CodexApprovalPolicy {
@@ -55,6 +67,7 @@ export function codexResolvedConfigFromEnv(env: NodeJS.ProcessEnv, modelOverride
   return {
     command: commandPrefix(env.CODEX_BIN, 'codex'),
     launchArgs: codexLaunchArgs(model),
+    configArgs: codexConfigArgsFromEnv(env),
     appServerListen,
     worktreeMode,
     home,

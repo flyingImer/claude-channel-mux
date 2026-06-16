@@ -10,10 +10,12 @@ test('Codex resolved config centralizes command, model, transport, worktree, and
     CODEX_HOME: '/tmp/codex-home',
     CCM_CODEX_APPROVAL_POLICY: 'never',
     CCM_CODEX_SANDBOX: 'danger-full-access',
+    CCM_CODEX_CONFIG_ARGS: '["-c","model_providers.sfc.base_url=\\\"http://127.0.0.1:24000/v1\\\""]',
   })
 
   expect(config.command).toEqual(['env', 'CODEX_PROFILE=prod', 'codex', '-c', 'public.key=value'])
   expect(config.launchArgs).toEqual(['-m', 'base-model'])
+  expect(config.configArgs).toEqual(['-c', 'model_providers.sfc.base_url="http://127.0.0.1:24000/v1"'])
   expect(config.model).toBe('base-model')
   expect(config.appServerListen).toBe('stdio')
   expect(config.worktreeMode).toBe('off')

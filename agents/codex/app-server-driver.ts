@@ -521,6 +521,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
 
   private configArgs(): string[] {
     const args = [
+      ...this.baseConfig.configArgs,
       '-c', 'mcp_servers.claude-channel-mux.command="bun"',
       '-c', `mcp_servers.claude-channel-mux.args=${JSON.stringify([this.opts.mcpServerPath])}`,
       '-c', `mcp_servers.claude-channel-mux.env.CC_CHANNEL_SESSION_UUID=${JSON.stringify(SHARED_CODEX_BRIDGE_ID)}`,
