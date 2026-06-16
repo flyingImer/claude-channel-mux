@@ -1,6 +1,7 @@
 ---
 title: Shared Codex bridge tool calls route by chat_id and room binding
 date: 2026-06-16
+last_updated: 2026-06-16
 category: docs/solutions/integration-issues
 module: CCM orchestration / Shared Codex bridge
 problem_type: integration_issue
@@ -10,10 +11,11 @@ symptoms:
   - "Native Codex TUI or goal continuations exposed only the shared bridge identity, not a CCM room"
   - "Stale guidance encouraged using `ccm_room_token` or bridge/session ids as routing substitutes"
   - "Attachment command turns needed room metadata for `download_attachment`, but legacy token metadata was no longer valid"
+  - "Claude claimed `ask_peer` was unavailable and fell back to a visible text cue even though CCM exposed and allowed the tool"
 root_cause: logic_error
 resolution_type: code_fix
 severity: critical
-tags: [ccm-orchestration, shared-codex-bridge, chat-id-routing, room-binding, agent-control-path]
+tags: [ccm-orchestration, shared-codex-bridge, chat-id-routing, room-binding, agent-control-path, mcp-tool-registry, ask-peer]
 ---
 
 # Shared Codex bridge tool calls route by chat_id and room binding
@@ -24,12 +26,15 @@ CCM uses one shared Codex app-server bridge identity for many logical Codex sess
 
 Earlier fixes tried to solve this with an opaque `ccm_room_token` embedded in Codex turn metadata. That approach fixed some command-turn failures, including attachment downloads, but later orchestration runs showed it blocked legitimate native Codex TUI/internal-goal tasks. Current routing uses explicit `chat_id` from the CCM room context plus the room's bound Codex session instead.
 
+A related failure appeared on the Claude side: Claude session `43b2a58e` said `ask_peer` was not available even though the MCP server exposed it and the process launch allowed it. That was a tool-discovery failure, not a missing-tool failure. Claude Code can defer MCP schemas behind ToolSearch/MCP search, so a tool can be callable even when it is absent from the model's immediate visible tool set.
+
 ## Symptoms
 
 - Codex had `CC_CHANNEL_SESSION_UUID=ccm-shared-codex-app-server` or `CODEX_CHANNEL_SESSION_UUID=ccm-shared-codex-app-server`, but those values identified only the shared bridge, not the room that owned the task.
 - Agent Control Path attempts failed or routed ambiguously when guidance asked Codex to invent or reuse `ccm_room_token`.
 - Native Codex `/goal` continuations preserved the task text but lacked the current CCM room context, so they could not safely dispatch worker rooms.
 - Attachment command turns could include attachment metadata while still lacking the room metadata needed for `download_attachment` to route back to the source room.
+- Claude could use basic CCM MCP tools such as `reply` and `fetch_thread`, but still claim `ask_peer` was absent and trigger the daemon's `text_fallback` visible peer cue path.
 
 ## What Didn't Work
 
@@ -38,6 +43,8 @@ Earlier fixes tried to solve this with an opaque `ccm_room_token` embedded in Co
 - Treating a native Codex `/goal` continuation as equivalent to a CCM-delivered turn. Native goal text can preserve intent while still omitting the room context required for tools.
 - Fixing only attachment command metadata. Attachments need the CCM envelope for file metadata, but shared bridge authorization still comes from `chat_id` routing.
 - Falling back to Codex native subagents, model-side delegation, or manual worker-room setup for CCM orchestration. That avoids validating the visible Worker Room control path.
+- Treating Claude's immediately visible MCP tool list as authoritative. `ask_peer` was present in the live `tools/list` response and in the launched `--allowedTools` arguments; the missing step was searching or loading the deferred MCP tool schema before falling back.
+- Maintaining separate hand-written MCP tool lists in the server, daemon launch allowlist, docs, and tests. That makes future tool additions depend on synchronized manual edits and obscures whether a failure is exposure, authorization, or discovery.
 
 ## Solution
 
@@ -70,6 +77,46 @@ The orchestrator and recovery skills should therefore require one of these curre
 - Command metadata containing `chat_id` or `room_id` from the parent Orchestrator room.
 - A fresh parent-room `/cx goal ...` or explicit `codex:` cue when a native Codex continuation lacks room metadata.
 
+Keep CCM MCP tool exposure in one registry. The MCP server, Claude launch allowlist, and documentation should not each own a separate list of tool names. The shared registry declares callable tools once, and runtime-specific surfaces derive their exposure from it.
+
+```ts
+export const CCM_MCP_TOOL_NAMES = [
+  'reply',
+  'react',
+  'edit_message',
+  'download_attachment',
+  'fetch_thread',
+  'create_room_with_bot_invited',
+  'archive_room',
+  'bind_worker_room',
+  'start_worker_agent',
+  'send_worker_task',
+  'capture_worker_report',
+  'ask_peer',
+  'chime_in',
+] as const
+
+export function ccmMcpToolIds(prefix: string): string[] {
+  return CCM_MCP_TOOL_NAMES.map(tool => `${prefix}__${tool}`)
+}
+```
+
+The MCP bridge serves the same definitions:
+
+```ts
+mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: CCM_MCP_TOOLS,
+}))
+```
+
+Claude launch then derives its tool allowlist mechanically:
+
+```ts
+const allowedToolsArgs = ['--allowedTools', ...ccmMcpToolIds(toolPrefix)]
+```
+
+When a Claude-managed CCM session says a named CCM MCP tool such as `ask_peer` is missing, first verify the live MCP `tools/list` response and the launch allowlist, then search/load the named MCP tool. Do not simulate the tool by posting Slack or Telegram text unless the actual tool path is unavailable.
+
 ## Why This Works
 
 The shared bridge has stable process identity so one Codex app-server can serve multiple logical sessions, while `chat_id` selects the logical CCM room for each tool call. The daemon then verifies that the requested room has a Codex binding and routes the response through the shared bridge without needing per-turn opaque tokens.
@@ -83,8 +130,12 @@ This also keeps attachment handling and orchestration aligned. Attachments still
 - Skills and checklists should say “current parent room `chat_id`” and “room binding,” not “opaque token.”
 - When debugging attachment failures, distinguish attachment metadata (`attachment_file_id` / `attachment_files`) from room routing metadata (`chat_id` / `room_id`). Both can matter, but only `chat_id` routes shared bridge tool calls.
 - When debugging orchestration failures from native Codex continuations, ask whether the turn includes current CCM room context before trying Agent Control Path calls.
+- Keep MCP tool definitions centralized. Every new CCM MCP tool should be added to the shared registry so `tools/list`, Claude `--allowedTools`, docs, and tests derive from the same source rather than drifting.
+- Treat tool availability and tool discovery as separate debugging questions. A model-visible tool list can be incomplete when MCP schemas are deferred behind ToolSearch or MCP search.
 
 ## Related Issues
 
 - `docs/solutions/integration-issues/agent-command-visible-notices-must-not-use-audit-previews.md` covers adjacent command-debugging visibility: visible confirmations must show the actual parsed command text rather than bounded audit previews.
 - `docs/solutions/workflow-issues/ccm-orchestration-steering-vs-execution.md` documents why Agent Control Path and room-control tools need explicit, auditable control semantics.
+- GitHub issue `#2` tracks broader Claude/Codex UX parity in CCM.
+- GitHub issue `#3` tracks room-centric observer turns and structured chime-in, including the peer-collaboration surfaces that rely on `ask_peer` and `chime_in` being discoverable.

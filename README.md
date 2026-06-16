@@ -328,8 +328,16 @@ Claude agent slot sessions get these tools via the MCP bridge (`server.ts`). Cod
 | `edit_message` | Edit a previously sent message |
 | `download_attachment` | Download file/image to local inbox |
 | `fetch_thread` | Pull full thread history (Slack only) |
+| `create_room_with_bot_invited` | Create a Slack private worker room and invite the CCM bot from an orchestrator room |
+| `archive_room` | Archive a worker room from an orchestrator room |
+| `bind_worker_room` | Bind worker-room cwd/runtime metadata from an orchestrator room |
+| `start_worker_agent` | Start or resume the assigned worker agent in a bound worker room |
+| `send_worker_task` | Send a bounded Worker Task to a started/bound worker room |
+| `capture_worker_report` | Retrieve worker-room transcript/reportback facts for durable orchestration state |
 | `ask_peer` | Asynchronously cue another agent in the same room for context/second opinion; answer is visible in the room |
 | `chime_in` | Observer-only collaboration note injected into the lead/default agent context |
+
+If Claude says a named CCM MCP tool such as `ask_peer` is not in its visible toolset, do not fall back to manually posting a Slack/Telegram message. Claude Code may defer MCP tool schemas behind `ToolSearch`/MCP search when the live tool list is large; the correct behavior is to search/load the named MCP tool and call it with the current `chat_id`. CCM-managed Claude and Codex TUI sessions are room-bound and can initiate these tool calls when the current turn carries the room `chat_id`; non-CCM native continuations that lack room metadata cannot.
 
 ## Configuration
 

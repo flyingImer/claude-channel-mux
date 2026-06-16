@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs'
 import { execSync } from 'child_process'
 import { test, expect } from 'bun:test'
+import { CCM_MCP_TOOL_NAMES, CCM_MCP_TOOLS, ccmMcpToolIds } from '../mcp-tools.js'
 
 
 test('legacy parity audit lists every pre-Codex commit', () => {
@@ -64,9 +65,9 @@ test('plugin ships CCM orchestration role skills', () => {
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Completion Reportback')
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Do not use Codex native subagents')
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('visible CCM Worker Rooms')
-  expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Native Codex `/goal` turns')
+  expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Native Codex `/goal` continuations')
   expect(readFileSync('skills/recover-orchestration/SKILL.md', 'utf8')).toContain('Create/Adopt/Repair')
-  expect(readFileSync('skills/recover-orchestration/SKILL.md', 'utf8')).toContain('Codex internal goal continuations')
+  expect(readFileSync('skills/recover-orchestration/SKILL.md', 'utf8')).toContain('lack room metadata cannot dispatch workers')
   expect(readFileSync('skills/integrate-worker-output/SKILL.md', 'utf8')).toContain('merge_failed')
   expect(readFileSync('skills/process-orchestration-inbox/SKILL.md', 'utf8')).toContain('inbox/*.md.done')
   expect(readFileSync('skills/audit-worker-output/SKILL.md', 'utf8')).toContain('Self-audit')
@@ -1688,9 +1689,11 @@ test('ask_peer in-flight state clears when either session is torn down', () => {
 test('ask_peer is an async same-room peer handoff tool, not daemon memory', () => {
   const server = readFileSync('server.ts', 'utf8')
   const daemon = readFileSync('daemon.ts', 'utf8')
-  expect(server).toContain("name: 'ask_peer'")
-  expect(server).toContain('Ask another agent in the same CCM room')
-  expect(server).toContain('async visible handoff')
+  expect(CCM_MCP_TOOL_NAMES).toContain('ask_peer')
+  expect(server).toContain('tools: CCM_MCP_TOOLS')
+  const askPeerTool = CCM_MCP_TOOLS.find(tool => tool.name === 'ask_peer')
+  expect(askPeerTool?.description).toContain('Ask another agent in the same CCM room')
+  expect(askPeerTool?.description).toContain('async visible handoff')
   expect(server).toContain('const timeoutMs = 60_000')
   expect(daemon).toContain('type AgentCue =')
   expect(daemon).toContain('async function routeCue(cue: AgentCue)')
@@ -1747,7 +1750,10 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).toContain('askPeerRoomStatusLines')
   expect(daemon).toContain('*ask_peer:*')
   expect(daemon).toContain('Sent visible async handoff')
-  expect(daemon).toContain('__ask_peer')
+  expect(ccmMcpToolIds('mcp__plugin_claude-channel-mux_claude-channel-mux')).toContain('mcp__plugin_claude-channel-mux_claude-channel-mux__ask_peer')
+  expect(ccmMcpToolIds('mcp__plugin_claude-channel-mux_claude-channel-mux')).toContain('mcp__plugin_claude-channel-mux_claude-channel-mux__chime_in')
+  expect(ccmMcpToolIds('mcp__plugin_claude-channel-mux_claude-channel-mux')).toContain('mcp__plugin_claude-channel-mux_claude-channel-mux__capture_worker_report')
+  expect(ccmMcpToolIds('mcp__plugin_claude-channel-mux_claude-channel-mux')).toContain('mcp__plugin_claude-channel-mux_claude-channel-mux__create_room_with_bot_invited')
   expect(daemon).toContain("auditEvent({ event: 'cue_created'")
   expect(daemon).toContain("auditEvent({ event: 'cue_routed'")
   expect(daemon).toContain("source: 'tool'")
@@ -1765,6 +1771,30 @@ test('ask_peer is an async same-room peer handoff tool, not daemon memory', () =
   expect(daemon).not.toContain('ASK_PEER_TIMEOUT_MS')
   expect(daemon).not.toContain('resolvePeerAnswerWaiter')
   expect(daemon).not.toContain('unreadPeer')
+  const readme = readFileSync('README.md', 'utf8')
+  expect(readme).toContain('If Claude says a named CCM MCP tool such as `ask_peer` is not in its visible toolset')
+  expect(readme).toContain('search/load the named MCP tool')
+  expect(readme).toContain('do not fall back to manually posting a Slack/Telegram message')
+})
+
+test('Claude CCM launch allowlist includes every CCM MCP tool', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const spawnClaude = daemon.slice(daemon.indexOf('async function spawnClaude'), daemon.indexOf('function retrySpawnClaude'))
+  expect(daemon).toContain("import { ccmMcpToolIds } from './mcp-tools.js'")
+  expect(spawnClaude).toContain("const allowedToolsArgs = ['--allowedTools', ...ccmMcpToolIds(toolPrefix)]")
+})
+
+test('CCM MCP tool registry is the single source of truth for agent exposure', () => {
+  const server = readFileSync('server.ts', 'utf8')
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const readme = readFileSync('README.md', 'utf8')
+  expect(server).toContain("import { CCM_MCP_TOOLS } from './mcp-tools.js'")
+  expect(server).toContain('tools: CCM_MCP_TOOLS')
+  expect(daemon).toContain("import { ccmMcpToolIds } from './mcp-tools.js'")
+  expect(daemon).toContain('ccmMcpToolIds(toolPrefix)')
+  for (const tool of CCM_MCP_TOOL_NAMES) {
+    expect(readme).toContain(`\`${tool}\``)
+  }
 })
 
 test('tool calls reject stale cross-room chat_id values', () => {
@@ -1805,6 +1835,9 @@ test('shared Codex app-server tool calls are routed by bound room session', () =
   expect(resolver).toContain('canonicalToolChannelKey(sessionId, requestedCk)')
   expect(daemon).toContain('uuid === SHARED_CODEX_BRIDGE_ID ? [] : routableChannelsForUuid(uuid)')
   expect(server).toContain('Shared Codex app-server calls are routed by the room-bound Codex session for that chat_id')
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('no opaque room token is used')
+  expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('identify the shared Codex bridge, not the room')
+  expect(readFileSync('skills/recover-orchestration/SKILL.md', 'utf8')).toContain('no opaque room token is used')
   expect(server).not.toContain('ccm_room_token')
 })
 
@@ -1862,9 +1895,10 @@ test('multi-agent cues use default lead with observer chime-in path', () => {
   expect(daemon).toContain("event: 'chime_in_injected'")
   expect(daemon).toContain('Observer(s):')
   expect(daemon).toContain('high-signal detail/context')
-  expect(server).toContain("name: 'chime_in'")
-  expect(server).toContain('Observer-only collaboration note')
-  expect(server).toContain('detail/context/evidence/correction')
+  expect(CCM_MCP_TOOL_NAMES).toContain('chime_in')
+  const chimeInTool = CCM_MCP_TOOLS.find(tool => tool.name === 'chime_in')
+  expect(chimeInTool?.description).toContain('Observer-only collaboration note')
+  expect(chimeInTool?.inputSchema.properties.summary).toEqual({ type: 'string', description: 'Concise high-signal detail/context/evidence/correction for the lead/default agent' })
   expect(server).toContain('<ccm_collab_context role="observer">')
 })
 

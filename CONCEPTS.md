@@ -51,8 +51,13 @@ A Codex command turn, such as `/cx goal ...` or `/cx raw ...`, that also carries
 
 Attachment Command Turns must use the CCM turn envelope when attachment metadata is present so the agent receives both the attachment id and the room `chat_id` needed to call attachment tools.
 
+### CCM MCP Tool Registry
+The canonical inventory of callable CCM tool names, descriptions, and input schemas shared by the MCP bridge and runtime launch surfaces.
+
+The registry prevents server tool exposure, agent allowlists, tests, and documentation from becoming independent sources of truth. Runtime-specific adapters may still differ in transport, but they should derive their CCM tool inventory from this shared contract.
+
 ## Relationships
 
 The Human and Guiding Principal steer intent and review quality. The Orchestrator owns execution against that durable context. Worker Rooms host bounded Worker Tasks. Agent Control Path is the mechanism that lets the Orchestrator control Worker Rooms without turning humans or the Guiding Principal into routine operators.
 
-CCM Rooms are the routing boundary for user-agent interaction. The CCM Daemon owns active room routing state. The Shared Codex Bridge executes tools for many Codex sessions, so shared-process tool calls route by explicit `chat_id` and the current Codex room binding. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and room identity.
+CCM Rooms are the routing boundary for user-agent interaction. The CCM Daemon owns active room routing state. The Shared Codex Bridge executes tools for many Codex sessions, so shared-process tool calls route by explicit `chat_id` and the current Codex room binding. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and room identity. The CCM MCP Tool Registry keeps the callable tool inventory consistent across those routing surfaces.

@@ -1,7 +1,7 @@
 # Orchestrator Preflight Checklist
 
 - [ ] Current room is repo-bound and `isOrchestrator: true`.
-- [ ] Lifecycle create will use the Orchestrator parent room as `chat_id` and `parent_chat_id`; worker-room `chat_id` is used only after that room has its own bound session/token.
+- [ ] Lifecycle create will use the Orchestrator parent room as `chat_id` and `parent_chat_id`; worker-room `chat_id` is used only after that room has its own binding.
 - [ ] `docs/orchestration/AGENTS.md` and initiative `state.md`, `workers.md`, `stage.md`, unread `inbox/*.md`, open `recall/`, and latest `reports/` were read.
 - [ ] Durable intake and Stage Contract are persisted with attribution.
 - [ ] Every planned worker has a stable `worker_task_id` and deterministic `desired_room_name` before room creation.

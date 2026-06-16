@@ -1,25 +1,28 @@
 import { readFileSync } from 'fs'
 import { test, expect } from 'bun:test'
+import { CCM_MCP_TOOLS } from '../mcp-tools.js'
 
 test('MCP exposes the V1 room lifecycle and parent worker execution tools with bound-room routing', () => {
   const server = readFileSync('server.ts', 'utf8')
+  const toolText = JSON.stringify(CCM_MCP_TOOLS)
 
-  expect(server).toContain("name: 'create_room_with_bot_invited'")
-  expect(server).toContain("name: 'archive_room'")
-  expect(server).toContain("name: 'bind_worker_room'")
-  expect(server).toContain("name: 'start_worker_agent'")
-  expect(server).toContain("name: 'send_worker_task'")
-  expect(server).toContain("name: 'capture_worker_report'")
-  expect(server).toContain("desired_room_name")
-  expect(server).toContain("parent_chat_id")
-  expect(server).toContain('bind a worker room cwd/runtime metadata from the current Orchestrator parent room')
-  expect(server).toContain('start or resume the assigned worker agent in a bound worker room from the current Orchestrator parent room')
-  expect(server).toContain('send a bounded Worker Task to a started/bound worker room from the current Orchestrator parent room')
-  expect(server).toContain('retrieve worker-room transcript/reportback facts from the current Orchestrator parent room')
-  expect(server).toContain('do not use the desired/new worker room as chat_id')
+  expect(server).toContain('tools: CCM_MCP_TOOLS')
+  expect(toolText).toContain('create_room_with_bot_invited')
+  expect(toolText).toContain('archive_room')
+  expect(toolText).toContain('bind_worker_room')
+  expect(toolText).toContain('start_worker_agent')
+  expect(toolText).toContain('send_worker_task')
+  expect(toolText).toContain('capture_worker_report')
+  expect(toolText).toContain('desired_room_name')
+  expect(toolText).toContain('parent_chat_id')
+  expect(toolText).toContain('bind a worker room cwd/runtime metadata from the current Orchestrator parent room')
+  expect(toolText).toContain('start or resume the assigned worker agent in a bound worker room from the current Orchestrator parent room')
+  expect(toolText).toContain('send a bounded Worker Task to a started/bound worker room from the current Orchestrator parent room')
+  expect(toolText).toContain('retrieve worker-room transcript/reportback facts from the current Orchestrator parent room')
+  expect(toolText).toContain('do not use the desired/new worker room as chat_id')
   expect(server).not.toContain("ccm_room_token")
-  expect(server).not.toContain("name: 'create_telegram_room'")
-  expect(server).not.toContain("name: 'adopt_room'")
+  expect(toolText).not.toContain('create_telegram_room')
+  expect(toolText).not.toContain('adopt_room')
 })
 
 test('daemon room control routes are gated by bound room, adapter, and orchestrator flag', () => {

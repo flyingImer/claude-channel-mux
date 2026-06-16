@@ -166,7 +166,7 @@ test('orchestration checklists cover preflight dispatch integration and recovery
     expect(existsSync(`docs/checklists/${name}`)).toBe(true)
   }
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('isOrchestrator: true')
-  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('worker-room `chat_id` is used only after that room has its own bound session/token')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('worker-room `chat_id` is used only after that room has its own binding')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('required human or Guiding Principal worker-room intervention is degraded fallback and an orchestration failure')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('not Codex native subagents')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('explicitly asked to dispatch after that report')

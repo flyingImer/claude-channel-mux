@@ -7,7 +7,7 @@ description: Use when CCM orchestration needs recovery after restart, crash, par
 
 Recover from Git state plus CCM/platform facts. Do not invent workflow truth from chat logs or daemon memory.
 
-If recovery must call Agent Control Path tools from Codex, require an opaque `chat_id` from the current `<ccm_turn>`. Native Codex `/goal` turns and Codex internal goal continuations may use Agent Control Path directly when they pass the parent room `chat_id`; never use bridge/session ids as `chat_id`.
+If recovery must call Agent Control Path tools from Codex, require `chat_id` from the current CCM room context (`<ccm_turn ... chat_id="...">` or command metadata). Shared Codex app-server calls are routed by the room-bound Codex session for that `chat_id`; no opaque room token is used. Native Codex `/goal` continuations that lack room metadata cannot dispatch workers. Never use bridge/session ids such as `CC_CHANNEL_SESSION_UUID`, `CODEX_CHANNEL_SESSION_UUID`, or `ccm-shared-codex-app-server` as `chat_id`.
 
 ## Restart Runbook
 

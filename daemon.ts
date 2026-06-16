@@ -63,6 +63,7 @@ import { codexApprovalResult, codexOptionInputResult, codexPendingRequestButtons
 import { parseZellijJson, zellijPanes, type ZellijPane } from './zellij-json.js'
 import { ipcMessageFromLine } from './ipc.js'
 import { errorMessage, redactSensitiveText } from './redact.js'
+import { ccmMcpToolIds } from './mcp-tools.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -3337,14 +3338,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   // Allow all ccm MCP tools without permission prompts
   // Tool name format: mcp__plugin_<plugin>_<server>__<tool>
   const toolPrefix = 'mcp__plugin_claude-channel-mux_claude-channel-mux'
-  const allowedToolsArgs = ['--allowedTools',
-    `${toolPrefix}__reply`,
-    `${toolPrefix}__react`,
-    `${toolPrefix}__edit_message`,
-    `${toolPrefix}__download_attachment`,
-    `${toolPrefix}__fetch_thread`,
-    `${toolPrefix}__ask_peer`,
-  ]
+  const allowedToolsArgs = ['--allowedTools', ...ccmMcpToolIds(toolPrefix)]
   const args = resumeMode
     ? ['--resume', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...allowedToolsArgs]
     : ['--session-id', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...allowedToolsArgs]
