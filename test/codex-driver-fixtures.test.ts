@@ -432,6 +432,32 @@ test('Codex goal command interrupts active turn and starts replacement goal turn
   expect(runtime.turnThreads.get('native-goal')).toBe('msg')
 })
 
+test('Codex goal command without attachments preserves CCM room token envelope', async () => {
+  const d = driver()
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const session = codexSession('goal-session', 'goal-thread')
+  const client: TestCodexClient = {
+    request: async (method, params) => {
+      calls.push({ method, params })
+      if (method === 'turn/start') return { result: { turn: { id: 'native-goal' } } }
+      return { result: {} }
+    },
+  }
+  d.runtimes.set('goal-session', testRuntime(session, client))
+  const base = {
+    commandId: 'goal-cmd', roomId: 'slack:C123', channelKey: 'slack:C123', platform: 'slack', channelId: 'C123', threadId: '171000.1', messageId: '171000.1', cwd: '/tmp',
+    meta: { chat_id: 'slack:C123', ccm_room_token: 'room-token' },
+  }
+
+  await d.sendCommand({ session, command: { ...base, command: '/goal orchestrate worker rooms' } })
+
+  const text = String(calls.find(call => call.method === 'turn/start')?.params.input?.[0]?.text ?? '')
+  expect(text).toContain('<ccm_turn')
+  expect(text).toContain('ccm_room_token="room-token"')
+  expect(text).toContain('<message_meta trust="untrusted">')
+  expect(text).toContain('<current_message>Replace the current CCM Codex goal')
+})
+
 test('Codex goal command turn preserves Slack attachment metadata for download', async () => {
   const d = driver()
   const session = codexSession('goal-session', 'goal-thread')

@@ -27,7 +27,7 @@
 
 import {
   readFileSync, writeFileSync, renameSync, mkdirSync, unlinkSync, existsSync, appendFileSync,
-  readdirSync, statSync, chmodSync, openSync, readSync, closeSync,
+  readdirSync, statSync, chmodSync, openSync, readSync, writeSync, closeSync,
 } from 'fs'
 import { homedir } from 'os'
 import { join, basename, resolve as resolvePath } from 'path'
@@ -92,6 +92,27 @@ function logUnexpectedFsReadError(action: string, path: string, err: unknown): v
   if (errorCode(err) !== 'ENOENT') process.stderr.write(`daemon: ${action} ${path} failed: ${errorMessage(err)}\n`)
 }
 
+function numericPidFromFile(path: string): number | undefined {
+  try {
+    const raw = readFileSync(path, 'utf8').trim()
+    if (!/^\d+$/.test(raw)) return undefined
+    const pid = Number(raw)
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined
+  } catch (err) {
+    if (errorCode(err) !== 'ENOENT') process.stderr.write(`daemon: read pid file ${path} failed: ${errorMessage(err)}\n`)
+    return undefined
+  }
+}
+
+function unlinkOwnedDaemonPath(path: string, action: string): void {
+  const owner = numericPidFromFile(PID_FILE)
+  if (owner !== undefined && owner !== process.pid) {
+    process.stderr.write(`daemon: skip ${action} ${path}; pid file belongs to ${owner}, current pid ${process.pid}\n`)
+    return
+  }
+  try { unlinkSync(path) } catch (err) { logUnexpectedFsCleanupError(action, path, err) }
+}
+
 function loadEnvFile(path: string, opts: { override?: boolean } = {}): void {
   try {
     const raw = readFileSync(path, 'utf8')
@@ -121,6 +142,7 @@ if (STATE_DIR !== DEFAULT_STATE_DIR) {
 }
 const SOCK_PATH = join(STATE_DIR, 'daemon.sock')
 const PID_FILE = join(STATE_DIR, 'daemon.pid')
+const LOCK_FILE = join(STATE_DIR, 'daemon.lock')
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
@@ -559,7 +581,11 @@ function resolveSharedCodexToolCall(args: Record<string, unknown>): { sessionId:
   const requestedCk = optionalString(args.chat_id) ?? ''
   if (!rawToken) {
     auditEvent({ event: 'capability_token_missing', requested_room_id: requestedCk, from_agent: 'codex' })
-    throw new Error('Shared Codex bridge tool call missing ccm_room_token')
+    throw new Error('Shared Codex bridge tool call missing ccm_room_token; send the request through the CCM room with `/cx goal ...` or `codex:` so the turn includes <ccm_turn ccm_room_token="...">')
+  }
+  if (rawToken === SHARED_CODEX_BRIDGE_ID) {
+    auditEvent({ event: 'capability_token_bridge_id_used', requested_room_id: requestedCk, from_agent: 'codex' })
+    throw new Error('ccm-shared-codex-app-server is a shared bridge id, not a ccm_room_token; use the opaque token from <ccm_turn> by sending the request through CCM `/cx goal ...` or `codex:`')
   }
   const hash = tokenHash(rawToken)
   const token = codexRoomTokens.get(hash)
@@ -1731,6 +1757,37 @@ const announcedReady = new Set<string>()
 function isProcessAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true }
   catch (err) { return errorCode(err) === 'EPERM' }
+}
+
+const existingDaemonPid = numericPidFromFile(PID_FILE)
+if (existingDaemonPid !== undefined && existingDaemonPid !== process.pid && isProcessAlive(existingDaemonPid)) {
+  process.stderr.write(`daemon: already running as pid ${existingDaemonPid}; refusing to start duplicate pid ${process.pid}\n`)
+  process.exit(1)
+}
+
+let daemonLockFd: number | undefined
+try {
+  daemonLockFd = openSync(LOCK_FILE, 'wx', 0o600)
+  writeSync(daemonLockFd, `${process.pid}\n`)
+} catch (err) {
+  if (errorCode(err) === 'EEXIST') {
+    const lockOwner = numericPidFromFile(LOCK_FILE)
+    if (lockOwner !== undefined && lockOwner !== process.pid && isProcessAlive(lockOwner)) {
+      process.stderr.write(`daemon: lock ${LOCK_FILE} held by live pid ${lockOwner}; refusing duplicate pid ${process.pid}\n`)
+      process.exit(1)
+    }
+    try { unlinkSync(LOCK_FILE) } catch (unlinkErr) { logUnexpectedFsCleanupError('unlink stale daemon lock', LOCK_FILE, unlinkErr) }
+    try {
+      daemonLockFd = openSync(LOCK_FILE, 'wx', 0o600)
+      writeSync(daemonLockFd, `${process.pid}\n`)
+    } catch (retryErr) {
+      process.stderr.write(`daemon: failed to acquire daemon lock ${LOCK_FILE}: ${errorMessage(retryErr)}\n`)
+      process.exit(1)
+    }
+  } else {
+    process.stderr.write(`daemon: failed to acquire daemon lock ${LOCK_FILE}: ${errorMessage(err)}\n`)
+    process.exit(1)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2938,6 +2995,16 @@ function sendToLive(uuid: string, msg: Record<string, unknown>): boolean {
     return true
   } catch (err) {
     clearBrokenLiveConn(uuid, l.ipcConn, 'sendToLive', err)
+    return false
+  }
+}
+
+function sendToIpcConn(uuid: string, conn: Socket, msg: Record<string, unknown>, reason: string): boolean {
+  try {
+    conn.write(JSON.stringify(msg) + '\n')
+    return true
+  } catch (err) {
+    clearBrokenLiveConn(uuid, conn, reason, err)
     return false
   }
 }
@@ -4676,6 +4743,14 @@ async function interruptAgentTurn(ck: string, runtime: AgentRuntimeKind, threadI
   return false
 }
 
+function platformMessageAnchor(ck: string, id?: string): string | undefined {
+  if (!id || id.startsWith('acp:')) return undefined
+  const platform = adapterFor(ck)?.platform
+  if (platform === 'slack' && !/^\d+\.\d+$/.test(id)) return undefined
+  if (platform === 'telegram' && !/^-?\d+$/.test(id)) return undefined
+  return id
+}
+
 // ---------------------------------------------------------------------------
 // Unified inbound handler
 // ---------------------------------------------------------------------------
@@ -4686,8 +4761,9 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
   let uuid = await ensureRoomAgentReady(ck, runtime, makeActive)
   if (!uuid) return false
 
-  const typingThreadId = msg.replyToId ?? msg.messageId
-  const turnNoticeOpts = { replyTo: typingThreadId, broadcast: true }
+  const platformMessageId = platformMessageAnchor(ck, msg.messageId)
+  const platformThreadId = platformMessageAnchor(ck, msg.replyToId ?? msg.messageId)
+  const turnNoticeOpts = platformThreadId ? { replyTo: platformThreadId, broadcast: true } : undefined
 
   let l = live.get(uuid)
   if (!l) {
@@ -4719,27 +4795,31 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
     }
   }
 
-  adapter?.addReaction(id, msg.messageId, '👀').catch(err => {
-    process.stderr.write(`daemon: start-turn reaction failed for ${ck}/${msg.messageId}: ${errorMessage(err)}\n`)
-  })
-  adapter?.showTyping?.(id, typingThreadId).catch(err => {
-    process.stderr.write(`daemon: start-turn typing failed for ${ck}/${typingThreadId}: ${errorMessage(err)}\n`)
-  })
-  activeTypingAnchors.set(uuid, { channelKey: ck, threadId: typingThreadId })
-  lastInboundMsg.set(ck, msg.messageId)
+  if (platformMessageId) {
+    adapter?.addReaction(id, platformMessageId, '👀').catch(err => {
+      process.stderr.write(`daemon: start-turn reaction failed for ${ck}/${platformMessageId}: ${errorMessage(err)}\n`)
+    })
+  }
+  if (platformThreadId) {
+    adapter?.showTyping?.(id, platformThreadId).catch(err => {
+      process.stderr.write(`daemon: start-turn typing failed for ${ck}/${platformThreadId}: ${errorMessage(err)}\n`)
+    })
+    activeTypingAnchors.set(uuid, { channelKey: ck, threadId: platformThreadId })
+  }
+  if (platformMessageId) lastInboundMsg.set(ck, platformMessageId)
   await sendWithButtons(ck, formatAgentReply(runtime, `⏳ ${agentName(runtime)} is working. Use the button below or \`/${runtime === 'codex' ? 'cx' : 'cc'} cancel\` to interrupt this turn.`), [
     { text: `⏹ Interrupt ${agentName(runtime)}`, data: `cmd:interrupt:${runtime}` },
   ], turnNoticeOpts, `${runtime} interrupt control notice`)
 
-  rememberThreadAnchor(uuid, msg.messageId)
-  rememberThreadAnchor(uuid, msg.replyToId)
+  rememberThreadAnchor(uuid, platformMessageId)
+  rememberThreadAnchor(uuid, platformThreadId)
 
   const sw = screenWatchers.get(uuid)
   if (sw) sw.lastThinkingMsgId = undefined
   recentReplies.delete(uuid)
 
   const binding = normalizeBinding(loadBindings()[ck])
-  const threadId = msg.replyToId ?? msg.messageId
+  const threadId = platformThreadId ?? ''
   const peerAgents = agentPeerPointers(binding, runtime, ck, threadId)
   const meta = {
     ...msg.meta,
@@ -4753,7 +4833,7 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
     user_id: msg.userId,
     thread_id: threadId,
     peer_agents: JSON.stringify(peerAgents),
-    ...(msg.replyToId ? { reply_to_id: msg.replyToId } : {}),
+    ...(platformThreadId ? { reply_to_id: platformThreadId } : {}),
   }
 
   if (runtime === 'codex') {
@@ -6153,12 +6233,12 @@ function isPermissionRequestMessage(msg: Record<string, unknown>): msg is { type
     && msg.channels.every(channel => typeof channel === 'string')
 }
 
-async function handleTool(msg: { tool: string; args: Record<string, unknown>; callId: string }, callerUuid: string): Promise<void> {
+async function handleTool(msg: { tool: string; args: Record<string, unknown>; callId: string }, callerUuid: string, callerConn: Socket): Promise<void> {
   let route: { responseUuid: string; sessionId: string; channelKey: string }
   try {
     route = resolveToolCallRoute(callerUuid, msg.args)
   } catch (err) {
-    sendToLive(callerUuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })
+    sendToIpcConn(callerUuid, callerConn, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) }, 'tool route error')
     return
   }
   const uuid = route.sessionId
@@ -6394,11 +6474,11 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         throw new Error(`unknown tool: ${msg.tool}`)
     }
     if (visibleToolCommand) auditEvent({ event: 'agent_tool_command_executed', call_id: msg.callId, tool: msg.tool, room_id: ck, from_session_id: uuid, from_agent: runtimeForUuid(uuid), ok: true })
-    sendToLive(route.responseUuid, { type: 'tool_result', callId: msg.callId, result })
+    sendToIpcConn(route.responseUuid, callerConn, { type: 'tool_result', callId: msg.callId, result }, 'tool result')
   } catch (err) {
     await clearAgentTyping(uuid)
     if (visibleToolCommand) auditEvent({ event: 'agent_tool_command_executed', call_id: msg.callId, tool: msg.tool, room_id: ck, from_session_id: uuid, from_agent: runtimeForUuid(uuid), ok: false, error: errorMessage(err) })
-    sendToLive(route.responseUuid, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) })
+    sendToIpcConn(route.responseUuid, callerConn, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) }, 'tool error')
   }
 }
 
@@ -6729,26 +6809,35 @@ const ipc: NetServer = createServer((conn: Socket) => {
           // overwrite the primary — breaking tool routing for the original.
           const peerPid = typeof msg.pid === 'number' ? msg.pid : undefined
           if (l.ipcConn && l.ipcConn !== conn && !l.ipcConn.destroyed) {
-            try {
-              conn.write(
-                JSON.stringify({
-                  type: 'duplicate',
-                  reason: `UUID ${uuid.slice(0, 8)} already owned by pid ${l.primaryPid ?? '?'}; this register (pid ${peerPid ?? '?'}) is a secondary (subagent). Primary-only policy: secondaries should not connect.`,
-                }) + '\n',
+            if (uuid === SHARED_CODEX_BRIDGE_ID) {
+              process.stderr.write(
+                `daemon: accepted additional shared Codex bridge register for ${uuid.slice(0, 8)} (primary pid ${l.primaryPid ?? '?'}, new pid ${peerPid ?? '?'})\n`,
               )
-            } catch (err) {
-              process.stderr.write(`daemon: duplicate-register notice failed for ${uuid.slice(0, 8)} (pid ${peerPid ?? '?'}): ${errorMessage(err)}\n`)
+              socketToUuid.set(conn, uuid)
+              sendToIpcConn(uuid, conn, { type: 'registered', uuid, channels: [] }, 'shared bridge secondary registered')
+              return
+            } else {
+              try {
+                conn.write(
+                  JSON.stringify({
+                    type: 'duplicate',
+                    reason: `UUID ${uuid.slice(0, 8)} already owned by pid ${l.primaryPid ?? '?'}; this register (pid ${peerPid ?? '?'}) is a secondary (subagent). Primary-only policy: secondaries should not connect.`,
+                  }) + '\n',
+                )
+              } catch (err) {
+                process.stderr.write(`daemon: duplicate-register notice failed for ${uuid.slice(0, 8)} (pid ${peerPid ?? '?'}): ${errorMessage(err)}\n`)
+              }
+              try {
+                conn.end()
+              } catch (err) {
+                process.stderr.write(`daemon: duplicate-register close failed for ${uuid.slice(0, 8)} (pid ${peerPid ?? '?'}): ${errorMessage(err)}\n`)
+                destroyIpcConn(conn, `duplicate-register close ${uuid.slice(0, 8)}`)
+              }
+              process.stderr.write(
+                `daemon: rejected secondary register for ${uuid.slice(0, 8)} (pid ${peerPid ?? '?'}, primary ${l.primaryPid ?? '?'} still connected)\n`,
+              )
+              return
             }
-            try {
-              conn.end()
-            } catch (err) {
-              process.stderr.write(`daemon: duplicate-register close failed for ${uuid.slice(0, 8)} (pid ${peerPid ?? '?'}): ${errorMessage(err)}\n`)
-              destroyIpcConn(conn, `duplicate-register close ${uuid.slice(0, 8)}`)
-            }
-            process.stderr.write(
-              `daemon: rejected secondary register for ${uuid.slice(0, 8)} (pid ${peerPid ?? '?'}, primary ${l.primaryPid ?? '?'} still connected)\n`,
-            )
-            return
           }
 
           const firstEver = !announcedReconnect.has(uuid)
@@ -6775,7 +6864,7 @@ const ipc: NetServer = createServer((conn: Socket) => {
         }
       } else if (msg.type === 'tool_call') {
         const uuid = socketToUuid.get(conn)
-        if (uuid && isToolCallMessage(msg)) void handleTool(msg, uuid)
+        if (uuid && isToolCallMessage(msg)) void handleTool(msg, uuid, conn)
       } else if (msg.type === 'permission_request') {
         const uuid = socketToUuid.get(conn)
         if (uuid && isPermissionRequestMessage(msg)) void handlePermissionRequest(msg, uuid)
@@ -6849,7 +6938,9 @@ try {
 } catch (err) {
   process.stderr.write(`daemon: failed to write pid file ${PID_FILE}: ${errorMessage(err)}\n`)
   try { ipc.close() } catch (closeErr) { process.stderr.write(`daemon: IPC close after pid file failure failed: ${errorMessage(closeErr)}\n`) }
-  try { unlinkSync(SOCK_PATH) } catch (unlinkErr) { logUnexpectedFsCleanupError('unlink IPC socket after pid file failure', SOCK_PATH, unlinkErr) }
+  unlinkOwnedDaemonPath(SOCK_PATH, 'unlink IPC socket after pid file failure')
+  if (daemonLockFd !== undefined) try { closeSync(daemonLockFd) } catch (closeErr) { logUnexpectedFsCleanupError('close daemon lock after pid file failure', LOCK_FILE, closeErr) }
+  unlinkOwnedDaemonPath(LOCK_FILE, 'unlink daemon lock after pid file failure')
   process.exit(1)
 }
 
@@ -7116,8 +7207,10 @@ async function shutdown(): Promise<void> {
       process.stderr.write(`daemon: ${adapter.platform} adapter stop failed: ${errorMessage(err)}\n`)
     }
   }
-  try { unlinkSync(SOCK_PATH) } catch (err) { logUnexpectedFsCleanupError('unlink IPC socket during shutdown', SOCK_PATH, err) }
-  try { unlinkSync(PID_FILE) } catch (err) { logUnexpectedFsCleanupError('unlink pid file during shutdown', PID_FILE, err) }
+  unlinkOwnedDaemonPath(SOCK_PATH, 'unlink IPC socket during shutdown')
+  unlinkOwnedDaemonPath(PID_FILE, 'unlink pid file during shutdown')
+  if (daemonLockFd !== undefined) try { closeSync(daemonLockFd) } catch (err) { logUnexpectedFsCleanupError('close daemon lock during shutdown', LOCK_FILE, err) }
+  unlinkOwnedDaemonPath(LOCK_FILE, 'unlink daemon lock during shutdown')
   ipc.close()
   setTimeout(() => process.exit(0), 3000).unref()
 }

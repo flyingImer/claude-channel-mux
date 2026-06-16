@@ -55,6 +55,12 @@ Treat Git files and repo evidence as durable orchestration truth. Treat the GP p
 5. Do not overwrite intake, decisions, reports, recall, or source history to make state look clean.
 6. Do not silently choose between GP advice and durable Git state when they disagree.
 
+## Terminal Boundary
+
+- Stop after raw packet persistence, reconciliation, durable updates, conflict creation, and validation summary.
+- Do not dispatch workers, create worker rooms, start agents, call `orchestrate-workers`, or use Codex native subagents in the same turn as GP packet import unless the human explicitly asks for dispatch after the import report.
+- Import completion should report: what changed, what remains blocked, whether dispatch is ready, and the next single action.
+
 ## Conflict Handling
 
 Use `docs/orchestration/_templates/conflict.md` when material advice conflicts with current durable state, repo evidence, active worker output, stage contracts, acceptance, or policy.

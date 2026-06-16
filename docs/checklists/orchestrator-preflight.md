@@ -6,5 +6,7 @@
 - [ ] Durable intake and Stage Contract are persisted with attribution.
 - [ ] Every planned worker has a stable `worker_task_id` and deterministic `desired_room_name` before room creation.
 - [ ] Orchestrator has a parent-controlled path to bind/start/resume the worker agent and send the Worker Task; required human or Guiding Principal worker-room intervention is degraded fallback and an orchestration failure, not success.
+- [ ] Worker execution will use visible CCM Worker Rooms through Agent Control Path, not Codex native subagents, `spawn_agent`, or hidden model-side delegation.
+- [ ] Bootstrap/adopt/repair and GP packet import have already reported readiness in a prior step, or the human explicitly asked to dispatch after that report.
 - [ ] Platform limitations are known: Slack create/archive only; Telegram returns `unsupported_capability`.
 - [ ] Human/review gates are listed for credential, deploy, destructive, policy, release, or scope changes.

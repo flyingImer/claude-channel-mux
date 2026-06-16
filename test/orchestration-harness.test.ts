@@ -34,16 +34,19 @@ test('orchestration workspace instructions enforce role and source-of-truth boun
     'Start with the smallest durable set',
     'Keep each loop to one next action',
     'Workers must not edit orchestration bookkeeping',
+    'Codex native subagents, `spawn_agent`, model-side delegation, and hidden parallel agents are not CCM Worker Rooms',
     'Guiding Principal or human input belongs in',
     'source-material/` with attribution',
     'Humans and Guiding Principal are not expected to participate in worker-room execution',
     'required intervention to bind, start, prompt, debug, or unblock worker execution is an orchestration failure',
     'Guiding Principal responses provide human-context judgment',
     'isOrchestrator: true',
+    'Use visible CCM Worker Rooms for worker execution',
     'unsupported_capability',
     'Archive only after output is consumed',
     'conflicts/` note',
     'Do not grant worker rooms `isOrchestrator` transitively',
+    'Do not treat Codex native subagents, `spawn_agent`, model-side delegation, or hidden parallel agents as Worker Rooms',
     'state-machine.md',
   ]) {
     expect(body).toContain(required)
@@ -116,6 +119,9 @@ test('portable prompt pack maps orchestration roles to bundled skills', () => {
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('minimal effective path')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('never set `chat_id` to the desired or newly created worker room')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('capture_worker_report')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Do not use Codex native subagents')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('terminal setup/intake steps')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Do not dispatch workers in that same turn')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Human or Guiding Principal worker-room inspection is optional')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('an orchestration failure, not successful orchestration')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('$work-in-worker-room')
@@ -162,8 +168,11 @@ test('orchestration checklists cover preflight dispatch integration and recovery
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('isOrchestrator: true')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('worker-room `chat_id` is used only after that room has its own bound session/token')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('required human or Guiding Principal worker-room intervention is degraded fallback and an orchestration failure')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('not Codex native subagents')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('explicitly asked to dispatch after that report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('not by asking the human to type setup commands in the worker room')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Codex native subagents')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Human or Guiding Principal presence in the worker room is optional inspection only')
   expect(readFileSync('docs/checklists/guiding-principal-recall.md', 'utf8')).toContain('not being used as a routine approval gate')
   expect(readFileSync('docs/checklists/guiding-principal-recall.md', 'utf8')).toContain('bun run orchestration:inbox')

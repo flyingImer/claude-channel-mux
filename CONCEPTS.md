@@ -46,6 +46,11 @@ An opaque per-room/per-session token embedded in Codex CCM turns so tool calls f
 
 The token is not the attachment id and not a Slack or Telegram credential. It is CCM's proof that a shared bridge tool call belongs to the current bound Codex session for that room.
 
+### CCM Daemon
+The local long-running service that owns CCM Room state, platform connections, agent registrations, and tool-call routing.
+
+Exactly one CCM Daemon should own active routing state at a time. A replacement daemon may take over only after the previous owner is gone or its ownership records are stale.
+
 ### Attachment Command Turn
 A Codex command turn, such as `/cx goal ...` or `/cx raw ...`, that also carries platform attachment metadata from Slack or Telegram.
 
@@ -55,4 +60,4 @@ Attachment Command Turns must use the CCM turn envelope when attachment metadata
 
 The Human and Guiding Principal steer intent and review quality. The Orchestrator owns execution against that durable context. Worker Rooms host bounded Worker Tasks. Agent Control Path is the mechanism that lets the Orchestrator control Worker Rooms without turning humans or the Guiding Principal into routine operators.
 
-CCM Rooms are the routing boundary for user-agent interaction. The Shared Codex Bridge executes tools for many Codex sessions, so Room Capability Tokens reconnect shared-process tool calls to the correct CCM Room. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and a Room Capability Token.
+CCM Rooms are the routing boundary for user-agent interaction. The CCM Daemon owns active room routing state. The Shared Codex Bridge executes tools for many Codex sessions, so Room Capability Tokens reconnect shared-process tool calls to the correct CCM Room. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and a Room Capability Token.

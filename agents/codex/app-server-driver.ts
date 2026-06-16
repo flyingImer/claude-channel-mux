@@ -300,7 +300,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         '',
         goal,
       ].join('\n')
-      const nativeTurnId = this.commandNeedsTurnEnvelope(input.command)
+      const nativeTurnId = this.commandNeedsTurnEnvelope(input.command) || this.commandHasCcmRoomMetadata(input.command)
         ? await this.startCommandTurn(runtime, input.command, text)
         : await this.startPlainTurn(runtime, input.command, text)
       return { commandId, nativeCommandId: nativeTurnId, display: interrupted ? `Replacing Codex goal; interrupted active turn ${interrupted}.` : 'Replacing Codex goal.' }
@@ -743,6 +743,11 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   private commandNeedsTurnEnvelope(command: import('../types.js').AgentCommand): boolean {
     return ['attachment_file_id', 'attachment_files']
       .some(key => typeof command.meta[key] === 'string' && command.meta[key] !== '')
+  }
+
+  private commandHasCcmRoomMetadata(command: import('../types.js').AgentCommand): boolean {
+    return ['ccm_room_token', 'chat_id', 'room_id']
+        .some(key => typeof command.meta[key] === 'string' && command.meta[key] !== '')
   }
 
   private async sendSlashCommandAsTurn(runtime: CodexRuntime, command: import('../types.js').AgentCommand): Promise<AgentCommandResult> {

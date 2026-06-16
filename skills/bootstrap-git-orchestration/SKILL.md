@@ -50,6 +50,12 @@ Seed files with durable facts, not chat vibes:
 6. Run the repo's relevant validation or at least `git diff --check` before treating bootstrap files as ready.
 7. Prepare persistence or commit only when repo and user policy allow it; do not assume bootstrap grants commit/push permission.
 
+## Terminal Boundary
+
+- Stop after bootstrap/adopt/repair validation and report the initiative status, gaps, and next single action.
+- Do not dispatch workers, create worker rooms, start agents, call `orchestrate-workers`, or use Codex native subagents, `spawn_agent`, model-side delegation, or hidden parallel agents as worker execution in the same turn as bootstrap unless the human explicitly asks for dispatch after the bootstrap report.
+- Bootstrap readiness is not dispatch authorization. A later Orchestrator turn must process unread inbox, confirm no blocking conflicts, and pass worker-dispatch preflight first.
+
 ## Portable Harness
 
 - Prefer `bun run orchestration:new -- <initiative-id> --from <actor> --source-ref <ref> --coordination-branch <branch>` to create the full repo structure from templates.

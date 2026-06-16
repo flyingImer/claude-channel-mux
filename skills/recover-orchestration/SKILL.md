@@ -7,6 +7,8 @@ description: Use when CCM orchestration needs recovery after restart, crash, par
 
 Recover from Git state plus CCM/platform facts. Do not invent workflow truth from chat logs or daemon memory.
 
+If recovery must call Agent Control Path tools from Codex, require an opaque `ccm_room_token` from the current `<ccm_turn>`. Native Codex `/goal` turns, Codex internal goal continuations, `CC_CHANNEL_SESSION_UUID`, `CODEX_CHANNEL_SESSION_UUID`, and `ccm-shared-codex-app-server` are not valid room tokens; record the blocker and ask for a fresh parent CCM room `/cx goal ...` or `codex:` cue.
+
 ## Restart Runbook
 
 1. Stop new dispatch. Read `state.md`, `workers.md`, latest `stage.md`, unread `inbox/`, `decisions/`, and `reports/`.
