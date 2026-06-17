@@ -51,7 +51,7 @@ import { truncateAgentContextTurnText as truncateAgentContextTurnTextToMax } fro
 import { chimeInTurnText, collabRoutingPlan } from './agents/collab-routing.js'
 import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanStep, AgentServerRequest, AgentSession, AgentSnapshot, AgentTranscript, AgentTurn } from './agents/types.js'
 import { findZellijSessionLine } from './zellij.js'
-import { commandLine, forwardedEnvExports, shellArg } from './shell.js'
+import { DEFAULT_FORWARDED_AGENT_ENV, commandLine, forwardedEnvExports, forwardedEnvObject, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
 import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
@@ -3031,6 +3031,36 @@ function escapeXmlAttr(value: unknown): string {
   return String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
+function claudeSlashPassthroughText(command: string, ck: string, msg: InboundMessage, cwd: string): string {
+  if (!/^\/goal(?:\s|$)/.test(command.trim())) return command
+  const threadId = msg.replyToId ?? msg.messageId
+  const attrs = [
+    'source="claude-channel-mux"',
+    `room_id="${escapeXmlAttr(ck)}"`,
+    `chat_id="${escapeXmlAttr(ck)}"`,
+    `cwd="${escapeXmlAttr(cwd)}"`,
+    `message_id="${escapeXmlAttr(msg.messageId)}"`,
+    `thread_id="${escapeXmlAttr(threadId)}"`,
+  ].join(' ')
+  return `${command}\n\n<ccm_turn ${attrs}>\n<context_pointers trust="untrusted" />\n</ccm_turn>`
+}
+
+function claudeGoalRequiresOrchestrator(command: string): boolean {
+  const text = command.trim()
+  if (!/^\/goal(?:\s|$)/.test(text)) return false
+  return /\b(?:orchestrate-workers|Worker Rooms?|work rooms?|Agent Control Path|create_room_with_bot_invited|bind_worker_room|start_worker_agent|send_worker_task|capture_worker_report)\b/i.test(text)
+}
+
+function claudeGoalOrchestratorBlockedMessage(ck: string): string {
+  return [
+    'attention_needed — stopped before starting Claude `/goal`.',
+    '',
+    `Room \`${ck}\` is not flagged as an Agent Control Path orchestrator room, so this goal cannot dispatch visible CCM Worker Rooms.`,
+    '',
+    'Run `/ccm orch on` in this room, then re-issue the `/cc goal`, or send the goal from an existing orchestrator room.',
+  ].join('\n')
+}
+
 
 
 // ---------------------------------------------------------------------------
@@ -3329,7 +3359,6 @@ const MARKETPLACE = process.env.CLAUDE_CHANNEL_MUX_MARKETPLACE ?? 'claude-channe
 
 // Spawn mode: 'same-dir' (default) or 'worktree' (git worktree isolation per session)
 const SPAWN_MODE = (process.env.CHANNEL_DAEMON_SPAWN_MODE ?? 'same-dir') as 'same-dir' | 'worktree' | 'disabled'
-
 /**
  * Create a git worktree for a session. Returns the worktree path,
  * or null if not in a git repo or worktree creation fails.
@@ -3411,6 +3440,11 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   // daemon so the channel user sees 🗜️ BEFORE the work (post-hoc JSONL
   // detection runs AFTER compaction finishes, which has no UX value).
   const preCompactScript = join(__dirname, 'hooks', 'pre-compact.ts')
+  const explicitForwardList = (process.env.CHANNEL_DAEMON_FORWARD_ENV ?? '').split(',')
+  const forwardList = [...DEFAULT_FORWARDED_AGENT_ENV, ...explicitForwardList]
+  const forwardedEnvSettings = forwardedEnvObject(forwardList, process.env, name => {
+    process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
+  })
   writeFileSync(settingsFile, JSON.stringify({
     enabledPlugins: {
       'telegram@claude-plugins-official': false,
@@ -3418,6 +3452,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
       'imessage@claude-plugins-official': false,
       'slack@claude-plugins-official': false,
     },
+    env: forwardedEnvSettings,
     prefersReducedMotion: true,
     hooks: {
       PreCompact: [
@@ -3465,10 +3500,9 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
       // is updated and daemon restarts but zellij session is still alive,
       // new tabs inherit stale zellij env. To make a var reliably visible
       // in every spawned CC, set CHANNEL_DAEMON_FORWARD_ENV to a
-      // comma-separated list of var names; daemon explicitly re-exports
-      // them in the bash -c layer so they override zellij inheritance.
-      // Unset by default — no opinion about which vars matter for your setup.
-      const forwardList = (process.env.CHANNEL_DAEMON_FORWARD_ENV ?? '').split(',')
+      // comma-separated list of var names. Daemon always includes common agent
+      // routing/auth vars so CCM-launched Claude/Codex sessions stay on the same
+      // LiteLLM/Snowhouse route as the daemon even when zellij inherited stale env.
       const forwardedExports = forwardedEnvExports(forwardList, process.env, name => {
         process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
       })
@@ -4136,6 +4170,12 @@ async function deleteRoomState(ck: string): Promise<void> {
     if (req.channelKey === ck) pendingCodexRequests.delete(key)
   }
   savePendingCodexRequests()
+}
+
+async function resetRoomForPathChange(ck: string): Promise<void> {
+  const wasOrchestrator = normalizeBinding(loadBindings()[ck]).isOrchestrator
+  await deleteRoomState(ck)
+  if (wasOrchestrator) setRoomOrchestratorFlag(ck, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -5736,6 +5776,11 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         passthrough: true,
       })
       await sendChannelNotice(ck, parsedCommandNotice(runtime, cmd.command), commandNoticeOpts, `${runtime} command parsed notice`)
+      if (claudeGoalRequiresOrchestrator(cmd.command) && !normalizeBinding(loadBindings()[ck]).isOrchestrator) {
+        auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: parseAgentCommandName(cmd.command), ok: false, error: 'room_not_orchestrator' })
+        await sendChannelNotice(ck, formatAgentReply('claude', claudeGoalOrchestratorBlockedMessage(ck)), commandNoticeOpts, 'claude goal orchestrator preflight notice')
+        return
+      }
       const uuid = bindingUuid(ck, runtime)
       if (!uuid) {
         await sendWithButtons(ck, formatAgentReply('claude', 'No Claude agent slot session in this room.'), [{ text: '🚀 Start Claude', data: 'cmd:new:claude' }], commandNoticeOpts)
@@ -5750,7 +5795,8 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       }
       const before = dumpScreen(paneId)
       const { writeChars } = await import('./escort.js')
-      const writeOk = writeChars(paneId, cmd.command)
+      const commandText = claudeSlashPassthroughText(cmd.command, ck, msg, roomCwd(ck))
+      const writeOk = writeChars(paneId, commandText)
       const enterOk = writeOk ? sendKeys(paneId, 'Enter') : false
       if (!writeOk || !enterOk) {
         auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: parseAgentCommandName(cmd.command), ok: false, error: 'failed_to_send_keys' })
@@ -6401,6 +6447,7 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
           if (!sessionId) throw new Error(`failed to start worker ${runtime} agent`)
           action = 'started'
         }
+        if (runtime === 'claude' && !(await waitForLiveBridge(sessionId, 30_000))) throw new Error(`worker ${runtime} session ${sessionId.slice(0, 8)} did not connect after start`)
         setAgentDesiredRunning(workerCk, runtime, true)
         result = JSON.stringify({ ok: true, operation: 'start_worker_agent', platform: workerAdapter.platform, roomId: workerCk, runtime, sessionId, action })
         break
@@ -7080,7 +7127,7 @@ for (const adapter of activeAdapters) {
           await sendChannelNotice(ck, formatAgentReply(runtime, `❌ Cannot use \`${dir}\`: directory is no longer readable.`), undefined, 'directory use failure')
           return
         }
-        await deleteRoomState(ck)
+        await resetRoomForPathChange(ck)
         setRoom(ck, dir, runtime)
         await sendChannelNotice(ck, formatAgentReply(runtime, `✅ Room reset and directory set to \`${dir}\`. ${agentLabel(runtime)} will lazy-start on first cue.`), undefined, 'path change confirmation notice')
       } else if (action === 'interrupt' || action.startsWith('interrupt:')) {

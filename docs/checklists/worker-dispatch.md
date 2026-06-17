@@ -2,7 +2,8 @@
 
 - [ ] Worker task is bounded to one objective, inputs, non-goals, output format, and acceptance evidence.
 - [ ] Worker room creation/adoption facts are recorded in `workers.md`.
-- [ ] Worker is a visible CCM Worker Room; Codex native subagents, `spawn_agent`, and hidden model-side delegation are not used as worker execution.
+- [ ] Worker is a visible CCM Worker Room; Codex native subagents, Claude `Task`, Claude `Workflow`, `spawn_agent`, and hidden model-side delegation are not used as worker execution.
+- [ ] Any human request for fan-out, dynamic workflows, or `subagent-driven-development` is treated as an internal worker quality preference, not as permission to bypass visible Worker Rooms.
 - [ ] Worker room cwd/runtime/default agent metadata is bound with `bind_worker_room`, not by asking the human to type setup commands in the worker room.
 - [ ] Worker agent is started/resumed with `start_worker_agent` from the parent Orchestrator room.
 - [ ] Worker Task is delivered with `send_worker_task` from the parent Orchestrator room.

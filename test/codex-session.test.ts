@@ -154,15 +154,23 @@ test('Codex session lifecycle owns app-server stop and closes remote TUI tab', a
 test('Codex remote TUI launch details stay behind the lifecycle seam', async () => {
   const tui = fakeTui()
   const lifecycle = lifecycleWith({ tui, driver: {} })
+  const previousBaseUrl = process.env.ANTHROPIC_BASE_URL
+  process.env.ANTHROPIC_BASE_URL = 'http://127.0.0.1:24000'
 
-  const meta = await lifecycle.attachTui('019e94e57c377cb3b3152443705b9aaf', session())
-  expect(meta).toEqual({ appServerUrl: 'ws://127.0.0.1:0', codexHome: '/codex-home', tuiTabName: 'ccm:cx:019e94e5' })
-  expect(tui.ensured).toBe(1)
-  expect(tui.tabs).toEqual(['ccm:cx:019e94e5'])
-  expect(tui.commands[0]).toContain('CODEX_HOME=')
-  expect(tui.commands[0]).toContain("'--remote' 'ws://127.0.0.1:0'")
-  expect(tui.commands[0]).toContain("'resume' 'thread-1'")
-  expect(tui.commands[0]).toContain("'-C' '/repo'")
+  try {
+    const meta = await lifecycle.attachTui('019e94e57c377cb3b3152443705b9aaf', session())
+    expect(meta).toEqual({ appServerUrl: 'ws://127.0.0.1:0', codexHome: '/codex-home', tuiTabName: 'ccm:cx:019e94e5' })
+    expect(tui.ensured).toBe(1)
+    expect(tui.tabs).toEqual(['ccm:cx:019e94e5'])
+    expect(tui.commands[0]).toContain("ANTHROPIC_BASE_URL='http://127.0.0.1:24000'")
+    expect(tui.commands[0]).toContain('CODEX_HOME=')
+    expect(tui.commands[0]).toContain("'--remote' 'ws://127.0.0.1:0'")
+    expect(tui.commands[0]).toContain("'resume' 'thread-1'")
+    expect(tui.commands[0]).toContain("'-C' '/repo'")
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.ANTHROPIC_BASE_URL
+    else process.env.ANTHROPIC_BASE_URL = previousBaseUrl
+  }
 })
 
 test('Codex remote TUI attach coalesces concurrent launches for the same session', async () => {

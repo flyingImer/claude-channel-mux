@@ -60,6 +60,31 @@ export function commandLine(prefix: string[], args: string[]): string {
   return [...prefix, ...args].map(shellArg).join(' ')
 }
 
+export const DEFAULT_FORWARDED_AGENT_ENV = [
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+  'OPENAI_BASE_URL',
+  'OPENAI_API_BASE',
+  'OPENAI_API_KEY',
+]
+
+export function forwardedEnvObject(names: string[], env: Record<string, string | undefined>, onInvalid?: (name: string) => void): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const rawName of names) {
+    const name = rawName.trim()
+    if (!name) continue
+    if (!validEnvName(name)) {
+      onInvalid?.(name)
+      continue
+    }
+    if (!Object.prototype.hasOwnProperty.call(env, name)) continue
+    result[name] = env[name] ?? ''
+  }
+  return result
+}
+
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 export function validEnvName(name: string): boolean {
@@ -67,16 +92,7 @@ export function validEnvName(name: string): boolean {
 }
 
 export function forwardedEnvExports(names: string[], env: Record<string, string | undefined>, onInvalid?: (name: string) => void): string {
-  return names
-    .map(name => name.trim())
-    .filter(Boolean)
-    .filter(name => {
-      if (!validEnvName(name)) {
-        onInvalid?.(name)
-        return false
-      }
-      return Object.prototype.hasOwnProperty.call(env, name)
-    })
-    .map(name => `${name}=${shellArg(env[name] ?? '')}`)
+  return Object.entries(forwardedEnvObject(names, env, onInvalid))
+    .map(([name, value]) => `${name}=${shellArg(value)}`)
     .join(' ')
 }

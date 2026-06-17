@@ -371,7 +371,7 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CHANNEL_DAEMON_SELF_TEST_PREFIX` | unset | Test-only prefix that lets bot-authored messages drive inbound E2E tests; keep unset in production |
 | `CLAUDE_CHANNEL_MUX_PLUGIN_DIR` | - | Plugin directory for dev mode (`--plugin-dir`) |
 | `CLAUDE_CHANNEL_MUX_MARKETPLACE` | `claude-channel-mux` | Marketplace name used in the Claude channel tag when not using `CLAUDE_CHANNEL_MUX_PLUGIN_DIR` |
-| `CHANNEL_DAEMON_FORWARD_ENV` | unset | Comma-separated env var names to explicitly export into Claude zellij tabs when zellij inherited stale environment; invalid shell env names are ignored |
+| `CHANNEL_DAEMON_FORWARD_ENV` | unset | Extra comma-separated env var names to export into Claude zellij tabs when zellij inherited stale environment; CCM always forwards common agent routing/auth vars (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY`) so Claude/Codex rooms stay on the daemon's LiteLLM/provider route; invalid shell env names are ignored |
 | `CHANNEL_DAEMON_DEFAULT_AGENT` / `CHANNEL_DAEMON_AGENT` / `CCM_AGENT` | `claude` | Default agent for plain messages in new rooms; override per room with `ccm default` |
 | `CLAUDE_BIN` | `claude` | Path to Claude Code binary |
 | `CODEX_BIN` | `codex` | Codex CLI command prefix; may include deployment-specific CLI flags before CCM appends runtime args |

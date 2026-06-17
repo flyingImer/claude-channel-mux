@@ -72,6 +72,7 @@ test('daemon room control routes are gated by bound room, adapter, and orchestra
   expect(daemon).toContain('setRoomOrchestratorFlag(workerCk, false)')
   expect(daemon).toContain("if (!cwd.startsWith('/')) throw new Error('cwd must be absolute')")
   expect(daemon).toContain('startNew(workerCk, roomCwd(workerCk), runtime, true, true)')
+  expect(daemon).toContain("waitForLiveBridge(sessionId, 30_000)")
   expect(daemon).toContain("if (!sessionId) throw new Error('worker agent must be started before sending a task')")
   expect(daemon).toContain('call start_worker_agent before send_worker_task')
   expect(daemon).toContain('deliverUserTurn(workerCk')
@@ -80,4 +81,20 @@ test('daemon room control routes are gated by bound room, adapter, and orchestra
   expect(daemon).toContain('JSON.stringify(resultFacts)')
   expect(daemon).toContain('Room is not flagged as an Agent Control Path orchestrator room')
   expect(daemon).toContain('Room lifecycle operation is not supported by')
+})
+
+test('daemon preflights Claude goals that request visible worker rooms', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const helper = daemon.slice(daemon.indexOf('function claudeGoalRequiresOrchestrator'), daemon.indexOf('function zellijSync'))
+  const slashBlock = daemon.slice(daemon.indexOf("    case 'slash':"), daemon.indexOf("    case 'new':"))
+
+  expect(helper).toContain('/^\\/goal')
+  for (const marker of ['orchestrate-workers', 'Worker Rooms?', 'Agent Control Path', 'create_room_with_bot_invited', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report']) {
+    expect(helper).toContain(marker)
+  }
+  expect(helper).toContain('attention_needed — stopped before starting Claude `/goal`.')
+  expect(helper).toContain('Run `/ccm orch on` in this room')
+  expect(slashBlock).toContain('claudeGoalRequiresOrchestrator(cmd.command) && !normalizeBinding(loadBindings()[ck]).isOrchestrator')
+  expect(slashBlock.indexOf('claudeGoalRequiresOrchestrator(cmd.command)')).toBeLessThan(slashBlock.indexOf('const uuid = bindingUuid(ck, runtime)'))
+  expect(slashBlock.indexOf('claudeGoalRequiresOrchestrator(cmd.command)')).toBeLessThan(slashBlock.indexOf('writeChars(paneId, commandText)'))
 })

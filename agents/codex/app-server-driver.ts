@@ -752,7 +752,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
   }
 
   private async sendSlashCommandAsTurn(runtime: CodexRuntime, command: import('../types.js').AgentCommand): Promise<AgentCommandResult> {
-    const nativeTurnId = this.commandNeedsTurnEnvelope(command)
+    const nativeTurnId = this.commandNeedsTurnEnvelope(command) || this.commandHasCcmRoomMetadata(command)
       ? await this.startCommandTurn(runtime, command, command.command)
       : await this.startPlainTurn(runtime, command, command.command)
     return {

@@ -59,6 +59,9 @@ test('plugin ships CCM orchestration role skills', () => {
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('visible CCM Worker Rooms')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('ccm-shared-codex-app-server')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('call `get_current_ccm_context` or the runtime\'s CCM context resolver first')
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('Do not treat hidden subagents as an acceptable fallback')
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('fresh result is `resolved` with `is_orchestrator: true`')
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('resolved with `is_orchestrator: false`')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('must not inherit Orchestrator-only delegation authority')
   expect(readFileSync('skills/work-in-worker-room/SKILL.md', 'utf8')).toContain('Worker Report')
   expect(readFileSync('skills/guide-orchestration/SKILL.md', 'utf8')).toContain('Stage Contract')
@@ -67,8 +70,9 @@ test('plugin ships CCM orchestration role skills', () => {
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Completion Reportback')
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Do not use Codex native subagents')
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('visible CCM Worker Rooms')
-  expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Native Codex `/goal` continuations')
+  expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Native `/goal` continuations')
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('call `get_current_ccm_context` or the runtime\'s CCM context resolver before stopping')
+  expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Do not downgrade to hidden subagents')
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Inherited Quality Principles')
   expect(readFileSync('skills/manage-worker-protocol/SKILL.md', 'utf8')).toContain('Authority Boundary')
   expect(readFileSync('skills/recover-orchestration/SKILL.md', 'utf8')).toContain('Create/Adopt/Repair')
@@ -972,13 +976,16 @@ test('forwarded env names are validated before bash export', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const shell = readFileSync('shell.ts', 'utf8')
   const readme = readFileSync('README.md', 'utf8')
-  expect(daemon).toContain("forwardedEnvExports, shellArg } from './shell.js'")
+  expect(daemon).toContain("forwardedEnvExports, forwardedEnvObject, shellArg } from './shell.js'")
   expect(daemon).toContain('const forwardedExports = forwardedEnvExports(forwardList, process.env, name =>')
+  expect(daemon).toContain('const forwardedEnvSettings = forwardedEnvObject(forwardList, process.env, name =>')
+  expect(daemon).toContain('env: forwardedEnvSettings')
   expect(daemon).toContain('ignoring invalid forwarded env name')
   expect(shell).toContain('export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/')
   expect(shell).toContain('function validEnvName(name: string): boolean')
   expect(shell).toContain('Object.prototype.hasOwnProperty.call(env, name)')
-  expect(shell).toContain("`${name}=${shellArg(env[name] ?? '')}`")
+  expect(shell).toContain('forwardedEnvObject(names, env, onInvalid)')
+  expect(shell).toContain('`${name}=${shellArg(value)}`')
   expect(daemon).not.toContain('return process.env[k]')
   expect(readme).toContain('invalid shell env names are ignored')
 })
@@ -1851,11 +1858,13 @@ test('Codex goal command keeps CCM room metadata in the turn envelope', () => {
   const driver = readFileSync('agents/codex/app-server-driver.ts', 'utf8')
   const commandHasCcmRoomMetadata = driver.slice(driver.indexOf('private commandHasCcmRoomMetadata'), driver.indexOf('private async sendSlashCommandAsTurn'))
   const goalCommand = driver.slice(driver.indexOf("if (name === 'goal')"), driver.indexOf("if (name === 'raw')"))
+  const rawSlashCommand = driver.slice(driver.indexOf('private async sendSlashCommandAsTurn'), driver.indexOf('private async codexStatus'))
   expect(commandHasCcmRoomMetadata).toContain("'chat_id'")
   expect(commandHasCcmRoomMetadata).toContain("'room_id'")
   expect(goalCommand).toContain('this.commandNeedsTurnEnvelope(input.command)')
   expect(goalCommand).toContain('this.commandHasCcmRoomMetadata(input.command)')
   expect(goalCommand).toContain('this.startCommandTurn(runtime, input.command, text)')
+  expect(rawSlashCommand).toContain('this.commandNeedsTurnEnvelope(command) || this.commandHasCcmRoomMetadata(command)')
 })
 
 
@@ -2171,7 +2180,19 @@ test('path binding and slash passthrough confirmations use observable channel no
   const slashBlock = daemon.slice(daemon.indexOf("    case 'slash':"), daemon.indexOf("    case 'new':"))
   expect(slashBlock).toContain("commandNoticeOpts, 'claude slash passthrough notice')")
   expect(slashBlock).toContain("commandNoticeOpts, 'claude slash passthrough failure notice')")
-  expect(slashBlock).toContain('const writeOk = writeChars(paneId, cmd.command)')
+  expect(daemon).toContain('function claudeSlashPassthroughText(command: string, ck: string, msg: InboundMessage, cwd: string): string')
+  expect(daemon).toContain('if (!/^\\/goal(?:\\s|$)/.test(command.trim())) return command')
+  expect(daemon).toContain('`chat_id="${escapeXmlAttr(ck)}"`')
+  expect(daemon).toContain('function claudeGoalRequiresOrchestrator(command: string): boolean')
+  expect(daemon).toContain('create_room_with_bot_invited|bind_worker_room|start_worker_agent|send_worker_task|capture_worker_report')
+  expect(daemon).toContain('function claudeGoalOrchestratorBlockedMessage(ck: string): string')
+  expect(slashBlock).toContain('claudeGoalRequiresOrchestrator(cmd.command) && !normalizeBinding(loadBindings()[ck]).isOrchestrator')
+  expect(slashBlock).toContain("error: 'room_not_orchestrator'")
+  expect(slashBlock).toContain("'claude goal orchestrator preflight notice'")
+  expect(slashBlock.indexOf('claudeGoalRequiresOrchestrator(cmd.command)')).toBeLessThan(slashBlock.indexOf('const uuid = bindingUuid(ck, runtime)'))
+  expect(slashBlock.indexOf('claudeGoalRequiresOrchestrator(cmd.command)')).toBeLessThan(slashBlock.indexOf('const commandText = claudeSlashPassthroughText(cmd.command, ck, msg, roomCwd(ck))'))
+  expect(slashBlock).toContain('const commandText = claudeSlashPassthroughText(cmd.command, ck, msg, roomCwd(ck))')
+  expect(slashBlock).toContain('const writeOk = writeChars(paneId, commandText)')
   expect(slashBlock).toContain("const enterOk = writeOk ? sendKeys(paneId, 'Enter') : false")
   expect(slashBlock).toContain('if (!writeOk || !enterOk)')
   expect(slashBlock).not.toContain('adapter?.sendMessage(id')
@@ -2356,6 +2377,7 @@ test('env example covers README-documented operational knobs', () => {
 
 test('documented environment variables cover daemon aliases and forwarded env', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
+  const shell = readFileSync('shell.ts', 'utf8')
   const env = readFileSync('.env.example', 'utf8')
   const readme = readFileSync('README.md', 'utf8')
   for (const name of [
@@ -2369,6 +2391,22 @@ test('documented environment variables cover daemon aliases and forwarded env', 
     expect(readme).toContain(name)
   }
   expect(env).toContain('CHANNEL_DAEMON_FORWARD_ENV')
+  for (const name of [
+    'ANTHROPIC_BASE_URL',
+    'ANTHROPIC_API_KEY',
+    'ANTHROPIC_AUTH_TOKEN',
+    'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+    'OPENAI_BASE_URL',
+    'OPENAI_API_BASE',
+    'OPENAI_API_KEY',
+  ]) {
+    expect(shell).toContain(name)
+    expect(readme).toContain(name)
+    expect(env).toContain(name)
+  }
+  expect(daemon).toContain('DEFAULT_FORWARDED_AGENT_ENV')
+  expect(daemon).toContain('forwardedEnvObject(forwardList, process.env')
+  expect(daemon).toContain('env: forwardedEnvSettings')
   expect(readme).toContain('OPENAI_API_KEY')
   expect(readme).toContain('Codex App Server credential')
   expect(env).toContain('CLAUDE_CHANNEL_MUX_MARKETPLACE')
@@ -3738,11 +3776,16 @@ test('room delete and path-change reset are confirmed operations', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   expect(daemon).toContain("| { t: 'delete_room' }")
   expect(daemon).toContain('async function deleteRoomState')
+  expect(daemon).toContain('async function resetRoomForPathChange')
+  expect(daemon).toContain('const wasOrchestrator = normalizeBinding(loadBindings()[ck]).isOrchestrator')
+  expect(daemon).toContain('if (wasOrchestrator) setRoomOrchestratorFlag(ck, true)')
   expect(daemon).toContain("if (/^(?:delete|reset)\\s+room$/i.test(args)) return { t: 'delete_room' }")
   expect(daemon).toContain("{ text: '🗑 Confirm Delete Room', data: 'cmd:delete_room_confirm' }")
   expect(daemon).toContain("action === 'delete_room_confirm'")
   expect(daemon).toContain("action.startsWith('pathconfirm:')")
-  expect(daemon).toContain('await deleteRoomState(ck)')
+  const pathConfirmBlock = daemon.slice(daemon.indexOf("action.startsWith('pathconfirm:')"), daemon.indexOf("action === 'interrupt'"))
+  expect(pathConfirmBlock).toContain('await resetRoomForPathChange(ck)')
+  expect(pathConfirmBlock).not.toContain('await deleteRoomState(ck)')
   expect(daemon).toContain('encodeURIComponent(cmd.cwd)')
 })
 

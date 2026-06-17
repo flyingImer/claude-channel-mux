@@ -24,6 +24,11 @@ The structured parent-room control surface that lets an Orchestrator operate wor
 
 For worker execution, Agent Control Path must make bind, start/resume, send, capture/reportback, and archive steps explicit so the Orchestrator can prove what happened without entering the worker room manually. Lifecycle calls may recover a missing room identity only through Current CCM Context; they must not guess from unrelated rooms or bridge ids.
 
+### Orchestrator Room Flag
+The persisted CCM Room role marker that authorizes Agent Control Path lifecycle tools from a parent room.
+
+The Orchestrator Room Flag is control-plane state, not disposable session metadata. Room reset paths may clear cwd, agent slots, pending UI, or runtime metadata, but must preserve an enabled flag unless the user explicitly turns orchestration off.
+
 ### Worker Task
 A bounded assignment sent to a worker agent with objective, inputs, non-goals, output format, and acceptance evidence.
 
@@ -51,10 +56,20 @@ The local long-running service that owns CCM Room state, platform connections, a
 
 Exactly one CCM Daemon should own active routing state at a time. A replacement daemon may take over only after the previous owner is gone or its ownership records are stale.
 
+### Agent Routing Environment
+The provider-routing and authentication environment that CCM must pass to every managed agent launch surface so model calls use the intended local or remote provider path.
+
+Agent Routing Environment is part of the launcher contract, not incidental shell state. The CCM Daemon owns the effective values, while Claude zellij tabs, Codex app-server processes, and Codex remote TUIs must receive a consistent view when they are launched.
+
 ### Attachment Command Turn
 A Codex command turn, such as `/cx goal ...` or `/cx raw ...`, that also carries platform attachment metadata from Slack or Telegram.
 
 Attachment Command Turns must use the CCM turn envelope when attachment metadata is present so the agent receives both the attachment id and the room `chat_id` needed to call attachment tools.
+
+### Native Goal Passthrough
+A CCM room command that starts or replaces an agent's native goal while still preserving the CCM room context needed for visible orchestration.
+
+Native Goal Passthrough must not be treated as plain terminal text. If the goal originates from a CCM Room, the turn must carry or recover Current CCM Context before deciding whether Agent Control Path Worker Rooms are available.
 
 ### CCM MCP Tool Registry
 The canonical inventory of callable CCM tool names, descriptions, and input schemas shared by the MCP bridge and runtime launch surfaces.
@@ -63,6 +78,6 @@ The registry prevents server tool exposure, agent allowlists, tests, and documen
 
 ## Relationships
 
-The Human and Guiding Principal steer intent and review quality. The Orchestrator owns execution against that durable context. Worker Rooms host bounded Worker Tasks. Agent Control Path is the mechanism that lets the Orchestrator control Worker Rooms without turning humans or the Guiding Principal into routine operators.
+The Human and Guiding Principal steer intent and review quality. The Orchestrator owns execution against that durable context. Worker Rooms host bounded Worker Tasks. Agent Control Path is the mechanism that lets the Orchestrator control Worker Rooms without turning humans or the Guiding Principal into routine operators. The Orchestrator Room Flag records which CCM Room is allowed to use that control surface.
 
-CCM Rooms are the routing boundary for user-agent interaction. The CCM Daemon owns active room routing state. The Shared Codex Bridge executes tools for many Codex sessions, so shared-process tool calls route by explicit `chat_id` and the current Codex room binding. Current CCM Context lets a directly bound session recover its room identity when turn metadata is missing, but only when the binding is unambiguous. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and room identity. The CCM MCP Tool Registry keeps the callable tool inventory consistent across those routing surfaces.
+CCM Rooms are the routing boundary for user-agent interaction. The CCM Daemon owns active room routing state and the Agent Routing Environment for managed launches. The Shared Codex Bridge executes tools for many Codex sessions, so shared-process tool calls route by explicit `chat_id` and the current Codex room binding. Current CCM Context lets a directly bound session recover its room identity when turn metadata is missing, but only when the binding is unambiguous. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and room identity. Native Goal Passthrough starts or replaces native agent goals while preserving the same room identity needed for Agent Control Path decisions. The CCM MCP Tool Registry keeps the callable tool inventory consistent across those routing surfaces.

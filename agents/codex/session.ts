@@ -1,5 +1,5 @@
 import type { AgentSession } from '../types.js'
-import { commandLine, shellArg } from '../../shell.js'
+import { DEFAULT_FORWARDED_AGENT_ENV, commandLine, forwardedEnvExports, shellArg } from '../../shell.js'
 import type { CodexResolvedConfig } from './config.js'
 import type { CodexAppServerAgentDriver } from './app-server-driver.js'
 
@@ -59,7 +59,8 @@ function codexTuiStatusDescription(status: CodexRemoteTuiStatus): string {
 }
 
 function codexRemoteTuiCommand(config: CodexResolvedConfig, session: AgentSession, appServerUrl: string): string {
-  const envExports = `export CODEX_HOME=${shellArg(config.home)} DISABLE_AUTOUPDATER=1;`
+  const agentEnvExports = forwardedEnvExports(DEFAULT_FORWARDED_AGENT_ENV, process.env)
+  const envExports = `export ${agentEnvExports} CODEX_HOME=${shellArg(config.home)} DISABLE_AUTOUPDATER=1;`
   const cmd = commandLine(config.command, [...config.launchArgs, '--remote', appServerUrl, 'resume', session.nativeSessionId, '-C', session.cwd])
   return `${envExports} cd ${shellArg(session.cwd)} && exec ${cmd}`
 }

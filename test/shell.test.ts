@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { commandLine, commandPrefix, forwardedEnvExports, shellArg, shellWords, validEnvName } from '../shell.ts'
+import { commandLine, commandPrefix, forwardedEnvExports, forwardedEnvObject, shellArg, shellWords, validEnvName } from '../shell.ts'
 
 test('validEnvName accepts only shell-safe environment variable names', () => {
   expect(validEnvName('OPENAI_API_KEY')).toBe(true)
@@ -29,5 +29,18 @@ test('forwardedEnvExports keeps empty values and reports invalid names', () => {
   const result = forwardedEnvExports([' OPENAI_API_KEY ', 'BAD-NAME', 'EMPTY', 'MISSING', 'QUOTED'], env, name => invalid.push(name))
 
   expect(result).toBe("OPENAI_API_KEY='sk-test' EMPTY='' QUOTED='a'\\''b'")
+  expect(invalid).toEqual(['BAD-NAME'])
+})
+
+test('forwardedEnvObject keeps daemon env values for generated settings', () => {
+  const invalid: string[] = []
+  const env = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:24000', EMPTY: '', OPENAI_BASE_URL: 'http://127.0.0.1:24000/v1' }
+  const result = forwardedEnvObject(['ANTHROPIC_BASE_URL', 'BAD-NAME', 'EMPTY', 'MISSING', 'OPENAI_BASE_URL'], env, name => invalid.push(name))
+
+  expect(result).toEqual({
+    ANTHROPIC_BASE_URL: 'http://127.0.0.1:24000',
+    EMPTY: '',
+    OPENAI_BASE_URL: 'http://127.0.0.1:24000/v1',
+  })
   expect(invalid).toEqual(['BAD-NAME'])
 })

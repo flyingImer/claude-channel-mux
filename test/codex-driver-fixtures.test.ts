@@ -358,6 +358,33 @@ test('Codex sendCommand fails closed for unknown commands and only raw starts a 
   expect(runtime?.turnChannels.get('native')).toBe('test:room')
 })
 
+test('Codex raw goal command carries CCM room metadata when available', async () => {
+  const d = driver()
+  const calls: Array<{ method: string; params: JsonObject }> = []
+  const session = codexSession('raw-goal-session', 'raw-goal-thread')
+  const client = { request: async (method: string, params: JsonObject) => { calls.push({ method, params }); return { result: { turn: { id: 'native-raw-goal' } } } } }
+  d.runtimes.set('raw-goal-session', testRuntime(session, client))
+  const command: AgentCommand = {
+    commandId: 'raw-goal-cmd',
+    roomId: 'slack:C123',
+    channelKey: 'slack:C123',
+    platform: 'slack',
+    channelId: 'C123',
+    threadId: '171000.1',
+    messageId: '171000.1',
+    cwd: '/tmp',
+    command: '/raw /goal create x',
+    meta: { chat_id: 'slack:C123', room_id: 'slack:C123', message_id: '171000.1', thread_id: '171000.1' },
+  }
+
+  await d.sendCommand({ session, command })
+
+  const text = String(calls[0].params.input?.[0]?.text ?? '')
+  expect(text).toContain('<ccm_turn')
+  expect(text).toContain('chat_id="slack:C123"')
+  expect(text).toContain('<current_message>/goal create x</current_message>')
+})
+
 test('Codex turn/start carries effective model from runtime', async () => {
   const d = driver()
   const calls: Array<{ method: string; params: JsonObject }> = []

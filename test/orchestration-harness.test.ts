@@ -121,6 +121,9 @@ test('portable prompt pack maps orchestration roles to bundled skills', () => {
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('call `get_current_ccm_context` or the runtime\'s CCM context resolver before stopping')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('capture_worker_report')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Do not use Codex native subagents')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Claude `Task`, Claude `Workflow`')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('treat that as a quality preference inside each visible Worker Room')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('stop with `attention_needed` instead of running hidden `Task`/`Workflow` agents')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('do not transmit Orchestrator-only delegation authority')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('fan-out, subagent-driven-development')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('terminal setup/intake steps')
@@ -139,6 +142,22 @@ test('portable prompt pack maps orchestration roles to bundled skills', () => {
   expect(readFileSync('prompts/ccm/guiding-principal.md', 'utf8')).toContain('not the routine operator of CCM worker rooms')
   expect(readFileSync('prompts/ccm/auditor.md', 'utf8')).toContain('$audit-worker-output')
   expect(readFileSync('prompts/ccm/recovery.md', 'utf8')).toContain('$recover-orchestration')
+})
+
+test('orchestrate-workers resolves generic subagent requests toward visible rooms', () => {
+  const skill = readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')
+  const checklist = readFileSync('docs/checklists/worker-dispatch.md', 'utf8')
+  for (const required of [
+    'Claude `Task`, Claude `Workflow`',
+    'generic delegation skill such as `subagent-driven-development`',
+    'not substitutes for CCM Worker Rooms',
+    'run Agent Control Path preflight first',
+    'do not proceed with hidden `Task`/`Workflow` execution',
+  ]) {
+    expect(skill).toContain(required)
+  }
+  expect(checklist).toContain('Claude `Task`, Claude `Workflow`')
+  expect(checklist).toContain('not as permission to bypass visible Worker Rooms')
 })
 
 test('agent control path contract pins V1 lifecycle invariants', () => {
@@ -175,10 +194,13 @@ test('orchestration checklists cover preflight dispatch integration and recovery
   for (const name of checklistNames) {
     expect(existsSync(`docs/checklists/${name}`)).toBe(true)
   }
-  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('isOrchestrator: true')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('is_orchestrator: true')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('fresh `resolved` + `is_orchestrator: true` wins over stale notes')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('not as permission to use hidden subagents')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('worker-room `chat_id` is used only after that room has its own binding')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('required human or Guiding Principal worker-room intervention is degraded fallback and an orchestration failure')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('not Codex native subagents')
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('Treat older notes such as "no chat_id", "CCM rooms unavailable", or "in-process fallback chosen" as stale')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('explicitly asked to dispatch after that report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('not by asking the human to type setup commands in the worker room')
