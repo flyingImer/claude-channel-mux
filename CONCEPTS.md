@@ -22,7 +22,7 @@ Human or Guiding Principal presence in a Worker Room is optional inspection. Req
 ### Agent Control Path
 The structured parent-room control surface that lets an Orchestrator operate worker-room lifecycle without simulating chat commands or requiring humans to type in worker rooms.
 
-For worker execution, Agent Control Path must make bind, start/resume, send, capture/reportback, and archive steps explicit so the Orchestrator can prove what happened without entering the worker room manually.
+For worker execution, Agent Control Path must make bind, start/resume, send, capture/reportback, and archive steps explicit so the Orchestrator can prove what happened without entering the worker room manually. Lifecycle calls may recover a missing room identity only through Current CCM Context; they must not guess from unrelated rooms or bridge ids.
 
 ### Worker Task
 A bounded assignment sent to a worker agent with objective, inputs, non-goals, output format, and acceptance evidence.
@@ -39,7 +39,12 @@ The CCM Room is the routing boundary for visible user messages, agent replies, a
 ### Shared Codex Bridge
 The single Codex MCP bridge process used by Codex app-server sessions to call CCM tools on behalf of many logical CCM Codex sessions.
 
-Because the Shared Codex Bridge is process-shared, tool calls must carry the current room `chat_id`. The daemon resolves the logical Codex session from that room binding, then applies bound-room authorization before executing tools such as attachment download or thread fetch.
+Because the Shared Codex Bridge is process-shared, tool calls must carry the current room identity. For shared-bridge calls this is normally explicit `chat_id`; the bridge id itself is never a room id.
+
+### Current CCM Context
+The daemon-resolved room identity for an agent session, derived from an explicit turn route or from that session's direct room binding when exactly one authorized room matches.
+
+Current CCM Context is a control boundary: a resolved context may authorize Agent Control Path tools for an Orchestrator room, while ambiguous or unbound context requires the agent to pass an explicit room id or re-enter through a bound CCM room.
 
 ### CCM Daemon
 The local long-running service that owns CCM Room state, platform connections, agent registrations, and tool-call routing.
@@ -60,4 +65,4 @@ The registry prevents server tool exposure, agent allowlists, tests, and documen
 
 The Human and Guiding Principal steer intent and review quality. The Orchestrator owns execution against that durable context. Worker Rooms host bounded Worker Tasks. Agent Control Path is the mechanism that lets the Orchestrator control Worker Rooms without turning humans or the Guiding Principal into routine operators.
 
-CCM Rooms are the routing boundary for user-agent interaction. The CCM Daemon owns active room routing state. The Shared Codex Bridge executes tools for many Codex sessions, so shared-process tool calls route by explicit `chat_id` and the current Codex room binding. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and room identity. The CCM MCP Tool Registry keeps the callable tool inventory consistent across those routing surfaces.
+CCM Rooms are the routing boundary for user-agent interaction. The CCM Daemon owns active room routing state. The Shared Codex Bridge executes tools for many Codex sessions, so shared-process tool calls route by explicit `chat_id` and the current Codex room binding. Current CCM Context lets a directly bound session recover its room identity when turn metadata is missing, but only when the binding is unambiguous. Attachment Command Turns combine command semantics with platform attachments and therefore need both attachment metadata and room identity. The CCM MCP Tool Registry keeps the callable tool inventory consistent across those routing surfaces.

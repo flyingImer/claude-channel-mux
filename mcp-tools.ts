@@ -8,6 +8,11 @@ export type CcmMcpToolDefinition = {
     properties: Record<string, unknown>
     required: string[]
   }
+  outputSchema?: {
+    type: 'object'
+    properties: Record<string, unknown>
+    required: string[]
+  }
 }
 
 export const CCM_MCP_TOOL_NAMES = [
@@ -16,6 +21,7 @@ export const CCM_MCP_TOOL_NAMES = [
   'edit_message',
   'download_attachment',
   'fetch_thread',
+  'get_current_ccm_context',
   'create_room_with_bot_invited',
   'archive_room',
   'bind_worker_room',
@@ -100,84 +106,103 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
     },
   },
   {
+    name: 'get_current_ccm_context',
+    description: 'Read-only Agent Control Path context probe. Resolves the current CCM room from this turn/session binding and returns status resolved, ambiguous, or not_bound plus authorized_control_tools for the resolved room.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+    outputSchema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['resolved', 'ambiguous', 'not_bound'], description: 'Whether the current CCM turn/session binding resolved to exactly one room, multiple possible rooms, or no bound room.' },
+        chat_id: { type: 'string', description: 'Resolved current CCM room channel key when status is resolved.' },
+        candidate_chat_ids: { type: 'array', items: { type: 'string' }, description: 'Candidate bound room channel keys when status is ambiguous.' },
+        authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
+      },
+      required: ['status', 'authorized_control_tools'],
+    },
+  },
+  {
     name: 'create_room_with_bot_invited',
-    description: 'Agent Control Path V1: create a Slack private worker room and invite the CCM bot. Requires an orchestrator room. Use the current Orchestrator parent room for chat_id and parent_chat_id; do not use the desired/new worker room as chat_id until that room has its own binding.',
+    description: 'Agent Control Path V1: create a Slack private worker room and invite the CCM bot. Requires an orchestrator room. chat_id is optional when the current CCM turn/session binding resolves to one room; parent_chat_id defaults to the resolved/current Orchestrator parent room when omitted. Do not use the desired/new worker room as chat_id until that room has its own binding.',
     inputSchema: {
       type: 'object',
       properties: {
-        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key' },
-        parent_chat_id: { type: 'string', description: 'Parent room channel key whose eligible ordinary members may be invited best-effort; for create, this is normally the same as chat_id' },
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
+        parent_chat_id: { type: 'string', description: 'Parent room channel key whose eligible ordinary members may be invited best-effort; defaults to the resolved/current Orchestrator parent room' },
         desired_room_name: { type: 'string', description: 'Desired worker room name. Orchestrator owns naming/collision policy.' },
       },
-      required: ['chat_id', 'parent_chat_id', 'desired_room_name'],
+      required: ['desired_room_name'],
     },
   },
   {
     name: 'archive_room',
-    description: 'Agent Control Path V1: archive a worker room. Requires an orchestrator room; archive timing policy belongs to the orchestrator.',
+    description: 'Agent Control Path V1: archive a worker room. Requires an orchestrator room; archive timing policy belongs to the orchestrator. chat_id is optional when the current CCM turn/session binding resolves to one room.',
     inputSchema: {
       type: 'object',
       properties: {
-        chat_id: { type: 'string', description: 'Current orchestrator room channel key' },
+        chat_id: { type: 'string', description: 'Current orchestrator room channel key; optional when resolver fallback can infer it from this turn/session binding' },
         room_id: { type: 'string', description: 'Platform-local worker room id to archive' },
       },
-      required: ['chat_id', 'room_id'],
+      required: ['room_id'],
     },
   },
   {
     name: 'bind_worker_room',
-    description: 'Agent Control Path V1: bind a worker room cwd/runtime metadata from the current Orchestrator parent room. Requires an orchestrator room; the worker room does not inherit isOrchestrator.',
+    description: 'Agent Control Path V1: bind a worker room cwd/runtime metadata from the current Orchestrator parent room. Requires an orchestrator room; the worker room does not inherit isOrchestrator. chat_id is optional when the current CCM turn/session binding resolves to one room.',
     inputSchema: {
       type: 'object',
       properties: {
-        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key' },
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
         room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
         cwd: { type: 'string', description: 'Absolute working directory to bind to the worker room' },
         runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Default worker agent runtime' },
       },
-      required: ['chat_id', 'room_id', 'cwd', 'runtime'],
+      required: ['room_id', 'cwd', 'runtime'],
     },
   },
   {
     name: 'start_worker_agent',
-    description: 'Agent Control Path V1: start or resume the assigned worker agent in a bound worker room from the current Orchestrator parent room. Requires an orchestrator room.',
+    description: 'Agent Control Path V1: start or resume the assigned worker agent in a bound worker room from the current Orchestrator parent room. Requires an orchestrator room. chat_id is optional when the current CCM turn/session binding resolves to one room.',
     inputSchema: {
       type: 'object',
       properties: {
-        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key' },
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
         room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
         runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to start or resume' },
       },
-      required: ['chat_id', 'room_id', 'runtime'],
+      required: ['room_id', 'runtime'],
     },
   },
   {
     name: 'send_worker_task',
-    description: 'Agent Control Path V1: send a bounded Worker Task to a started/bound worker room from the current Orchestrator parent room. Requires an orchestrator room.',
+    description: 'Agent Control Path V1: send a bounded Worker Task to a started/bound worker room from the current Orchestrator parent room. Requires an orchestrator room. chat_id is optional when the current CCM turn/session binding resolves to one room.',
     inputSchema: {
       type: 'object',
       properties: {
-        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key' },
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
         room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
         runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to receive the task' },
         text: { type: 'string', description: 'Bounded Worker Task prompt to deliver' },
         thread_id: { type: 'string', description: 'Optional worker-room thread/message id pointer' },
       },
-      required: ['chat_id', 'room_id', 'runtime', 'text'],
+      required: ['room_id', 'runtime', 'text'],
     },
   },
   {
     name: 'capture_worker_report',
-    description: 'Agent Control Path V1: retrieve worker-room transcript/reportback facts from the current Orchestrator parent room so the Orchestrator can capture a durable Worker Report in Git. Requires an orchestrator room.',
+    description: 'Agent Control Path V1: retrieve worker-room transcript/reportback facts from the current Orchestrator parent room so the Orchestrator can capture a durable Worker Report in Git. Requires an orchestrator room. chat_id is optional when the current CCM turn/session binding resolves to one room.',
     inputSchema: {
       type: 'object',
       properties: {
-        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key' },
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
         room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
         runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to capture from' },
         limit: { type: 'number', description: 'Maximum transcript entries to return, clamped by daemon limits' },
       },
-      required: ['chat_id', 'room_id', 'runtime'],
+      required: ['room_id', 'runtime'],
     },
   },
   {

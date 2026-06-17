@@ -9,7 +9,7 @@ Use this for Orchestrator-to-Worker operations after bootstrap. Keep worker room
 
 This protocol only applies to visible CCM Worker Rooms controlled by the Orchestrator parent room. Do not use Codex native subagents, `spawn_agent`, model-side delegation, or hidden parallel agents as worker execution.
 
-Worker-room lifecycle tools require `chat_id` from the current CCM room context (`<ccm_turn ... chat_id="...">` or command metadata). Native Codex `/goal` continuations may lack that room context. Never pass `CC_CHANNEL_SESSION_UUID`, `CODEX_CHANNEL_SESSION_UUID`, or `ccm-shared-codex-app-server` as `chat_id`; those identify the shared Codex bridge, not the room. Ask for a parent-room `/cx goal ...` or `codex:` cue when the current turn lacks `chat_id`.
+Worker-room lifecycle tools require `chat_id` from the current CCM room context (`<ccm_turn ... chat_id="...">` or command metadata). Native Codex `/goal` continuations may lack that room context. Never pass `CC_CHANNEL_SESSION_UUID`, `CODEX_CHANNEL_SESSION_UUID`, or `ccm-shared-codex-app-server` as `chat_id`; those identify the shared Codex bridge, not the room. If the first lifecycle call lacks `chat_id`, call `get_current_ccm_context` or the runtime's CCM context resolver before stopping; retry with the resolved parent room `chat_id` when available. Ask for a parent-room `/cx goal ...` or `codex:` cue only when the current turn and resolver both lack `chat_id`.
 
 ## Protocol Steps
 
@@ -50,6 +50,8 @@ Worker Task: <worker_task_id>
 Stage: <stage_name>
 Objective: <single outcome>
 Inputs: <files/docs/artifacts>
+Inherited Quality Principles: think-harder on ambiguous tradeoffs; verify with the most relevant available evidence before completion
+Authority Boundary: no fan-out, no subagent-driven-development, no hidden subagents, no worker-room creation/adoption/archive, and no control over peer workers
 Deny-listed Writes: orchestration bookkeeping, credentials, other workers, room metadata
 Output: Worker Report with evidence and next-step recommendation
 Stop Condition: post the report, then wait for Orchestrator follow-up

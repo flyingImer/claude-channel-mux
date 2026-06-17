@@ -485,6 +485,87 @@ function bindingEntries(): Array<{ channelKey: string; runtime: AgentRuntimeKind
   return entries
 }
 
+const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report'])
+
+type CurrentCcmContext =
+  | { status: 'resolved'; chat_id: string; room_id: string; cwd: string; runtime: AgentRuntimeKind; is_orchestrator: boolean; source: 'route.channelKey' | 'session_binding' | 'orchestrator_session_binding'; authorized_control_tools: string[] }
+  | { status: 'ambiguous'; source: 'session_binding' | 'orchestrator_session_binding'; candidate_chat_ids: string[]; reason: string; authorized_control_tools: string[] }
+  | { status: 'not_bound'; source: 'session_binding' | 'orchestrator_session_binding' | 'shared_codex_bridge'; reason: string; authorized_control_tools: string[] }
+type CurrentCcmContextSource = Extract<CurrentCcmContext, { status: 'resolved' }>['source']
+
+function authorizedControlToolsForBinding(binding: NormalizedBinding): string[] {
+  return binding.isOrchestrator ? [...AGENT_CONTROL_PATH_TOOL_NAMES] : []
+}
+
+function currentCcmContextFromChannelKey(ck: string, source: CurrentCcmContextSource, uuid: string): Extract<CurrentCcmContext, { status: 'resolved' }> {
+  const binding = normalizeBinding(loadBindings()[ck])
+  return {
+    status: 'resolved',
+    chat_id: ck,
+    room_id: localId(ck),
+    cwd: roomCwd(ck),
+    runtime: runtimeForUuid(uuid),
+    is_orchestrator: binding.isOrchestrator,
+    source,
+    authorized_control_tools: authorizedControlToolsForBinding(binding),
+  }
+}
+
+function boundChannelKeysForSession(uuid: string): string[] {
+  return bindingAuthorizedRoomsForSession(loadBindings(), uuid).filter(ck => channelAllowed(ck) && !!adapterFor(ck))
+}
+
+function resolveCurrentCcmContext(callerUuid: string, route?: { channelKey: string }, orchestratorOnly = false): CurrentCcmContext {
+  if (route?.channelKey) return currentCcmContextFromChannelKey(route.channelKey, 'route.channelKey', callerUuid)
+  const source = orchestratorOnly ? 'orchestrator_session_binding' : 'session_binding'
+  if (callerUuid === SHARED_CODEX_BRIDGE_ID) {
+    return {
+      status: 'not_bound',
+      source: 'shared_codex_bridge',
+      reason: 'Shared Codex app-server calls do not carry a unique native session binding yet; pass chat_id or attach the native TUI session to a CCM room before lifecycle control.',
+      authorized_control_tools: [],
+    }
+  }
+  const bindings = loadBindings()
+  const candidates = boundChannelKeysForSession(callerUuid)
+    .filter(ck => !orchestratorOnly || normalizeBinding(bindings[ck]).isOrchestrator)
+  if (candidates.length === 0) {
+    return {
+      status: 'not_bound',
+      source,
+      reason: `Session ${callerUuid.slice(0, 8)} is not bound to any ${orchestratorOnly ? 'Agent Control Path orchestrator ' : ''}CCM room`,
+      authorized_control_tools: [],
+    }
+  }
+  if (candidates.length > 1) {
+    return {
+      status: 'ambiguous',
+      source,
+      candidate_chat_ids: candidates,
+      reason: `Session ${callerUuid.slice(0, 8)} is bound to multiple ${orchestratorOnly ? 'Agent Control Path orchestrator ' : ''}CCM rooms; pass chat_id explicitly`,
+      authorized_control_tools: [],
+    }
+  }
+  return currentCcmContextFromChannelKey(candidates[0], source, callerUuid)
+}
+
+function currentCcmContextForSession(uuid: string, args: Record<string, unknown>): Record<string, unknown> {
+  const requestedCk = stringValue(args.chat_id)
+  if (uuid === SHARED_CODEX_BRIDGE_ID && requestedCk) {
+    const sessionId = bindingUuid(requestedCk, 'codex')
+    if (!sessionId) return resolveCurrentCcmContext(uuid)
+    return resolveCurrentCcmContext(sessionId, { channelKey: requestedCk })
+  }
+  return resolveCurrentCcmContext(uuid, requestedCk ? { channelKey: canonicalToolChannelKey(uuid, requestedCk) } : undefined)
+}
+
+function requireResolvedCurrentCcmContext(context: CurrentCcmContext, callerUuid: string, purpose: string): Extract<CurrentCcmContext, { status: 'resolved' }> {
+  if (context.status === 'resolved') return context
+  const sessionLabel = callerUuid === SHARED_CODEX_BRIDGE_ID ? 'shared Codex bridge' : `session ${callerUuid.slice(0, 8)}`
+  if (context.status === 'not_bound') throw new Error(`${purpose} requires an orchestrator room, but ${sessionLabel} is not bound to exactly one orchestrator room. Pass chat_id for the current orchestrator room or bind this session with ccm first.`)
+  throw new Error(`${purpose} requires an orchestrator room, but ${sessionLabel} is bound to multiple orchestrator rooms. Pass chat_id for the intended current orchestrator room.`)
+}
+
 function canonicalToolChannelKey(uuid: string, requestedCk: string): string {
   const boundRooms = bindingAuthorizedRoomsForSession(loadBindings(), uuid)
   if (boundRooms.length === 0) {
@@ -497,7 +578,17 @@ function canonicalToolChannelKey(uuid: string, requestedCk: string): string {
   throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to session ${uuid.slice(0, 8)}; bound room(s): ${boundRooms.join(', ')}`)
 }
 
-function resolveToolCallRoute(callerUuid: string, args: Record<string, unknown>): { responseUuid: string; sessionId: string; channelKey: string } {
+function orchestratorToolChannelKey(uuid: string, requestedCk: string): string {
+  if (requestedCk) {
+    const ck = canonicalToolChannelKey(uuid, requestedCk)
+    if (normalizeBinding(loadBindings()[ck]).isOrchestrator) return ck
+    throw new Error('Room is not flagged as an Agent Control Path orchestrator room')
+  }
+  return requireResolvedCurrentCcmContext(resolveCurrentCcmContext(uuid, undefined, true), uuid, 'Agent Control Path lifecycle').chat_id
+}
+
+function resolveToolCallRoute(callerUuid: string, tool: string, args: Record<string, unknown>): { responseUuid: string; sessionId: string; channelKey: string } {
+  const agentControlPathTool = AGENT_CONTROL_PATH_TOOL_NAMES.has(tool)
   if (callerUuid === SHARED_CODEX_BRIDGE_ID) {
     const requestedCk = stringValue(args.chat_id)
     const sessionId = bindingUuid(requestedCk, 'codex')
@@ -505,10 +596,10 @@ function resolveToolCallRoute(callerUuid: string, args: Record<string, unknown>)
       auditEvent({ event: 'tool_chat_id_mismatch', reason: 'shared_codex_room_not_bound', requested_room_id: requestedCk, from_session_id: callerUuid, from_agent: 'codex' })
       throw new Error(`Tool chat_id ${requestedCk || '(missing)'} is not bound to a Codex session`)
     }
-    return { responseUuid: callerUuid, sessionId, channelKey: canonicalToolChannelKey(sessionId, requestedCk) }
+    return { responseUuid: callerUuid, sessionId, channelKey: agentControlPathTool ? orchestratorToolChannelKey(sessionId, requestedCk) : canonicalToolChannelKey(sessionId, requestedCk) }
   }
   const requestedCk = stringValue(args.chat_id)
-  return { responseUuid: callerUuid, sessionId: callerUuid, channelKey: canonicalToolChannelKey(callerUuid, requestedCk) }
+  return { responseUuid: callerUuid, sessionId: callerUuid, channelKey: agentControlPathTool ? orchestratorToolChannelKey(callerUuid, requestedCk) : canonicalToolChannelKey(callerUuid, requestedCk) }
 }
 
 function roomCwd(ck: string): string {
@@ -6118,9 +6209,17 @@ function isPermissionRequestMessage(msg: Record<string, unknown>): msg is { type
 }
 
 async function handleTool(msg: { tool: string; args: Record<string, unknown>; callId: string }, callerUuid: string, callerConn: Socket): Promise<void> {
+  if (msg.tool === 'get_current_ccm_context') {
+    try {
+      sendToIpcConn(callerUuid, callerConn, { type: 'tool_result', callId: msg.callId, result: JSON.stringify(currentCcmContextForSession(callerUuid, msg.args)) }, 'tool result')
+    } catch (err) {
+      sendToIpcConn(callerUuid, callerConn, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) }, 'tool error')
+    }
+    return
+  }
   let route: { responseUuid: string; sessionId: string; channelKey: string }
   try {
-    route = resolveToolCallRoute(callerUuid, msg.args)
+    route = resolveToolCallRoute(callerUuid, msg.tool, msg.args)
   } catch (err) {
     sendToIpcConn(callerUuid, callerConn, { type: 'tool_error', callId: msg.callId, error: errorMessage(err) }, 'tool route error')
     return
@@ -6247,8 +6346,7 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
       case 'create_room_with_bot_invited': {
         assertOrchestratorRoom(route.channelKey)
         if (!adapter.createRoomWithBotInvited) throw new Error(`Room lifecycle operation is not supported by ${adapter.platform}`)
-        const parentChatId = stringValue(msg.args.parent_chat_id)
-        if (!parentChatId) throw new Error('parent_chat_id is required')
+        const parentChatId = stringValue(msg.args.parent_chat_id) || route.channelKey
         const parentAdapter = adapterFor(parentChatId)
         if (!parentAdapter || parentAdapter.platform !== adapter.platform) throw new Error('parent_chat_id must use the same configured adapter as chat_id')
         const desiredRoomName = stringValue(msg.args.desired_room_name).trim()

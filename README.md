@@ -328,6 +328,7 @@ Claude agent slot sessions get these tools via the MCP bridge (`server.ts`). Cod
 | `edit_message` | Edit a previously sent message |
 | `download_attachment` | Download file/image to local inbox |
 | `fetch_thread` | Pull full thread history (Slack only) |
+| `get_current_ccm_context` | Resolve this agent session's current CCM room context before room-control calls |
 | `create_room_with_bot_invited` | Create a Slack private worker room and invite the CCM bot from an orchestrator room |
 | `archive_room` | Archive a worker room from an orchestrator room |
 | `bind_worker_room` | Bind worker-room cwd/runtime metadata from an orchestrator room |
@@ -337,7 +338,7 @@ Claude agent slot sessions get these tools via the MCP bridge (`server.ts`). Cod
 | `ask_peer` | Asynchronously cue another agent in the same room for context/second opinion; answer is visible in the room |
 | `chime_in` | Observer-only collaboration note injected into the lead/default agent context |
 
-If Claude says a named CCM MCP tool such as `ask_peer` is not in its visible toolset, do not fall back to manually posting a Slack/Telegram message. Claude Code may defer MCP tool schemas behind `ToolSearch`/MCP search when the live tool list is large; the correct behavior is to search/load the named MCP tool and call it with the current `chat_id`. CCM-managed Claude and Codex TUI sessions are room-bound and can initiate these tool calls when the current turn carries the room `chat_id`; non-CCM native continuations that lack room metadata cannot.
+If Claude says a named CCM MCP tool such as `ask_peer` is not in its visible toolset, do not fall back to manually posting a Slack/Telegram message. Claude Code may defer MCP tool schemas behind `ToolSearch`/MCP search when the live tool list is large; the correct behavior is to search/load the named MCP tool and call it with the current `chat_id`. CCM-managed Claude and Codex TUI sessions are room-bound and can initiate these tool calls when the current turn carries the room `chat_id`; room-bound sessions that lose turn metadata can call `get_current_ccm_context` to recover the bound room. Non-CCM native continuations that lack room metadata or a session binding cannot.
 
 ## Configuration
 
