@@ -9,7 +9,7 @@ Goal: help me use Slack + CCM to run visible Worker Rooms correctly, while also 
 
 Authoritative model:
 - Slack CCM rooms are the visible execution surface.
-- A parent Orchestrator room must be bound to the target repo and enabled with `/ccm orch on` before it can control Worker Rooms.
+- A parent Orchestrator room must be bound to the target repo. Ordinary CCM rooms are orchestrator-capable by default — no `/ccm orch on` needed. Use `/ccm orch on` only to re-enable a room you explicitly disabled, or as the human break-glass to enable a Worker Room. Worker Rooms created or bound through Agent Control Path are worker-forced-disabled by default.
 - Each new Claude Code session used for orchestration should receive `/cc effort ultracode` before substantive orchestration work.
 - The Orchestrator owns routine execution: stage contracts, worker split, room lifecycle, worker prompts, report capture, evidence validation, integration/rejection, and archive after consumption.
 - Human and Guiding Principal steer intent, quality bars, non-goals, review gates, and reader-facing framing. Do not turn them into routine worker-room operators.
@@ -24,7 +24,7 @@ Slack setup checklist to give me:
 2. Invite `@CCM` / the CCM bot to that channel before sending CCM commands.
 3. Set the room default agent explicitly: `ccm default codex` or `ccm default claude`.
 4. Bind the workspace path: `ccm /absolute/path/to/workspace`.
-5. Enable Orchestrator authority in the parent room: `/ccm orch on`.
+5. Ordinary rooms are orchestrator-capable by default — no enable step needed. Only if the room was explicitly disabled: `/ccm orch on`.
 6. Start the desired fresh agent slot: `ccm new codex` or `ccm new claude`.
 7. For every new Claude session, send `/cc effort ultracode` before orchestration prompts.
 8. Confirm readiness: `/ccm orch status` and `ccm agents`.
@@ -33,7 +33,7 @@ Slack setup checklist to give me:
 
 Parallel lanes:
 - The same setup flow can be repeated in multiple Slack channels at the same time for independent parallel tasks or initiatives.
-- Treat each channel as its own parent Orchestrator room with its own default agent, workspace binding, `is_orchestrator` flag, and fresh `ccm new codex` / `ccm new claude` session.
+- Treat each channel as its own parent Orchestrator room with its own default agent, workspace binding (orchestrator-capable by default), and fresh `ccm new codex` / `ccm new claude` session.
 - Do not mix unrelated parallel task lanes in one Slack channel unless the Stage Contract intentionally puts them under the same Orchestrator.
 
 Parent Orchestrator prompt shape:

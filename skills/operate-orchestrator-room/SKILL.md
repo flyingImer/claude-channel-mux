@@ -17,13 +17,13 @@ Run these in the target Slack CCM room:
 /ccm orch off
 ```
 
-The long form `/ccm orchestrator status|on|off` is also supported. Plain-message forms such as `ccm orch status` route through the same parser.
+The long form `/ccm orchestrator status|on|off` is also supported. Plain-message forms such as `ccm orch status` route through the same parser. Ordinary rooms are orchestrator-capable by default: `on` is only needed to re-enable an explicitly-disabled room or to break-glass enable a Worker Room, and `off` explicitly disables a room. `status` reports the source, e.g. `ordinary default-enabled`, `explicitly disabled`, `worker-forced-disabled`, or `worker room, human break-glass enabled`.
 
 ## Setup Checklist
 
 1. Bind the room to the intended repo/cwd with `ccm /path/to/repo`.
 2. Confirm agent slots with `ccm agents` and set the default if needed with `ccm default claude|codex`.
-3. Enable orchestration with `/ccm orch on`.
+3. Ordinary rooms are orchestrator-capable by default — no enable step needed. Run `/ccm orch on` only to re-enable an explicitly-disabled room.
 4. Ask the Orchestrator to use the `orchestrate-workers` skill.
 5. For live worker-room lifecycle tests, use Slack; Telegram V1 returns `unsupported_capability`.
 
@@ -49,7 +49,7 @@ Live Slack smoke: create from an orchestrator room, confirm structured create fa
 
 ## Troubleshooting
 
-- `policy_error`: enable the room with `/ccm orch on`; worker rooms do not inherit the flag.
+- `policy_error`: the room is explicitly disabled or is a worker-forced-disabled Worker Room (ordinary rooms are orchestrator-capable by default). Re-enable a disabled room with `/ccm orch on`; a Worker Room only becomes a controller through a human break-glass `/ccm orch on`, and worker rooms do not inherit the parent's capability.
 - `unsupported_capability`: the adapter does not support V1 lifecycle; do not emulate room creation.
 - Slack create/archive fails: check Slack scopes, bot installation, channel naming collision facts, and daemon logs.
 - Alias not shown in Slack UI: parser already supports it; update the Slack app manifest only if the displayed slash-command usage hint matters.
