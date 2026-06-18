@@ -19,7 +19,7 @@ const templateNames = [
   'recovery-note.md',
 ]
 
-const promptNames = ['orchestrator.md', 'worker.md', 'guiding-principal.md', 'auditor.md', 'recovery.md']
+const promptNames = ['orchestrator.md', 'worker.md', 'guiding-principal.md', 'auditor.md', 'recovery.md', 'chatgpt-slack-orchestration.md']
 const checklistNames = ['git-orchestration-bootstrap.md', 'orchestrator-preflight.md', 'worker-dispatch.md', 'guiding-principal-recall.md', 'integration.md', 'recovery.md']
 
 test('orchestration workspace instructions enforce role and source-of-truth boundaries', () => {
@@ -122,10 +122,12 @@ test('portable prompt pack maps orchestration roles to bundled skills', () => {
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('capture_worker_report')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Do not use Codex native subagents')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Claude `Task`, Claude `Workflow`')
-  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('treat that as a quality preference inside each visible Worker Room')
-  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('stop with `attention_needed` instead of running hidden `Task`/`Workflow` agents')
-  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('do not transmit Orchestrator-only delegation authority')
-  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('fan-out, subagent-driven-development')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('split the authority by scope')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('orchestration meta-work only')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('must not use internal fan-out to perform or substitute for stage Worker Tasks')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('worker-scoped dynamic workflow or fan-out')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Do not transmit room lifecycle control')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('authority to count internal subagents as CCM Worker Rooms')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('terminal setup/intake steps')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Do not dispatch workers in that same turn')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Human or Guiding Principal worker-room inspection is optional')
@@ -134,12 +136,21 @@ test('portable prompt pack maps orchestration roles to bundled skills', () => {
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('Inherited Quality Principles')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('think-harder on ambiguous tradeoffs')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('verify with the most relevant available evidence before completion')
+  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('create a dynamic workflow with fan-out subagents inside this already-started visible Worker Room')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('Authority Boundary')
-  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('do not use fan-out, subagent-driven-development')
-  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('Codex native subagents, `spawn_agent`, model-side delegation, or hidden parallel agents as workers')
+  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('internal fan-out is a worker-local quality technique only')
+  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('do not ask the Orchestrator to count internal subagents as CCM Worker Rooms')
+  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('Synthesize and challenge any internal fan-out outputs before reporting')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('do not create, adopt, archive, bind, start, prompt, capture, or control CCM worker rooms or peer workers')
   expect(readFileSync('prompts/ccm/guiding-principal.md', 'utf8')).toContain('$guide-orchestration')
   expect(readFileSync('prompts/ccm/guiding-principal.md', 'utf8')).toContain('not the routine operator of CCM worker rooms')
+  const chatgptPrompt = readFileSync('prompts/ccm/chatgpt-slack-orchestration.md', 'utf8')
+  expect(chatgptPrompt).toContain('Each new Claude Code session used for orchestration should receive `/cc effort ultracode`')
+  expect(chatgptPrompt).toContain('Hidden Codex subagents, Claude `Task`, Claude `Workflow`, `spawn_agent`, or model-side delegation are not CCM Worker Rooms')
+  expect(chatgptPrompt).toContain('Orchestrator-local fan-out may help orchestration meta-work')
+  expect(chatgptPrompt).toContain('Worker-local fan-out may help source-grounded investigation')
+  expect(chatgptPrompt).toContain('If Agent Control Path cannot dispatch visible rooms, stop with attention_needed instead of doing stage work via hidden subagents')
+  expect(chatgptPrompt).toContain('When I ask for the next Slack message, return exactly one copy-pasteable Slack message first')
   expect(readFileSync('prompts/ccm/auditor.md', 'utf8')).toContain('$audit-worker-output')
   expect(readFileSync('prompts/ccm/recovery.md', 'utf8')).toContain('$recover-orchestration')
 })
@@ -150,14 +161,19 @@ test('orchestrate-workers resolves generic subagent requests toward visible room
   for (const required of [
     'Claude `Task`, Claude `Workflow`',
     'generic delegation skill such as `subagent-driven-development`',
-    'not substitutes for CCM Worker Rooms',
+    'Stage work still requires visible CCM Worker Rooms',
     'run Agent Control Path preflight first',
     'do not proceed with hidden `Task`/`Workflow` execution',
+    'orchestration meta-work',
+    'Worker Rooms may use dynamic workflow or internal fan-out as a worker-local quality/throughput technique',
+    'the Orchestrator still counts only the visible room as the Worker',
   ]) {
     expect(skill).toContain(required)
   }
   expect(checklist).toContain('Claude `Task`, Claude `Workflow`')
-  expect(checklist).toContain('not as permission to bypass visible Worker Rooms')
+  expect(checklist).toContain('Orchestrator internal fan-out is orchestration meta-work only')
+  expect(checklist).toContain('Worker internal fan-out is worker-local quality/throughput only')
+  expect(checklist).toContain('stage execution still requires visible Worker Rooms')
 })
 
 test('agent control path contract pins V1 lifecycle invariants', () => {
@@ -200,11 +216,14 @@ test('orchestration checklists cover preflight dispatch integration and recovery
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('worker-room `chat_id` is used only after that room has its own binding')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('required human or Guiding Principal worker-room intervention is degraded fallback and an orchestration failure')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('not Codex native subagents')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('Any Orchestrator dynamic workflow or internal fan-out is limited to orchestration meta-work')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('Treat older notes such as "no chat_id", "CCM rooms unavailable", or "in-process fallback chosen" as stale')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('explicitly asked to dispatch after that report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('not by asking the human to type setup commands in the worker room')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Codex native subagents')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('passes down inherited quality principles such as think-harder and verification-before-completion')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('requires synthesis and verification of internal subagent outputs before final Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Human or Guiding Principal presence in the worker room is optional inspection only')
   expect(readFileSync('docs/checklists/guiding-principal-recall.md', 'utf8')).toContain('not being used as a routine approval gate')
   expect(readFileSync('docs/checklists/guiding-principal-recall.md', 'utf8')).toContain('bun run orchestration:inbox')

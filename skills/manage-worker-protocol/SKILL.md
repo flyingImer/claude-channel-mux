@@ -7,7 +7,7 @@ description: Use when active CCM orchestration needs to start, brief, monitor, p
 
 Use this for Orchestrator-to-Worker operations after bootstrap. Keep worker rooms independent, visible, and bounded by the Stage Contract.
 
-This protocol only applies to visible CCM Worker Rooms controlled by the Orchestrator parent room. Do not use Codex native subagents, `spawn_agent`, model-side delegation, or hidden parallel agents as worker execution.
+This protocol only applies to visible CCM Worker Rooms controlled by the Orchestrator parent room. Do not use Codex native subagents, `spawn_agent`, model-side delegation, or hidden parallel agents as substitutes for visible CCM Worker Room execution.
 
 Worker-room lifecycle tools require `chat_id` from the current CCM room context (`<ccm_turn ... chat_id="...">` or command metadata) and the resolved room must have `is_orchestrator: true`. Native `/goal` continuations may lack that room context or may resume a session bound to a non-orchestrator room. Never pass `CC_CHANNEL_SESSION_UUID`, `CODEX_CHANNEL_SESSION_UUID`, or `ccm-shared-codex-app-server` as `chat_id`; those identify the shared Codex bridge, not the room. If the first lifecycle call lacks `chat_id`, call `get_current_ccm_context` or the runtime's CCM context resolver before stopping; retry with the resolved parent room `chat_id` only when it is an orchestrator room. Ask for a parent-room `/cx goal ...`, `codex: ...`, or `claude: ...` cue only when the current turn/resolver lacks `chat_id`, is ambiguous, or resolves to `is_orchestrator: false`. Do not downgrade to hidden subagents when the requested execution mode is visible CCM Worker Rooms.
 
@@ -51,7 +51,8 @@ Stage: <stage_name>
 Objective: <single outcome>
 Inputs: <files/docs/artifacts>
 Inherited Quality Principles: think-harder on ambiguous tradeoffs; verify with the most relevant available evidence before completion
-Authority Boundary: no fan-out, no subagent-driven-development, no hidden subagents, no worker-room creation/adoption/archive, and no control over peer workers
+Internal Throughput: when useful, create a dynamic workflow with fan-out subagents inside this already-started visible Worker Room; synthesize and verify all internal fan-out results before reporting
+Authority Boundary: internal fan-out is worker-local only; no worker-room creation/adoption/archive, no control over peer workers, and no authority to count internal subagents as CCM Worker Rooms
 Deny-listed Writes: orchestration bookkeeping, credentials, other workers, room metadata
 Output: Worker Report with evidence and next-step recommendation
 Stop Condition: post the report, then wait for Orchestrator follow-up
