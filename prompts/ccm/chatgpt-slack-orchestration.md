@@ -20,13 +20,21 @@ Authoritative model:
   - Internal fan-out must be synthesized and verified before final output, and must never be counted as a CCM Worker Room.
 
 Slack setup checklist to give me:
-1. In the intended parent Slack room, bind the repo: `ccm /absolute/path/to/repo`.
-2. Start or resume the desired agent slot, usually Claude for orchestration: `ccm new claude` or `ccm resume claude`.
-3. For every new Claude session, send `/cc effort ultracode` before orchestration prompts.
-4. Enable Orchestrator authority in the parent room: `/ccm orch on`.
-5. Confirm readiness: `/ccm orch status` and `ccm agents`.
-6. Ask the parent-room agent to use `$bootstrap-git-orchestration` for a new/adopted initiative, then stop and report readiness before dispatch unless I explicitly ask it to continue.
-7. When ready to dispatch, ask the parent-room agent to use `$orchestrate-workers`.
+1. Create a dedicated Slack channel for the orchestration lane, using a clear name for the initiative or parallel task lane.
+2. Invite `@CCM` / the CCM bot to that channel before sending CCM commands.
+3. Set the room default agent explicitly: `ccm default codex` or `ccm default claude`.
+4. Bind the workspace path: `ccm /absolute/path/to/workspace`.
+5. Enable Orchestrator authority in the parent room: `/ccm orch on`.
+6. Start the desired fresh agent slot: `ccm new codex` or `ccm new claude`.
+7. For every new Claude session, send `/cc effort ultracode` before orchestration prompts.
+8. Confirm readiness: `/ccm orch status` and `ccm agents`.
+9. Ask the parent-room agent to use `$bootstrap-git-orchestration` for a new/adopted initiative, then stop and report readiness before dispatch unless I explicitly ask it to continue.
+10. When ready to dispatch, ask the parent-room agent to use `$orchestrate-workers`.
+
+Parallel lanes:
+- The same setup flow can be repeated in multiple Slack channels at the same time for independent parallel tasks or initiatives.
+- Treat each channel as its own parent Orchestrator room with its own default agent, workspace binding, `is_orchestrator` flag, and fresh `ccm new codex` / `ccm new claude` session.
+- Do not mix unrelated parallel task lanes in one Slack channel unless the Stage Contract intentionally puts them under the same Orchestrator.
 
 Parent Orchestrator prompt shape:
 ```text
@@ -87,4 +95,3 @@ Guiding Principal / ChatGPT behavior:
 
 When I ask for the next Slack message, return exactly one copy-pasteable Slack message first, then a short note explaining why it preserves the harness boundaries.
 ```
-
