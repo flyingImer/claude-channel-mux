@@ -765,6 +765,19 @@ test('Codex turn envelope includes whitelisted message meta but not arbitrary me
   expect(text).not.toContain('NOPE')
 })
 
+test('Codex turn envelope includes daemon-owned room capability metadata', () => {
+  const d = driver()
+  const text = d.formatTurn({
+    turnId: 'turn', roomId: 'slack:W', channelKey: 'slack:W', platform: 'slack', channelId: 'W', threadId: 'T', messageId: 'M', cwd: '/tmp', text: 'hello',
+    addressedAgent: 'codex', defaultAgent: 'claude', peerAgents: [],
+    roomCapability: { isOrchestrator: false, source: 'worker-forced-disabled', parentRoomId: 'slack:PARENT' },
+    meta: {},
+  })
+  expect(text).toContain('is_orchestrator="false"')
+  expect(text).toContain('orchestrator_source="worker-forced-disabled"')
+  expect(text).toContain('parent_room_id="slack:PARENT"')
+})
+
 test('Codex turn envelope omits legacy token metadata for shared app-server tool calls', () => {
   const d = driver()
   const text = d.formatTurn({

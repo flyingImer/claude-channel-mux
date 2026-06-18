@@ -49,12 +49,12 @@ import { recentAgentReplyPointerFromJson, recentPeerReplyPointers as buildRecent
 import { agentLabel, agentName, formatAgentReply } from './agents/identity.js'
 import { truncateAgentContextTurnText as truncateAgentContextTurnTextToMax } from './agents/turn-format.js'
 import { chimeInTurnText, collabRoutingPlan } from './agents/collab-routing.js'
-import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanStep, AgentServerRequest, AgentSession, AgentSnapshot, AgentTranscript, AgentTurn } from './agents/types.js'
+import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanStep, AgentRoomCapability, AgentServerRequest, AgentSession, AgentSnapshot, AgentTranscript, AgentTurn } from './agents/types.js'
 import { findZellijSessionLine } from './zellij.js'
 import { DEFAULT_FORWARDED_AGENT_ENV, commandLine, forwardedEnvExports, forwardedEnvObject, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
-import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding } from './bindings.js'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, setBindingWorkerRole, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding, type OrchestratorSource } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
 import { compareTaskSnapshotItems, taskSnapshotItemFromJson, type TaskSnapshotItem, type TaskStatus } from './tasks.js'
@@ -488,13 +488,34 @@ function bindingEntries(): Array<{ channelKey: string; runtime: AgentRuntimeKind
 const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report'])
 
 type CurrentCcmContext =
-  | { status: 'resolved'; chat_id: string; room_id: string; cwd: string; runtime: AgentRuntimeKind; is_orchestrator: boolean; source: 'route.channelKey' | 'session_binding' | 'orchestrator_session_binding'; authorized_control_tools: string[] }
+  | { status: 'resolved'; chat_id: string; room_id: string; cwd: string; runtime: AgentRuntimeKind; is_orchestrator: boolean; orchestrator_source: string; parent_room_id?: string; source: 'route.channelKey' | 'session_binding' | 'orchestrator_session_binding'; authorized_control_tools: string[] }
   | { status: 'ambiguous'; source: 'session_binding' | 'orchestrator_session_binding'; candidate_chat_ids: string[]; reason: string; authorized_control_tools: string[] }
   | { status: 'not_bound'; source: 'session_binding' | 'orchestrator_session_binding' | 'shared_codex_bridge'; reason: string; authorized_control_tools: string[] }
 type CurrentCcmContextSource = Extract<CurrentCcmContext, { status: 'resolved' }>['source']
 
 function authorizedControlToolsForBinding(binding: NormalizedBinding): string[] {
   return binding.isOrchestrator ? [...AGENT_CONTROL_PATH_TOOL_NAMES] : []
+}
+
+function roomCapabilityForBinding(binding: NormalizedBinding): AgentRoomCapability {
+  return {
+    isOrchestrator: binding.isOrchestrator,
+    source: binding.orchestratorSource,
+    ...(binding.parentRoomId ? { parentRoomId: binding.parentRoomId } : {}),
+  }
+}
+
+function roomOrchestratorStatusText(binding: NormalizedBinding): string {
+  const sourceLabel: Record<OrchestratorSource, string> = {
+    'explicit-enabled': 'explicitly enabled',
+    'explicit-disabled': 'explicitly disabled',
+    'worker-forced-disabled': 'worker-forced-disabled',
+    'worker-enabled': 'worker room, human break-glass enabled',
+    'malformed-disabled': 'disabled due to malformed persisted capability',
+    'ordinary-default-enabled': 'ordinary default-enabled',
+  }
+  const state = binding.isOrchestrator ? 'ON' : 'OFF'
+  return `Agent Control Path orchestrator room is ${state} (${sourceLabel[binding.orchestratorSource] ?? binding.orchestratorSource}).`
 }
 
 function currentCcmContextFromChannelKey(ck: string, source: CurrentCcmContextSource, uuid: string): Extract<CurrentCcmContext, { status: 'resolved' }> {
@@ -506,6 +527,8 @@ function currentCcmContextFromChannelKey(ck: string, source: CurrentCcmContextSo
     cwd: roomCwd(ck),
     runtime: runtimeForUuid(uuid),
     is_orchestrator: binding.isOrchestrator,
+    orchestrator_source: binding.orchestratorSource,
+    ...(binding.parentRoomId ? { parent_room_id: binding.parentRoomId } : {}),
     source,
     authorized_control_tools: authorizedControlToolsForBinding(binding),
   }
@@ -694,6 +717,12 @@ function setRoomObservers(ck: string, observers: AgentRuntimeKind[]): void {
 function setRoomOrchestratorFlag(ck: string, enabled: boolean): void {
   const b = loadBindings()
   setBindingOrchestratorFlag(b, ck, enabled, DEFAULT_AGENT_RUNTIME)
+  saveBindings(b)
+}
+
+function setRoomWorkerRole(ck: string, parentRoomId: string): void {
+  const b = loadBindings()
+  setBindingWorkerRole(b, ck, parentRoomId, DEFAULT_AGENT_RUNTIME)
   saveBindings(b)
 }
 
@@ -2376,6 +2405,7 @@ async function injectObserverChimeIn(chime: ObserverChimeIn): Promise<string> {
     text: payload.text,
     addressedAgent: chime.toRuntime,
     defaultAgent: binding.active,
+    roomCapability: roomCapabilityForBinding(binding),
     peerAgents: agentPeerPointers(binding, chime.toRuntime, chime.roomId, chime.threadId),
     meta: {
       chat_id: chime.roomId,
@@ -2490,6 +2520,7 @@ async function injectPeerReply(inflight: AskPeerInflight, text: string, messageI
       text: peerReplyPayload.text,
       addressedAgent: inflight.fromRuntime,
       defaultAgent: binding.active,
+      roomCapability: roomCapabilityForBinding(binding),
       peerAgents: agentPeerPointers(binding, inflight.fromRuntime, inflight.roomId, inflight.threadId),
       meta: inflight.fromRuntime === 'codex' ? {
         chat_id: inflight.roomId,
@@ -4871,6 +4902,7 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
       text,
       addressedAgent: runtime,
       defaultAgent: binding.active,
+      roomCapability: roomCapabilityForBinding(binding),
       peerAgents,
       meta: meta,
     }
@@ -4903,6 +4935,7 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
     text,
     addressedAgent: runtime,
     defaultAgent: binding.active,
+    roomCapability: roomCapabilityForBinding(binding),
     peerAgents,
     meta,
   }
@@ -5719,12 +5752,23 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       return
     }
     case 'orchestrator': {
-      if (cmd.action === 'on') setRoomOrchestratorFlag(ck, true)
+      if (cmd.action === 'on') {
+        // Break-glass: re-enabling a worker-forced-disabled Worker Room lifts a control-plane
+        // boundary. There is no separate confirmation step — an explicit human `/ccm orch on` IS
+        // the break-glass (agents and worker lifecycle automation never reach this command) — but
+        // the promotion is audit-logged and announced so it is never silent.
+        const priorSource = normalizeBinding(loadBindings()[ck]).orchestratorSource
+        setRoomOrchestratorFlag(ck, true)
+        if (priorSource === 'worker-forced-disabled') {
+          auditEvent({ event: 'orchestrator_break_glass_enabled', room_id: ck, prior_source: priorSource })
+          await sendChannelNotice(ck, '⚠️ Break-glass: this room was a worker-forced-disabled Worker Room and is now an orchestrator. Worker lifecycle automation never does this; a human enabled it explicitly.', undefined, 'orchestrator break-glass notice')
+        }
+      }
       if (cmd.action === 'off') setRoomOrchestratorFlag(ck, false)
-      const enabled = normalizeBinding(loadBindings()[ck]).isOrchestrator
-      await sendChannelNotice(ck, enabled
-        ? '✅ Agent Control Path orchestrator room is ON. Lifecycle tools may create/archive worker rooms from this room.'
-        : '⏸ Agent Control Path orchestrator room is OFF. Lifecycle tools are denied from this room.', undefined, 'orchestrator flag notice')
+      const binding = normalizeBinding(loadBindings()[ck])
+      await sendChannelNotice(ck, binding.isOrchestrator
+        ? `✅ ${roomOrchestratorStatusText(binding)} Lifecycle tools may create/archive worker rooms from this room.`
+        : `⏸ ${roomOrchestratorStatusText(binding)} Lifecycle tools are denied from this room.`, undefined, 'orchestrator flag notice')
       return
     }
     case 'default': {
@@ -6134,6 +6178,7 @@ async function routeCue(cue: AgentCue): Promise<string> {
     text: peerTask.text,
     addressedAgent: peer,
     defaultAgent: binding.active,
+    roomCapability: roomCapabilityForBinding(binding),
     peerAgents,
     meta: peer === 'codex' ? {
       chat_id: ck,
@@ -6398,6 +6443,7 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         const desiredRoomName = stringValue(msg.args.desired_room_name).trim()
         if (!desiredRoomName) throw new Error('desired_room_name is required')
         const resultFacts = await adapter.createRoomWithBotInvited({ parentRoomId: localId(parentChatId), desiredRoomName })
+        if ('roomId' in resultFacts && resultFacts.roomId) setRoomWorkerRole(channelKeyForRoomId(route.channelKey, resultFacts.roomId), route.channelKey)
         result = JSON.stringify(resultFacts)
         break
       }
@@ -6421,9 +6467,9 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         if (!cwd.startsWith('/')) throw new Error('cwd must be absolute')
         const runtime = runtimeArg(msg.args.runtime)
         setRoom(workerCk, cwd, runtime)
-        setRoomOrchestratorFlag(workerCk, false)
+        setRoomWorkerRole(workerCk, route.channelKey)
         setAgentMeta(workerCk, runtime, { cwd, desiredRunning: false })
-        result = JSON.stringify({ ok: true, operation: 'bind_worker_room', platform: workerAdapter.platform, roomId: workerCk, cwd: roomCwd(workerCk), runtime, isOrchestrator: false })
+        result = JSON.stringify({ ok: true, operation: 'bind_worker_room', platform: workerAdapter.platform, roomId: workerCk, cwd: roomCwd(workerCk), runtime, isOrchestrator: false, orchestratorSource: 'worker-forced-disabled' })
         break
       }
       case 'start_worker_agent': {

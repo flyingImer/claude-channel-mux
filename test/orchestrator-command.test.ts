@@ -11,8 +11,14 @@ test('ccm orchestrator command exposes on off and status controls', () => {
   expect(daemon).toContain("case 'orchestrator':")
   expect(daemon).toContain("setRoomOrchestratorFlag(ck, true)")
   expect(daemon).toContain("setRoomOrchestratorFlag(ck, false)")
-  expect(daemon).toContain('Agent Control Path orchestrator room is ON')
-  expect(daemon).toContain('Agent Control Path orchestrator room is OFF')
+  expect(daemon).toContain('roomOrchestratorStatusText')
+  expect(daemon).toContain("const state = binding.isOrchestrator ? 'ON' : 'OFF'")
+  expect(daemon).toContain('ordinary default-enabled')
+  expect(daemon).toContain('worker-forced-disabled')
+  // Break-glass: re-enabling a worker-forced-disabled room is audit-logged and announced (no
+  // separate confirmation step — an explicit human `/ccm orch on` is the break-glass).
+  expect(daemon).toContain("event: 'orchestrator_break_glass_enabled'")
+  expect(daemon).toContain("priorSource === 'worker-forced-disabled'")
   expect(manifest).toContain('orchestrator')
   expect(manifest).toContain('orch')
 })

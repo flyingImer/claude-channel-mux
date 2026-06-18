@@ -1,6 +1,8 @@
 # Agent Control Path V1 Contract
 
-Agent Control Path V1 exposes narrow room lifecycle operations to an agent in a CCM room whose binding has `isOrchestrator: true`.
+Agent Control Path V1 exposes narrow room lifecycle operations to an agent in an effectively orchestrator-capable CCM parent room. Ordinary CCM rooms are default-enabled unless explicitly disabled; existing explicit-enabled rooms remain enabled, and explicit-disabled rooms remain disabled until a human operator re-enables them.
+
+Worker rooms created, adopted, or bound by Agent Control Path are worker-forced-disabled non-orchestrators by default. They do not inherit parent authority, and lifecycle operations must not implicitly promote them; a later human break-glass enable — an explicit `/ccm orch on`, audit-logged — is outside routine worker lifecycle automation and is never performed by agents.
 
 The product intent is hands-off execution after direction is set: humans and the Guiding Principal steer intent, quality bars, framing, and key review gates; the parent-room Orchestrator uses Agent Control Path to coordinate worker rooms, make bounded low-level execution decisions, and escalate only when durable context is insufficient.
 
@@ -48,7 +50,7 @@ Input:
 Result facts:
 
 - Records worker-room cwd/runtime metadata from the parent Orchestrator context.
-- Ensures the worker room does not inherit `isOrchestrator`.
+- Ensures the worker room does not inherit `isOrchestrator` and is worker-forced-disabled by default.
 - Does not start execution or send task text.
 
 ### `start_worker_agent`
@@ -116,6 +118,8 @@ Manual human or Guiding Principal commands inside the worker room are allowed on
 ## Invariants
 
 - Worker rooms do not inherit `isOrchestrator`.
+- Worker rooms created, adopted, or bound by Agent Control Path are worker-forced-disabled non-orchestrators by default.
+- Explicit disabled rooms are not Agent Control Path controllers even though ordinary rooms are default-enabled.
 - Lifecycle operations are never emulated on unsupported platforms.
 - CCM Core returns facts; orchestration policy lives outside CCM Core.
 - Completion Reportback and transcripts are freshness/evidence signals, not durable orchestration truth until captured.

@@ -40,7 +40,7 @@ test('orchestration workspace instructions enforce role and source-of-truth boun
     'Humans and Guiding Principal are not expected to participate in worker-room execution',
     'required intervention to bind, start, prompt, debug, or unblock worker execution is an orchestration failure',
     'Guiding Principal responses provide human-context judgment',
-    'isOrchestrator: true',
+    'lifecycle operations only from an effectively orchestrator-capable room',
     'Use visible CCM Worker Rooms for worker execution',
     'unsupported_capability',
     'Archive only after output is consumed',
@@ -174,6 +174,19 @@ test('orchestrate-workers resolves generic subagent requests toward visible room
     'orchestration meta-work',
     'Worker Rooms may use dynamic workflow or internal fan-out as a worker-local quality/throughput technique',
     'the Orchestrator still counts only the visible room as the Worker',
+    'Dispatch Decision Matrix',
+    'independence/dependency',
+    'concurrency value',
+    'expected context demand',
+    'current context pressure',
+    'compaction/corrosion risk',
+    'auditability',
+    'explicit user preference',
+    '`ask_peer`',
+    '`attention_needed`',
+    'hidden subagents are not CCM Worker Rooms',
+    'Worker Rooms are not controllers',
+    'missing current CCM context remains an `attention_needed` control-path failure',
   ]) {
     expect(skill).toContain(required)
   }
@@ -181,6 +194,13 @@ test('orchestrate-workers resolves generic subagent requests toward visible room
   expect(checklist).toContain('Orchestrator internal fan-out is orchestration meta-work only')
   expect(checklist).toContain('Worker internal fan-out is worker-local quality/throughput only')
   expect(checklist).toContain('stage execution still requires visible Worker Rooms')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Default-enabled ordinary rooms and explicit-enabled rooms may control workers')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('current context pressure')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('use `ask_peer` for a visible same-room second opinion or context check')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Worker Rooms are not controllers')
+  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('worker-forced-disabled by default')
+  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('Use `attention_needed` for missing task context or authority ambiguity')
+  expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('use `ask_peer` only if the Orchestrator explicitly authorizes visible same-room peer collaboration')
 })
 
 test('agent control path contract pins V1 lifecycle invariants', () => {
@@ -193,9 +213,13 @@ test('agent control path contract pins V1 lifecycle invariants', () => {
     'start_worker_agent',
     'send_worker_task',
     'capture_worker_report',
-    'isOrchestrator: true',
+    'effectively orchestrator-capable CCM parent room',
+    'Ordinary CCM rooms are default-enabled unless explicitly disabled',
+    'explicit-disabled rooms remain disabled',
+    'worker-forced-disabled non-orchestrators by default',
     'Telegram returns `unsupported_capability`',
     'Worker rooms do not inherit `isOrchestrator`',
+    'Explicit disabled rooms are not Agent Control Path controllers',
     'CCM Core returns facts; orchestration policy lives outside CCM Core',
     'Manual human or Guiding Principal commands inside the worker room are allowed only as optional observation/inspection or as a degraded recovery fallback',
     'that is an orchestration failure and must not be counted as successful autonomous orchestration',
@@ -211,6 +235,13 @@ test('agent control path contract pins V1 lifecycle invariants', () => {
   expect(schema).toContain('desired_room_name')
   expect(schema).toContain('archive_room')
   expect(schema).toContain('room_id')
+  expect(readFileSync('CONCEPTS.md', 'utf8')).toContain('Ordinary CCM rooms are default-enabled unless explicitly disabled')
+  expect(readFileSync('CONCEPTS.md', 'utf8')).toContain('worker-forced-disabled Worker Rooms remain non-orchestrators')
+  expect(readFileSync('CONCEPTS.md', 'utf8')).toContain('The matrix weighs task independence, dependencies, concurrency value, expected context demand, current context pressure, compaction/corrosion risk, auditability, and explicit user preference')
+  expect(readFileSync('docs/agent-control-path-v1-operator-checklist.md', 'utf8')).toContain('default-enabled ordinary room or explicit-enabled room')
+  expect(readFileSync('docs/adr/0001-native-agent-control-path.md', 'utf8')).toContain('ordinary rooms are default-enabled unless explicitly disabled')
+  expect(readFileSync('README.md', 'utf8')).toContain('Ordinary CCM rooms are orchestrator-capable by default unless explicitly disabled')
+  expect(readFileSync('README.md', 'utf8')).toContain('hidden subagents are not CCM Worker Rooms')
 })
 
 test('orchestration checklists cover preflight dispatch integration and recovery gates', () => {
@@ -218,17 +249,27 @@ test('orchestration checklists cover preflight dispatch integration and recovery
     expect(existsSync(`docs/checklists/${name}`)).toBe(true)
   }
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('is_orchestrator: true')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('default-enabled ordinary room or explicit-enabled room')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('worker-forced-disabled Worker Rooms are hard stops')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('fresh `resolved` + `is_orchestrator: true` wins over stale notes')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('not as permission to use hidden subagents')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('worker-room `chat_id` is used only after that room has its own binding')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('required human or Guiding Principal worker-room intervention is degraded fallback and an orchestration failure')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('not Codex native subagents')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('Any Orchestrator dynamic workflow or internal fan-out is limited to orchestration meta-work')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('Dispatch decision matrix is recorded')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('current context pressure')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('auditability')
+  expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('User preference biases dispatch but cannot convert hidden subagents into CCM Worker Rooms')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('Treat older notes such as "no chat_id", "CCM rooms unavailable", or "in-process fallback chosen" as stale')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('explicitly asked to dispatch after that report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('not by asking the human to type setup commands in the worker room')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Codex native subagents')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('expected context demand')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('whether `ask_peer` is enough')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('whether `attention_needed` is required')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('worker-forced-disabled non-orchestrators by default')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('passes down inherited quality principles such as think-harder and verification-before-completion')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('requires synthesis and verification of internal subagent outputs before final Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Human or Guiding Principal presence in the worker room is optional inspection only')

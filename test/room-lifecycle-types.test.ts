@@ -20,14 +20,14 @@ test('Telegram reports unsupported lifecycle operations with structured facts', 
   })
 })
 
-test('orchestrator room flag survives binding parse and serialization', () => {
+test('legacy orchestrator room flag migrates to orchestrator capability on parse and serialization', () => {
   const parsed = bindingsFromJson({
     'slack:C1': { active: 'codex', isOrchestrator: true, sessions: { codex: 's1' } },
     'slack:C2': { isOrchestrator: true },
   })
 
-  expect(parsed['slack:C1']).toEqual({ active: 'codex', isOrchestrator: true, sessions: { codex: 's1' } })
-  expect(parsed['slack:C2']).toEqual({ isOrchestrator: true })
+  expect(parsed['slack:C1']).toEqual({ active: 'codex', orchestrator: true, sessions: { codex: 's1' } })
+  expect(parsed['slack:C2']).toEqual({ orchestrator: true })
   expect(normalizeBinding(parsed['slack:C1'], 'claude').isOrchestrator).toBe(true)
-  expect(serializeBinding(normalizeBinding(parsed['slack:C1'], 'claude'), 'claude')).toEqual({ active: 'codex', isOrchestrator: true, sessions: { codex: 's1' } })
+  expect(serializeBinding(normalizeBinding(parsed['slack:C1'], 'claude'), 'claude')).toEqual({ active: 'codex', orchestrator: true, sessions: { codex: 's1' } })
 })

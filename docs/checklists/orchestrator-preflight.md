@@ -1,6 +1,6 @@
 # Orchestrator Preflight Checklist
 
-- [ ] A fresh `get_current_ccm_context` or runtime resolver result is recorded for this dispatch loop and proves the current room is repo-bound and `is_orchestrator: true`.
+- [ ] A fresh `get_current_ccm_context` or runtime resolver result is recorded for this dispatch loop and proves the current room is repo-bound and effectively orchestrator-capable: default-enabled ordinary room or explicit-enabled room. Explicit-disabled rooms and worker-forced-disabled Worker Rooms are hard stops.
 - [ ] Lifecycle create will use the Orchestrator parent room as `chat_id` and `parent_chat_id`; worker-room `chat_id` is used only after that room has its own binding.
 - [ ] `docs/orchestration/AGENTS.md` and initiative `state.md`, `workers.md`, `stage.md`, unread `inbox/*.md`, open `recall/`, and latest `reports/` were read.
 - [ ] Durable intake and Stage Contract are persisted with attribution.
@@ -8,6 +8,8 @@
 - [ ] Orchestrator has a parent-controlled path to bind/start/resume the worker agent and send the Worker Task; required human or Guiding Principal worker-room intervention is degraded fallback and an orchestration failure, not success.
 - [ ] Worker execution will use visible CCM Worker Rooms through Agent Control Path, not Codex native subagents, `spawn_agent`, or hidden model-side delegation.
 - [ ] Any Orchestrator dynamic workflow or internal fan-out is limited to orchestration meta-work such as dispatch planning, worker prompt QA, room-status checks, capture verification, report reconciliation, contradiction detection, evidence-gap detection, and final curation; it is not used to perform stage Worker Tasks.
+- [ ] Dispatch decision matrix is recorded: stay single-agent for small dependent work; use visible Worker Rooms for independent stage work with real concurrency value, high expected context demand, current context pressure, compaction/corrosion risk, or auditability needs; use `ask_peer` for a visible same-room second opinion or missing context from another active agent; use worker-local internal fan-out only inside an already-started Worker Room; stop with `attention_needed` when current context, authority, dependency boundaries, or user preference are unclear.
+- [ ] Override hierarchy is applied: hard control-path boundaries first, then explicit user preference, then task independence/dependency, concurrency value, expected context demand, current context pressure, compaction/corrosion risk, auditability, and cost/latency. User preference biases dispatch but cannot convert hidden subagents into CCM Worker Rooms or bypass missing-context stops.
 - [ ] Any stale durable note claiming "no chat_id", "CCM rooms unavailable", or an in-process fallback is revalidated against the fresh resolver result before dispatch; fresh `resolved` + `is_orchestrator: true` wins over stale notes.
 - [ ] Missing, ambiguous, or non-orchestrator room context is treated as `attention_needed`, not as permission to use hidden subagents.
 - [ ] Bootstrap/adopt/repair and GP packet import have already reported readiness in a prior step, or the human explicitly asked to dispatch after that report.

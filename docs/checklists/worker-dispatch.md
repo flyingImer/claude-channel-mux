@@ -4,6 +4,8 @@
 - [ ] Worker room creation/adoption facts are recorded in `workers.md`.
 - [ ] Worker is a visible CCM Worker Room; Codex native subagents, Claude `Task`, Claude `Workflow`, `spawn_agent`, and hidden model-side delegation are not used as substitutes for visible Worker Room execution.
 - [ ] Any human request for fan-out, dynamic workflows, or `subagent-driven-development` is scoped: Orchestrator internal fan-out is orchestration meta-work only, Worker internal fan-out is worker-local quality/throughput only, and stage execution still requires visible Worker Rooms.
+- [ ] Dispatch choice names the governing factors: independence, dependency, concurrency value, expected context demand, current context pressure, compaction/corrosion risk, auditability, explicit user preference, whether `ask_peer` is enough, and whether `attention_needed` is required before safe execution.
+- [ ] Worker Rooms created, adopted, or bound by CCM lifecycle are worker-forced-disabled non-orchestrators by default; they do not inherit parent authority, cannot coordinate other rooms, and may only become orchestrator-capable through an explicit human `/ccm orch on` break-glass command (audit-logged), never through the worker lifecycle path or agent-originated messages.
 - [ ] Worker room cwd/runtime/default agent metadata is bound with `bind_worker_room`, not by asking the human to type setup commands in the worker room.
 - [ ] Worker agent is started/resumed with `start_worker_agent` from the parent Orchestrator room.
 - [ ] Worker Task is delivered with `send_worker_task` from the parent Orchestrator room.

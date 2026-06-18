@@ -27,6 +27,12 @@ export type AgentPeerPointer = {
   recent?: Array<{ threadId: string; messageId?: string; preview: string; kind?: 'midturn' | 'final' | 'reply_tool' | 'poll'; source?: 'event' | 'reply_tool' | 'poll'; sameThread?: boolean; likelyReference?: boolean; ageMs?: number; referenceHint?: string }>
 }
 
+export type AgentRoomCapability = {
+  isOrchestrator: boolean
+  source: string
+  parentRoomId?: string
+}
+
 export type AgentTurn = {
   turnId: string
   roomId: string
@@ -39,6 +45,7 @@ export type AgentTurn = {
   text: string
   addressedAgent: AgentKind
   defaultAgent: AgentKind
+  roomCapability?: AgentRoomCapability
   peerAgents: AgentPeerPointer[]
   meta: Record<string, unknown>
 }

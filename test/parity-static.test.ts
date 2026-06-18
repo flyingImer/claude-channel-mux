@@ -53,7 +53,7 @@ test('plugin ships CCM orchestration role skills', () => {
     expect(ui).toContain('default_prompt:')
     expect(ui).toContain(`$${skill}`)
   }
-  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('isOrchestrator: true')
+  expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('effectively orchestrator-capable')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('unsupported_capability')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('Do not use Codex native subagents')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('visible CCM Worker Rooms')

@@ -7,8 +7,9 @@ Use this checklist before relying on CCM Agent Control Path worker-room lifecycl
 - V1 lifecycle operations are exactly `create_room_with_bot_invited` and `archive_room`.
 - Slack is the only V1 platform with room create/archive behavior.
 - Telegram returns a structured `unsupported_capability` result for both lifecycle operations.
-- Lifecycle calls must originate from a CCM room whose binding has `isOrchestrator: true`.
-- Worker rooms do not inherit `isOrchestrator` from the parent/orchestrator room.
+- Lifecycle calls must originate from an effectively orchestrator-capable CCM parent room: default-enabled ordinary room or explicit-enabled room.
+- Explicit-disabled rooms and worker-forced-disabled Worker Rooms are not Agent Control Path controllers.
+- Worker rooms do not inherit `isOrchestrator` from the parent/orchestrator room and are worker-forced-disabled by default when created, adopted, or bound by CCM lifecycle operations.
 
 ## Slack App Capabilities
 
@@ -48,4 +49,4 @@ bun test test/room-lifecycle-types.test.ts test/slack-room-lifecycle.test.ts tes
 bun run typecheck
 ```
 
-For live Slack verification, use a safe test workspace and an orchestrator room with `isOrchestrator: true`. Confirm that create returns structured facts, Telegram returns `unsupported_capability`, and archive runs only after the Orchestrator has consumed worker output.
+For live Slack verification, use a safe test workspace and an effectively orchestrator-capable parent room. Confirm that create returns structured facts, Telegram returns `unsupported_capability`, worker rooms remain worker-forced-disabled unless a human performs an explicit `/ccm orch on` break-glass enable (audit-logged), and archive runs only after the Orchestrator has consumed worker output.

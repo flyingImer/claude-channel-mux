@@ -17,6 +17,8 @@ The Orchestrator owns worker-room lifecycle through Agent Control Path and escal
 ### Worker Room
 A visible CCM room dedicated to one bounded Worker Task and controlled by the parent Orchestrator rather than by direct human setup.
 
+Worker Rooms created, adopted, or bound by Agent Control Path are worker-forced-disabled non-orchestrators by default. They do not inherit parent-room orchestration capability and cannot coordinate peer rooms unless a human operator later re-enables one with an explicit `/ccm orch on` break-glass command (audit-logged); worker lifecycle automation and agent-originated messages never do this.
+
 Human or Guiding Principal presence in a Worker Room is optional inspection. Required manual intervention inside a Worker Room is degraded recovery or orchestration failure, not successful orchestration.
 
 ### Agent Control Path
@@ -25,9 +27,14 @@ The structured parent-room control surface that lets an Orchestrator operate wor
 For worker execution, Agent Control Path must make bind, start/resume, send, capture/reportback, and archive steps explicit so the Orchestrator can prove what happened without entering the worker room manually. Lifecycle calls may recover a missing room identity only through Current CCM Context; they must not guess from unrelated rooms or bridge ids.
 
 ### Orchestrator Room Flag
-The persisted CCM Room role marker that authorizes Agent Control Path lifecycle tools from a parent room.
+The effective CCM Room capability that authorizes Agent Control Path lifecycle tools from a parent room.
 
-The Orchestrator Room Flag is control-plane state, not disposable session metadata. Room reset paths may clear cwd, agent slots, pending UI, or runtime metadata, but must preserve an enabled flag unless the user explicitly turns orchestration off.
+Ordinary CCM rooms are default-enabled unless explicitly disabled. Existing explicit-enabled rooms remain enabled, explicit-disabled rooms stay disabled across restarts and binding serialization, and worker-forced-disabled Worker Rooms remain non-orchestrators unless a human operator re-enables one with an explicit `/ccm orch on` break-glass command (audit-logged). This capability state is control-plane state, not disposable session metadata. Room reset paths may clear cwd, agent slots, pending UI, or runtime metadata, but must preserve explicit enabled, explicit disabled, and worker-forced-disabled states.
+
+### Dispatch Decision Matrix
+The Orchestrator policy for choosing single-agent execution, visible Worker Rooms, worker-local internal fan-out, Orchestrator meta-work fan-out, `ask_peer`, or `attention_needed`.
+
+The matrix weighs task independence, dependencies, concurrency value, expected context demand, current context pressure, compaction/corrosion risk, auditability, and explicit user preference after hard control-path boundaries. User preference biases the choice, but hidden subagents are not CCM Worker Rooms, Worker Rooms are not controllers, and missing current CCM context remains an `attention_needed` failure.
 
 ### Worker Task
 A bounded assignment sent to a worker agent with objective, inputs, non-goals, output format, and acceptance evidence.

@@ -1,11 +1,14 @@
 import { test, expect } from 'bun:test'
 import { homedir } from 'os'
-import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding, setBindingOrchestratorFlag } from '../bindings.ts'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding, setBindingOrchestratorFlag, setBindingWorkerRole } from '../bindings.ts'
 
-test('normalizeBinding upgrades legacy string bindings to Claude sessions', () => {
-  expect(normalizeBinding('legacy-uuid', 'codex')).toEqual({
+test('bindingsFromJson migrates legacy string bindings to new session schema', () => {
+  const parsed = bindingsFromJson({ 'slack:C1': 'legacy-uuid' })
+  expect(parsed).toEqual({ 'slack:C1': { sessions: { claude: 'legacy-uuid' } } })
+  expect(normalizeBinding(parsed['slack:C1'], 'codex')).toEqual({
     active: 'claude',
-    isOrchestrator: false,
+    isOrchestrator: true,
+    orchestratorSource: 'ordinary-default-enabled',
     observers: [],
     sessions: { claude: 'legacy-uuid' },
     agentMeta: {},
@@ -19,8 +22,38 @@ test('normalizeBinding chooses default runtime when that session exists', () => 
 
 test('bindings preserve room observer agents', () => {
   const binding = normalizeBinding({ active: 'codex', observers: ['claude', 'codex'], sessions: { claude: 'cc', codex: 'cx' } }, 'claude')
-  expect(binding).toEqual({ active: 'codex', isOrchestrator: false, observers: ['claude'], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })
+  expect(binding).toEqual({ active: 'codex', isOrchestrator: true, orchestratorSource: 'ordinary-default-enabled', observers: ['claude'], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })
   expect(serializeBinding(binding, 'claude')).toEqual({ active: 'codex', observers: ['claude'], sessions: { claude: 'cc', codex: 'cx' } })
+})
+
+test('ordinary room bindings default to orchestrator-capable while explicit disable persists', () => {
+  expect(normalizeBinding(undefined, 'claude')).toMatchObject({ isOrchestrator: true, orchestratorSource: 'ordinary-default-enabled' })
+  expect(normalizeBinding({ active: 'codex', sessions: { codex: 'cx' } }, 'claude')).toMatchObject({ isOrchestrator: true, orchestratorSource: 'ordinary-default-enabled' })
+  const disabled = normalizeBinding({ orchestrator: false }, 'claude')
+  expect(disabled).toMatchObject({ isOrchestrator: false, orchestrator: false, orchestratorSource: 'explicit-disabled' })
+  expect(serializeBinding(disabled, 'claude')).toEqual({ active: 'claude', orchestrator: false, sessions: {} })
+})
+
+test('malformed explicit orchestrator capability fails closed', () => {
+  const binding = normalizeBinding({ orchestrator: 'surprise' } as never, 'claude')
+  expect(binding).toMatchObject({ isOrchestrator: false, orchestratorSource: 'malformed-disabled' })
+  expect(serializeBinding(binding, 'claude')).toEqual({ active: 'claude', orchestrator: false, sessions: {} })
+})
+
+test('worker room role forces orchestrator capability off and records parent lineage', () => {
+  const bindings = bindingsFromJson({ 'slack:WORKER': { active: 'claude', sessions: { claude: 'cc' } } })
+  setBindingWorkerRole(bindings, 'slack:WORKER', 'slack:PARENT', 'claude')
+  expect(normalizeBinding(bindings['slack:WORKER'], 'claude')).toMatchObject({ isOrchestrator: false, orchestrator: false, orchestratorSource: 'worker-forced-disabled', parentRoomId: 'slack:PARENT' })
+  expect(serializeBinding(normalizeBinding(bindings['slack:WORKER'], 'claude'), 'claude')).toMatchObject({ active: 'claude', orchestrator: false, parentRoomId: 'slack:PARENT' })
+})
+
+test('break-glass enabling a worker room keeps its worker lineage and is reversible', () => {
+  const bindings = bindingsFromJson({ 'slack:WORKER': { active: 'claude', sessions: { claude: 'cc' } } })
+  setBindingWorkerRole(bindings, 'slack:WORKER', 'slack:PARENT', 'claude')
+  setBindingOrchestratorFlag(bindings, 'slack:WORKER', true, 'claude')
+  expect(normalizeBinding(bindings['slack:WORKER'], 'claude')).toMatchObject({ isOrchestrator: true, orchestrator: true, orchestratorSource: 'worker-enabled', parentRoomId: 'slack:PARENT' })
+  setBindingOrchestratorFlag(bindings, 'slack:WORKER', false, 'claude')
+  expect(normalizeBinding(bindings['slack:WORKER'], 'claude')).toMatchObject({ isOrchestrator: false, orchestratorSource: 'worker-forced-disabled', parentRoomId: 'slack:PARENT' })
 })
 
 test('normalizeBinding trims cwd and preserves agent metadata', () => {
@@ -54,8 +87,8 @@ test('normalizeBinding restores absolute paths accidentally rooted under the dae
 })
 
 test('serializeBinding omits empty default bindings and empty metadata', () => {
-  expect(serializeBinding({ active: 'claude', isOrchestrator: false, observers: [], sessions: {}, agentMeta: {} }, 'claude')).toBeUndefined()
-  expect(serializeBinding({ active: 'codex', isOrchestrator: false, observers: [], sessions: { claude: '', codex: 'cx' }, agentMeta: { codex: {} } }, 'claude')).toEqual({
+  expect(serializeBinding({ active: 'claude', isOrchestrator: true, orchestratorSource: 'ordinary-default-enabled', observers: [], sessions: {}, agentMeta: {} }, 'claude')).toBeUndefined()
+  expect(serializeBinding({ active: 'codex', isOrchestrator: true, orchestratorSource: 'ordinary-default-enabled', observers: [], sessions: { claude: '', codex: 'cx' }, agentMeta: { codex: {} } }, 'claude')).toEqual({
     active: 'codex',
     sessions: { codex: 'cx' },
   })
@@ -73,24 +106,26 @@ test('keepAgentModelMeta preserves model and desired running state', () => {
 test('bindingsFromJson keeps valid bindings and drops malformed persisted state', () => {
   expect(bindingsFromJson({
     'slack:C1': 'legacy-uuid',
-    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx', other: 'bad' }, cwd: ' /repo ', agentMeta: { codex: { model: 'gpt', cwd: '/repo', desiredRunning: false, bad: 1 } } },
+    'slack:legacy-orch': { active: 'codex', isOrchestrator: true, sessions: { codex: 'cx2' } },
+    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx', other: 'bad' }, cwd: ' /repo ', orchestrator: false, parentRoomId: 'slack:PARENT', agentMeta: { codex: { model: 'gpt', cwd: '/repo', desiredRunning: false, bad: 1 } } },
     'slack:bad': { active: 'other', sessions: { claude: 1 }, cwd: '   ', agentMeta: { codex: { model: '' } } },
     'slack:number-active': { active: 1, sessions: { codex: 2 } },
     'slack:null': null,
   })).toEqual({
-    'slack:C1': 'legacy-uuid',
-    'telegram:T1': { active: 'codex', sessions: { claude: 'cc', codex: 'cx' }, cwd: '/repo', agentMeta: { codex: { cwd: '/repo', model: 'gpt', desiredRunning: false } } },
+    'slack:C1': { sessions: { claude: 'legacy-uuid' } },
+    'slack:legacy-orch': { active: 'codex', orchestrator: true, sessions: { codex: 'cx2' } },
+    'telegram:T1': { active: 'codex', orchestrator: false, parentRoomId: 'slack:PARENT', sessions: { claude: 'cc', codex: 'cx' }, cwd: '/repo', agentMeta: { codex: { cwd: '/repo', model: 'gpt', desiredRunning: false } } },
   })
   expect(bindingsFromJson([])).toEqual({})
 })
 
 
 test('bindingSessionEntries returns typed active session entries', () => {
-  expect(bindingSessionEntries({ active: 'codex', isOrchestrator: false, observers: [], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })).toEqual([
+  expect(bindingSessionEntries({ active: 'codex', isOrchestrator: true, orchestratorSource: 'ordinary-default-enabled', observers: [], sessions: { claude: 'cc', codex: 'cx' }, agentMeta: {} })).toEqual([
     { runtime: 'claude', uuid: 'cc', active: false },
     { runtime: 'codex', uuid: 'cx', active: true },
   ])
-  expect(bindingSessionEntries({ active: 'claude', isOrchestrator: false, observers: [], sessions: { claude: '', codex: undefined }, agentMeta: {} })).toEqual([])
+  expect(bindingSessionEntries({ active: 'claude', isOrchestrator: true, orchestratorSource: 'ordinary-default-enabled', observers: [], sessions: { claude: '', codex: undefined }, agentMeta: {} })).toEqual([])
 })
 
 
@@ -108,7 +143,7 @@ test('bindingAuthorizedRoomsForSession uses only direct room/session bindings', 
 test('setBindingOrchestratorFlag toggles current room without changing worker rooms', () => {
   const bindings = bindingsFromJson({
     'slack:ORCH': { active: 'codex', sessions: { codex: 'cx' } },
-    'slack:WORKER': { active: 'claude', sessions: { claude: 'cc' } },
+    'slack:WORKER': { active: 'claude', orchestrator: false, parentRoomId: 'slack:ORCH', sessions: { claude: 'cc' } },
   })
 
   setBindingOrchestratorFlag(bindings, 'slack:ORCH', true, 'claude')
@@ -117,6 +152,7 @@ test('setBindingOrchestratorFlag toggles current room without changing worker ro
 
   setBindingOrchestratorFlag(bindings, 'slack:ORCH', false, 'claude')
   expect(normalizeBinding(bindings['slack:ORCH'], 'claude').isOrchestrator).toBe(false)
+  expect(normalizeBinding(bindings['slack:ORCH'], 'claude').orchestratorSource).toBe('explicit-disabled')
 })
 
 

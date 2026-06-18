@@ -6,15 +6,17 @@ import type { AgentKind } from './agents/types.js'
 export type AgentRuntimeKind = AgentKind
 export const AGENT_RUNTIMES = ['claude', 'codex'] as const satisfies readonly AgentRuntimeKind[]
 export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; codexHome?: string; tuiTabName?: string; bindingGeneration?: string; desiredRunning?: boolean }
-export type ChannelBinding = string | {
+export type ChannelBinding = {
   active?: AgentRuntimeKind
-  isOrchestrator?: boolean
+  orchestrator?: boolean
+  parentRoomId?: string
   observers?: AgentRuntimeKind[]
   sessions?: Partial<Record<AgentRuntimeKind, string>>
   cwd?: string
   agentMeta?: Partial<Record<AgentRuntimeKind, AgentSlotMeta>>
 }
-export type NormalizedBinding = { active: AgentRuntimeKind; isOrchestrator: boolean; observers: AgentRuntimeKind[]; sessions: Partial<Record<AgentRuntimeKind, string>>; cwd?: string; agentMeta: Partial<Record<AgentRuntimeKind, AgentSlotMeta>> }
+export type OrchestratorSource = 'explicit-enabled' | 'explicit-disabled' | 'worker-forced-disabled' | 'worker-enabled' | 'malformed-disabled' | 'ordinary-default-enabled'
+export type NormalizedBinding = { active: AgentRuntimeKind; isOrchestrator: boolean; orchestrator?: boolean; orchestratorSource: OrchestratorSource; parentRoomId?: string; observers: AgentRuntimeKind[]; sessions: Partial<Record<AgentRuntimeKind, string>>; cwd?: string; agentMeta: Partial<Record<AgentRuntimeKind, AgentSlotMeta>> }
 export type BindingSessionEntry = { runtime: AgentRuntimeKind; uuid: string; active: boolean }
 
 
@@ -92,21 +94,32 @@ export function bindingsFromJson(value: unknown): Record<string, ChannelBinding>
   for (const [channelKey, rawBinding] of Object.entries(record)) {
     const legacyUuid = stringValue(rawBinding)
     if (legacyUuid) {
-      bindings[channelKey] = legacyUuid
+      bindings[channelKey] = { sessions: { claude: legacyUuid } }
       continue
     }
     const binding = recordValue(rawBinding)
     if (!binding) continue
     const active = runtimeValue(binding.active)
-    const isOrchestrator = binding.isOrchestrator === true
+    const orchestratorRaw = binding.orchestrator
+    // Capability is a single boolean (absent = default). Migrate the legacy `isOrchestrator`
+    // boolean into it, and fail a malformed value closed to off rather than silently default-on.
+    const orchestrator = typeof orchestratorRaw === 'boolean'
+      ? orchestratorRaw
+      : orchestratorRaw !== undefined
+        ? false
+        : typeof binding.isOrchestrator === 'boolean'
+          ? binding.isOrchestrator
+          : undefined
+    const parentRoomId = stringValue(binding.parentRoomId)
     const observers = observerList(binding.observers, active)
     const sessions = sessionMap(binding.sessions)
     const cwd = cwdValue(binding.cwd)
     const agentMeta = agentMetaMap(binding.agentMeta)
-    if (!active && !isOrchestrator && observers.length === 0 && Object.keys(sessions).length === 0 && !cwd && Object.keys(agentMeta).length === 0) continue
+    if (!active && orchestrator === undefined && !parentRoomId && observers.length === 0 && Object.keys(sessions).length === 0 && !cwd && Object.keys(agentMeta).length === 0) continue
     bindings[channelKey] = {
       ...(active ? { active } : {}),
-      ...(isOrchestrator ? { isOrchestrator } : {}),
+      ...(orchestrator !== undefined ? { orchestrator } : {}),
+      ...(parentRoomId ? { parentRoomId } : {}),
       ...(observers.length ? { observers } : {}),
       ...(Object.keys(sessions).length ? { sessions } : {}),
       ...(cwd ? { cwd } : {}),
@@ -117,7 +130,6 @@ export function bindingsFromJson(value: unknown): Record<string, ChannelBinding>
 }
 
 export function normalizeBinding(value: ChannelBinding | undefined, defaultRuntime: AgentRuntimeKind): NormalizedBinding {
-  if (typeof value === 'string') return { active: 'claude', isOrchestrator: false, observers: [], sessions: { claude: value }, agentMeta: {} }
   const sessions = value?.sessions ?? {}
   const explicitActive = value?.active === 'claude' || value?.active === 'codex' ? value.active : undefined
   const active = explicitActive
@@ -133,8 +145,24 @@ export function normalizeBinding(value: ChannelBinding | undefined, defaultRunti
     ? agentMetaMap(value.agentMeta)
     : {}
   const observers = typeof value === 'object' ? observerList(value?.observers, active) : []
-  const isOrchestrator = typeof value === 'object' && value?.isOrchestrator === true
-  return { active, isOrchestrator, observers, sessions: { ...sessions }, cwd, agentMeta }
+  const orchestratorRaw = typeof value === 'object' ? value?.orchestrator : undefined
+  const malformed = orchestratorRaw !== undefined && typeof orchestratorRaw !== 'boolean'
+  const explicitOrchestrator = typeof orchestratorRaw === 'boolean' ? orchestratorRaw : undefined
+  const parentRoomId = typeof value === 'object' ? stringValue(value?.parentRoomId) : undefined
+  const isWorker = !!parentRoomId
+  const isOrchestrator = malformed
+    ? false
+    : explicitOrchestrator !== undefined
+      ? explicitOrchestrator
+      : !isWorker
+  // Keep the explicit capability for serialization. A malformed value heals to explicit off.
+  const orchestrator = malformed ? false : explicitOrchestrator
+  const orchestratorSource: OrchestratorSource = malformed
+    ? 'malformed-disabled'
+    : isOrchestrator
+      ? (isWorker ? 'worker-enabled' : explicitOrchestrator === true ? 'explicit-enabled' : 'ordinary-default-enabled')
+      : (isWorker ? 'worker-forced-disabled' : 'explicit-disabled')
+  return { active, isOrchestrator, ...(orchestrator !== undefined ? { orchestrator } : {}), orchestratorSource, ...(parentRoomId ? { parentRoomId } : {}), observers, sessions: { ...sessions }, cwd, agentMeta }
 }
 
 export function bindingSessionEntries(binding: NormalizedBinding): BindingSessionEntry[] {
@@ -164,17 +192,33 @@ export function serializeBinding(binding: NormalizedBinding, defaultRuntime: Age
   }
   const sessionKeys = Object.keys(sessions)
   const observers = binding.observers.filter(runtime => runtime !== binding.active)
-  if (!binding.isOrchestrator && sessionKeys.length === 0 && observers.length === 0 && !binding.cwd && binding.active === defaultRuntime) return undefined
+  if (binding.orchestratorSource === 'ordinary-default-enabled' && sessionKeys.length === 0 && observers.length === 0 && !binding.cwd && binding.active === defaultRuntime && binding.orchestrator === undefined && !binding.parentRoomId) return undefined
   const active = binding.active
-  return { active, ...(binding.isOrchestrator ? { isOrchestrator: true } : {}), ...(observers.length ? { observers } : {}), sessions, ...(binding.cwd ? { cwd: binding.cwd } : {}), ...(Object.keys(agentMeta).length > 0 ? { agentMeta } : {}) }
+  return { active, ...(binding.orchestrator !== undefined ? { orchestrator: binding.orchestrator } : {}), ...(binding.parentRoomId ? { parentRoomId: binding.parentRoomId } : {}), ...(observers.length ? { observers } : {}), sessions, ...(binding.cwd ? { cwd: binding.cwd } : {}), ...(Object.keys(agentMeta).length > 0 ? { agentMeta } : {}) }
 }
 
 export function setBindingOrchestratorFlag(bindings: Record<string, ChannelBinding>, channelKey: string, enabled: boolean, defaultRuntime: AgentRuntimeKind): void {
   const binding = normalizeBinding(bindings[channelKey], defaultRuntime)
   binding.isOrchestrator = enabled
+  binding.orchestrator = enabled
+  // Worker lineage (parentRoomId) is preserved: a worker room that a human break-glass enables
+  // stays identifiable as a worker, and stays disable-able back to worker-forced-disabled.
+  binding.orchestratorSource = enabled
+    ? (binding.parentRoomId ? 'worker-enabled' : 'explicit-enabled')
+    : (binding.parentRoomId ? 'worker-forced-disabled' : 'explicit-disabled')
   const serialized = serializeBinding(binding, defaultRuntime)
   if (serialized) bindings[channelKey] = serialized
   else delete bindings[channelKey]
+}
+
+export function setBindingWorkerRole(bindings: Record<string, ChannelBinding>, channelKey: string, parentRoomId: string, defaultRuntime: AgentRuntimeKind): void {
+  const binding = normalizeBinding(bindings[channelKey], defaultRuntime)
+  binding.isOrchestrator = false
+  binding.orchestrator = false
+  binding.orchestratorSource = 'worker-forced-disabled'
+  binding.parentRoomId = parentRoomId
+  const serialized = serializeBinding(binding, defaultRuntime)
+  if (serialized) bindings[channelKey] = serialized
 }
 
 

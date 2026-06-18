@@ -104,6 +104,11 @@ export class ClaudeChannelAgentDriver implements AgentDriver {
       `cwd="${escapeXmlAttr(turn.cwd)}"`,
       `addressed_agent="${turn.addressedAgent}"`,
       `default_agent="${turn.defaultAgent}"`,
+      ...(turn.roomCapability ? [
+        `is_orchestrator="${turn.roomCapability.isOrchestrator ? 'true' : 'false'}"`,
+        `orchestrator_source="${escapeXmlAttr(turn.roomCapability.source)}"`,
+        ...(turn.roomCapability.parentRoomId ? [`parent_room_id="${escapeXmlAttr(turn.roomCapability.parentRoomId)}"`] : []),
+      ] : []),
       `message_id="${escapeXmlAttr(turn.messageId)}"`,
       `thread_id="${escapeXmlAttr(turn.threadId)}"`,
     ].join(' ')

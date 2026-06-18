@@ -118,6 +118,9 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
       properties: {
         status: { type: 'string', enum: ['resolved', 'ambiguous', 'not_bound'], description: 'Whether the current CCM turn/session binding resolved to exactly one room, multiple possible rooms, or no bound room.' },
         chat_id: { type: 'string', description: 'Resolved current CCM room channel key when status is resolved.' },
+        is_orchestrator: { type: 'boolean', description: 'Effective Agent Control Path capability for the resolved room.' },
+        orchestrator_source: { type: 'string', description: 'Why the resolved room is or is not orchestrator-capable, such as ordinary-default-enabled, explicit-disabled, worker-forced-disabled, or worker-enabled.' },
+        parent_room_id: { type: 'string', description: 'For a CCM-managed Worker Room, the channel key of the parent Orchestrator room that created or bound it.' },
         candidate_chat_ids: { type: 'array', items: { type: 'string' }, description: 'Candidate bound room channel keys when status is ambiguous.' },
         authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
       },
