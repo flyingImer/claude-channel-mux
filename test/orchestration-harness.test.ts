@@ -20,7 +20,7 @@ const templateNames = [
 ]
 
 const promptNames = ['orchestrator.md', 'worker.md', 'guiding-principal.md', 'auditor.md', 'recovery.md', 'chatgpt-slack-orchestration.md']
-const checklistNames = ['git-orchestration-bootstrap.md', 'orchestrator-preflight.md', 'worker-dispatch.md', 'guiding-principal-recall.md', 'integration.md', 'recovery.md']
+const checklistNames = ['git-orchestration-bootstrap.md', 'orchestrator-preflight.md', 'worker-dispatch.md', 'guiding-principal-recall.md', 'integration.md', 'recovery.md', 'production-restart.md']
 
 test('orchestration workspace instructions enforce role and source-of-truth boundaries', () => {
   const body = readFileSync('docs/orchestration/AGENTS.md', 'utf8')
@@ -274,6 +274,11 @@ test('orchestration checklists cover preflight dispatch integration and recovery
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('User preference biases dispatch but cannot convert hidden subagents into CCM Worker Rooms')
   expect(readFileSync('skills/orchestrate-workers/SKILL.md', 'utf8')).toContain('Treat older notes such as "no chat_id", "CCM rooms unavailable", or "in-process fallback chosen" as stale')
   expect(readFileSync('docs/checklists/orchestrator-preflight.md', 'utf8')).toContain('explicitly asked to dispatch after that report')
+  expect(readFileSync('docs/checklists/production-restart.md', 'utf8')).toContain('systemctl --user restart ccm-daemon.service')
+  expect(readFileSync('docs/checklists/production-restart.md', 'utf8')).toContain('Do not use `nohup bun daemon.ts`, `setsid`, or manual background processes for production')
+  expect(readFileSync('docs/checklists/production-restart.md', 'utf8')).toContain('Refresh Claude and Codex plugin caches')
+  expect(readFileSync('docs/checklists/production-restart.md', 'utf8')).toContain('send_worker_raw_command')
+  expect(readFileSync('docs/checklists/production-restart.md', 'utf8')).toContain('bun run validate')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('not by asking the human to type setup commands in the worker room')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Codex native subagents')

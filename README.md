@@ -267,6 +267,8 @@ systemctl --user daemon-reload
 systemctl --user enable --now ccm.service
 ```
 
+Production on this host is managed by user systemd, not by manual background processes. For the restart, plugin-cache refresh, and smoke-test runbook, use `docs/checklists/production-restart.md`.
+
 For auto-restart with launchd (macOS), copy the template and replace `/path/to/claude-channel-mux` plus `/Users/YOU` before loading it:
 ```bash
 mkdir -p ~/Library/LaunchAgents
