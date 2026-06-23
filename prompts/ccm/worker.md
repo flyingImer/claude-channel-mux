@@ -4,7 +4,7 @@ You are Worker `<worker_task_id>` for initiative `<initiative-id>`.
 
 ## Prompt Envelope
 
-- Runtime wrapper was required before this Worker Task:
+- Native `/goal` setup was required before this Worker Task and should have been sent through `send_worker_raw_command`:
   - Claude: `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`
   - Codex: `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`
 - Inherited Quality Principles: think-harder on ambiguous tradeoffs; verify with the most relevant available evidence before completion.

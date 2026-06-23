@@ -16,16 +16,17 @@ Worker-room lifecycle tools require `chat_id` from the current CCM room context 
 1. Confirm `worker_task_id`, desired room name, room handle, cwd, default runtime, and Agent Resume Identity are recorded.
 2. Start or lazy-start the assigned agent slot in the visible CCM Worker Room through Agent Control Path.
 3. For every newly started Claude Code worker room, call `send_worker_raw_command` with `command: "/effort ultracode"` before sending the Worker Task. Do not ask a human to type `/cc effort ultracode` inside the worker room, and do not send it through `send_worker_task`.
-4. Send a Worker Task brief with objective, inputs, output format, acceptance checks, non-goals, and deny-listed writes, using the runtime-specific wrapper below.
+4. Send runtime-specific `/goal` setup with `send_worker_raw_command`, then send a Worker Task brief with objective, inputs, output format, acceptance checks, non-goals, and deny-listed writes. The Worker Task brief must not include native `/goal` setup text.
 5. Record prompt hash, send time, session id when available, and expected report path in `workers.md` or `reports/`.
 6. Monitor with status, screen, transcript, freshness, and Completion Reportback. Treat freshness as a hint, not durable truth.
 7. Move worker state through `task_sent`, `running`, `attention_needed`, `reported`, and later capture states only when evidence exists.
 
-## Runtime-Specific Worker Prompt Wrappers
+## Runtime-Specific Worker Goal Setup
 
-- Claude worker task text must be wrapped with `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion` before the task-specific Worker Task brief.
-- Codex worker task text must be wrapped with `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion` before the task-specific Worker Task brief.
+- Claude worker goal setup must be sent with `send_worker_raw_command` as `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion` before the task-specific Worker Task brief.
+- Codex worker goal setup must be sent with `send_worker_raw_command` as `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion` before the task-specific Worker Task brief.
 - The `<task specific goal description>` should be the shortest precise outcome for that worker, not the entire Stage Contract.
+- Do not include either `/goal` setup command in `send_worker_task`; native setup belongs to `send_worker_raw_command`.
 - Synthesis-related work always requires a dedicated Worker Room. If the stage needs report reconciliation, final curation, cross-worker synthesis, or combining related outputs, create/send a separate synthesis worker instead of making synthesis an implicit substep inside another agent instance.
 
 ## Prompt And Nav Handling
@@ -54,7 +55,7 @@ Escalate before acting:
 ## Message Envelope
 
 ```text
-Runtime wrapper:
+Native setup before this brief, sent via send_worker_raw_command:
 - Claude: /goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion
 - Codex: /goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion
 

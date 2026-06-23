@@ -13,7 +13,7 @@
 - [ ] Worker transcript/reportback is retrieved with `capture_worker_report` from the parent Orchestrator room before state moves to captured/consumed.
 - [ ] Human or Guiding Principal presence in the worker room is optional inspection only; required intervention is recorded as orchestration failure/degraded recovery.
 - [ ] Worker prompt uses `prompts/ccm/worker.md` and references the Stage Contract.
-- [ ] Runtime-specific wrapper is applied before the Worker Task brief: Claude uses `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`; Codex uses `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
+- [ ] Runtime-specific `/goal` setup is sent with `send_worker_raw_command` before the Worker Task brief: Claude uses `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`; Codex uses `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
 - [ ] Worker prompt passes down inherited quality principles such as think-harder and verification-before-completion.
 - [ ] If worker-local fan-out is allowed, worker prompt requires synthesis and verification of internal subagent outputs before final Worker Report.
 - [ ] Synthesis-related work is dispatched to a dedicated Worker Room rather than buried as a substep in another agent instance.

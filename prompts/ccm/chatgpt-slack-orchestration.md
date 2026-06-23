@@ -14,7 +14,7 @@ Authoritative model:
 - The Orchestrator owns routine execution: stage contracts, worker split, room lifecycle, worker prompts, report capture, evidence validation, integration/rejection, and archive after consumption.
 - Human and Guiding Principal steer intent, quality bars, non-goals, review gates, and reader-facing framing. Do not turn them into routine worker-room operators.
 - Worker Rooms are visible CCM rooms controlled through Agent Control Path. Hidden Codex subagents, Claude `Task`, Claude `Workflow`, `spawn_agent`, or model-side delegation are not CCM Worker Rooms.
-- Worker setup preference: Claude worker rooms must receive ACP `send_worker_raw_command` with `/effort ultracode` after `start_worker_agent` and before `send_worker_task`. Claude worker prompts must be wrapped with `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`. Codex worker prompts must be wrapped with `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
+- Worker setup preference: Claude worker rooms must receive ACP `send_worker_raw_command` with `/effort ultracode` after `start_worker_agent` and before `send_worker_task`. Claude worker goal setup must be sent via ACP `send_worker_raw_command` with `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`. Codex worker goal setup must be sent via ACP `send_worker_raw_command` with `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`. send_worker_task should carry only the task-specific Worker Task brief, not native `/goal` setup commands.
 - Always split synthesis-related work into a dedicated Worker Room. Do not let synthesis, report reconciliation, final curation, or combining related task outputs stall as an implicit substep inside the parent Orchestrator, another worker, or any single agent instance.
 - Dynamic workflow / fan-out is allowed only by scope:
   - Orchestrator-local fan-out may help orchestration meta-work: preflight review, dispatch planning, worker prompt QA, room-status checks, capture verification, report reconciliation, contradiction detection, evidence-gap detection, and final curation.
@@ -54,8 +54,8 @@ Dispatch through Agent Control Path from the parent Orchestrator room:
 2. bind_worker_room with cwd/runtime/default agent metadata.
 3. start_worker_agent.
 4. For Claude workers, send_worker_raw_command with command `/effort ultracode`; for Codex or other runtime-specific setup, use send_worker_raw_command only for explicit slash-shaped native setup commands.
-5. Wrap the Worker Task by runtime: Claude starts with `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`; Codex starts with `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
-6. send_worker_task.
+5. Send worker `/goal` setup by runtime via send_worker_raw_command: Claude uses `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`; Codex uses `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
+6. send_worker_task with only the task-specific Worker Task brief.
 7. capture_worker_report.
 
 Never send `/effort ultracode` with send_worker_task; that is ordinary Worker Task text, not native Claude Code slash-command control. If send_worker_raw_command is unavailable or fails, stop with attention_needed instead of pretending the worker effort was configured.
@@ -69,7 +69,7 @@ You may use internal dynamic workflow / fan-out only for orchestration meta-work
 
 Worker task prompt shape the Orchestrator should send:
 ```text
-Runtime wrapper:
+Native setup before Worker Task, sent via send_worker_raw_command:
 - Claude: /goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion
 - Codex: /goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion
 
