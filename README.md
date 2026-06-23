@@ -107,6 +107,8 @@ Codex command proxy (forwarded only to the Codex slot):
 | `/cx goal <new goal>` | Replace the current CCM Codex goal by interrupting any active Codex turn and starting a new replacement-goal turn; this is a CCM-level compatibility command, not a native app-server goal API |
 | `/cx raw /command ...` | Explicit experimental raw slash-shaped turn; unsupported `/cx <other>` commands show help instead of silently running |
 
+Agent Control Path can also send native slash-shaped setup commands from an Orchestrator parent room to started worker agents with `send_worker_raw_command`, for example configuring a Claude worker with `/effort ultracode` before `send_worker_task`. This is distinct from human `/cc` passthrough and must not be emulated by sending slash commands as Worker Task text.
+
 Codex pending request UX:
 
 - `/cx ss` and `/cx nav` share the same pending-action panel so snapshot and navigation do not disagree.

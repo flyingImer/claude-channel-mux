@@ -132,6 +132,10 @@ test('portable prompt pack maps orchestration roles to bundled skills', () => {
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Do not dispatch workers in that same turn')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Human or Guiding Principal worker-room inspection is optional')
   expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('an orchestration failure, not successful orchestration')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('For newly started Claude Code worker rooms, call `send_worker_raw_command` with `command: "/effort ultracode"`')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Claude worker task text must be wrapped as `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Codex worker task text must be wrapped as `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`')
+  expect(readFileSync('prompts/ccm/orchestrator.md', 'utf8')).toContain('Synthesis-related work always gets its own dedicated Worker Room')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('$work-in-worker-room')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('Inherited Quality Principles')
   expect(readFileSync('prompts/ccm/worker.md', 'utf8')).toContain('think-harder on ambiguous tradeoffs')
@@ -150,7 +154,12 @@ test('portable prompt pack maps orchestration roles to bundled skills', () => {
   expect(chatgptPrompt).toContain('Set the room default agent explicitly: `ccm default codex` or `ccm default claude`')
   expect(chatgptPrompt).toContain('Bind the workspace path: `ccm /absolute/path/to/workspace`')
   expect(chatgptPrompt).toContain('Start the desired fresh agent slot: `ccm new codex` or `ccm new claude`')
-  expect(chatgptPrompt).toContain('Each new Claude Code session used for orchestration should receive `/cc effort ultracode`')
+  expect(chatgptPrompt).toContain('Each new parent Claude Code session used for orchestration should receive human `/cc effort ultracode`')
+  expect(chatgptPrompt).toContain('Each newly started Claude worker room should instead be configured by the Orchestrator through Agent Control Path `send_worker_raw_command`')
+  expect(chatgptPrompt).toContain('Never send `/effort ultracode` with send_worker_task')
+  expect(chatgptPrompt).toContain('Claude worker prompts must be wrapped with `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`')
+  expect(chatgptPrompt).toContain('Codex worker prompts must be wrapped with `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`')
+  expect(chatgptPrompt).toContain('Always split synthesis-related work into a dedicated Worker Room')
   expect(chatgptPrompt).toContain('The same setup flow can be repeated in multiple Slack channels at the same time')
   expect(chatgptPrompt).toContain('each channel as its own parent Orchestrator room')
   expect(chatgptPrompt).toContain('Hidden Codex subagents, Claude `Task`, Claude `Workflow`, `spawn_agent`, or model-side delegation are not CCM Worker Rooms')
@@ -211,6 +220,7 @@ test('agent control path contract pins V1 lifecycle invariants', () => {
     'archive_room',
     'bind_worker_room',
     'start_worker_agent',
+    'send_worker_raw_command',
     'send_worker_task',
     'capture_worker_report',
     'effectively orchestrator-capable CCM parent room',
@@ -223,13 +233,14 @@ test('agent control path contract pins V1 lifecycle invariants', () => {
     'CCM Core returns facts; orchestration policy lives outside CCM Core',
     'Manual human or Guiding Principal commands inside the worker room are allowed only as optional observation/inspection or as a degraded recovery fallback',
     'that is an orchestration failure and must not be counted as successful autonomous orchestration',
-    'Parent-controlled bind/start/send/capture is part of the orchestration contract',
+    'Parent-controlled bind/start/raw-command/task/capture is part of the orchestration contract',
   ]) {
     expect(contract).toContain(required)
   }
   expect(schema).toContain('create_room_with_bot_invited')
   expect(schema).toContain('bind_worker_room')
   expect(schema).toContain('start_worker_agent')
+  expect(schema).toContain('send_worker_raw_command')
   expect(schema).toContain('send_worker_task')
   expect(schema).toContain('capture_worker_report')
   expect(schema).toContain('desired_room_name')
@@ -271,6 +282,9 @@ test('orchestration checklists cover preflight dispatch integration and recovery
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('whether `attention_needed` is required')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('worker-forced-disabled non-orchestrators by default')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('passes down inherited quality principles such as think-harder and verification-before-completion')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Claude workers receive `send_worker_raw_command` with `/effort ultracode` before `send_worker_task`')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Runtime-specific wrapper is applied before the Worker Task brief')
+  expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Synthesis-related work is dispatched to a dedicated Worker Room')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('requires synthesis and verification of internal subagent outputs before final Worker Report')
   expect(readFileSync('docs/checklists/worker-dispatch.md', 'utf8')).toContain('Human or Guiding Principal presence in the worker room is optional inspection only')
   expect(readFileSync('docs/checklists/guiding-principal-recall.md', 'utf8')).toContain('not being used as a routine approval gate')

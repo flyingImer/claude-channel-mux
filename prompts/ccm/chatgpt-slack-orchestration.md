@@ -10,10 +10,12 @@ Goal: help me use Slack + CCM to run visible Worker Rooms correctly, while also 
 Authoritative model:
 - Slack CCM rooms are the visible execution surface.
 - A parent Orchestrator room must be bound to the target repo. Ordinary CCM rooms are orchestrator-capable by default — no `/ccm orch on` needed. Use `/ccm orch on` only to re-enable a room you explicitly disabled, or as the human break-glass to enable a Worker Room. Worker Rooms created or bound through Agent Control Path are worker-forced-disabled by default.
-- Each new Claude Code session used for orchestration should receive `/cc effort ultracode` before substantive orchestration work.
+- Each new parent Claude Code session used for orchestration should receive human `/cc effort ultracode` before substantive orchestration work. Each newly started Claude worker room should instead be configured by the Orchestrator through Agent Control Path `send_worker_raw_command` with `command: "/effort ultracode"` before `send_worker_task`; do not ask the human to type setup commands inside Worker Rooms.
 - The Orchestrator owns routine execution: stage contracts, worker split, room lifecycle, worker prompts, report capture, evidence validation, integration/rejection, and archive after consumption.
 - Human and Guiding Principal steer intent, quality bars, non-goals, review gates, and reader-facing framing. Do not turn them into routine worker-room operators.
 - Worker Rooms are visible CCM rooms controlled through Agent Control Path. Hidden Codex subagents, Claude `Task`, Claude `Workflow`, `spawn_agent`, or model-side delegation are not CCM Worker Rooms.
+- Worker setup preference: Claude worker rooms must receive ACP `send_worker_raw_command` with `/effort ultracode` after `start_worker_agent` and before `send_worker_task`. Claude worker prompts must be wrapped with `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`. Codex worker prompts must be wrapped with `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
+- Always split synthesis-related work into a dedicated Worker Room. Do not let synthesis, report reconciliation, final curation, or combining related task outputs stall as an implicit substep inside the parent Orchestrator, another worker, or any single agent instance.
 - Dynamic workflow / fan-out is allowed only by scope:
   - Orchestrator-local fan-out may help orchestration meta-work: preflight review, dispatch planning, worker prompt QA, room-status checks, capture verification, report reconciliation, contradiction detection, evidence-gap detection, and final curation.
   - Worker-local fan-out may help source-grounded investigation, cross-checking, implementation, and verification inside an already-started visible Worker Room.
@@ -26,7 +28,7 @@ Slack setup checklist to give me:
 4. Bind the workspace path: `ccm /absolute/path/to/workspace`.
 5. Ordinary rooms are orchestrator-capable by default — no enable step needed. Only if the room was explicitly disabled: `/ccm orch on`.
 6. Start the desired fresh agent slot: `ccm new codex` or `ccm new claude`.
-7. For every new Claude session, send `/cc effort ultracode` before orchestration prompts.
+7. For every new parent Claude session, send `/cc effort ultracode` before orchestration prompts. Worker Claude sessions are configured later by the Orchestrator via ACP `send_worker_raw_command`, not by manual room typing.
 8. Confirm readiness: `/ccm orch status` and `ccm agents`.
 9. Ask the parent-room agent to use `$bootstrap-git-orchestration` for a new/adopted initiative, then stop and report readiness before dispatch unless I explicitly ask it to continue.
 10. When ready to dispatch, ask the parent-room agent to use `$orchestrate-workers`.
@@ -51,8 +53,14 @@ Dispatch through Agent Control Path from the parent Orchestrator room:
 1. create_room_with_bot_invited or repair/adopt with parent chat_id from current CCM context.
 2. bind_worker_room with cwd/runtime/default agent metadata.
 3. start_worker_agent.
-4. send_worker_task.
-5. capture_worker_report.
+4. For Claude workers, send_worker_raw_command with command `/effort ultracode`; for Codex or other runtime-specific setup, use send_worker_raw_command only for explicit slash-shaped native setup commands.
+5. Wrap the Worker Task by runtime: Claude starts with `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`; Codex starts with `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
+6. send_worker_task.
+7. capture_worker_report.
+
+Never send `/effort ultracode` with send_worker_task; that is ordinary Worker Task text, not native Claude Code slash-command control. If send_worker_raw_command is unavailable or fails, stop with attention_needed instead of pretending the worker effort was configured.
+
+Always split synthesis-related work into a dedicated Worker Room before capture/integration when outputs need reconciliation or final curation; do not bury synthesis as a substep in another agent instance.
 
 Do not ask me or the Guiding Principal to type setup commands or worker prompts inside Worker Rooms except as explicitly labeled degraded recovery. If Agent Control Path cannot dispatch visible rooms, stop with attention_needed instead of doing stage work via hidden subagents.
 
@@ -61,6 +69,10 @@ You may use internal dynamic workflow / fan-out only for orchestration meta-work
 
 Worker task prompt shape the Orchestrator should send:
 ```text
+Runtime wrapper:
+- Claude: /goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion
+- Codex: /goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion
+
 Use $work-in-worker-room.
 
 Worker Task: <worker_task_id>

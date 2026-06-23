@@ -8,12 +8,15 @@
 - [ ] Worker Rooms created, adopted, or bound by CCM lifecycle are worker-forced-disabled non-orchestrators by default; they do not inherit parent authority, cannot coordinate other rooms, and may only become orchestrator-capable through an explicit human `/ccm orch on` break-glass command (audit-logged), never through the worker lifecycle path or agent-originated messages.
 - [ ] Worker room cwd/runtime/default agent metadata is bound with `bind_worker_room`, not by asking the human to type setup commands in the worker room.
 - [ ] Worker agent is started/resumed with `start_worker_agent` from the parent Orchestrator room.
+- [ ] Claude workers receive `send_worker_raw_command` with `/effort ultracode` before `send_worker_task`; the human is not asked to type `/cc effort ultracode` in the worker room.
 - [ ] Worker Task is delivered with `send_worker_task` from the parent Orchestrator room.
 - [ ] Worker transcript/reportback is retrieved with `capture_worker_report` from the parent Orchestrator room before state moves to captured/consumed.
 - [ ] Human or Guiding Principal presence in the worker room is optional inspection only; required intervention is recorded as orchestration failure/degraded recovery.
 - [ ] Worker prompt uses `prompts/ccm/worker.md` and references the Stage Contract.
+- [ ] Runtime-specific wrapper is applied before the Worker Task brief: Claude uses `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`; Codex uses `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`.
 - [ ] Worker prompt passes down inherited quality principles such as think-harder and verification-before-completion.
 - [ ] If worker-local fan-out is allowed, worker prompt requires synthesis and verification of internal subagent outputs before final Worker Report.
+- [ ] Synthesis-related work is dispatched to a dedicated Worker Room rather than buried as a substep in another agent instance.
 - [ ] Worker is told not to mutate orchestration bookkeeping or coordinate other rooms.
 - [ ] Expected Worker Report format is supplied.
 - [ ] Prompt/nav authority is limited to the Worker Task scope.

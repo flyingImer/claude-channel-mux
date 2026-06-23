@@ -7,7 +7,7 @@
   "properties": {
     "operations": {
       "type": "object",
-      "required": ["create_room_with_bot_invited", "archive_room", "bind_worker_room", "start_worker_agent", "send_worker_task", "capture_worker_report"],
+      "required": ["create_room_with_bot_invited", "archive_room", "bind_worker_room", "start_worker_agent", "send_worker_raw_command", "send_worker_task", "capture_worker_report"],
       "properties": {
         "create_room_with_bot_invited": {
           "type": "object",
@@ -50,6 +50,17 @@
             "properties": {
               "type": "array",
               "items": { "enum": ["chat_id", "room_id", "runtime"] }
+            }
+          }
+        },
+        "send_worker_raw_command": {
+          "type": "object",
+          "required": ["required", "properties"],
+          "properties": {
+            "required": { "const": ["chat_id", "room_id", "runtime", "command"] },
+            "properties": {
+              "type": "array",
+              "items": { "enum": ["chat_id", "room_id", "runtime", "command", "thread_id"] }
             }
           }
         },

@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs'
-import type { AgentCommandResult, AgentCommandSpec, AgentDriver, AgentEvent, AgentPlanStep, AgentSession, AgentSnapshot, AgentSnapshotPendingItem, AgentTranscript, AgentTurn, GetSnapshotInput, GetTranscriptInput, ResolveServerRequestInput, ResumeAgentInput, SendCommandInput, SendTurnInput, StartAgentInput } from '../types.js'
+import type { AgentCommandResult, AgentCommandSpec, AgentDriver, AgentEvent, AgentPlanStep, AgentSession, AgentSnapshot, AgentSnapshotPendingItem, AgentTranscript, AgentTurn, GetSnapshotInput, GetTranscriptInput, ResolveServerRequestInput, ResumeAgentInput, SendCommandInput, SendRawCommandInput, SendTurnInput, StartAgentInput } from '../types.js'
 import { CodexAppServerClient, jsonObject, parseAppServerMessage, type JsonObject } from './app-server-client.js'
 import { errorMessage, redactSensitiveText } from '../../redact.js'
 import { codexConfigWithModelOverride, codexDangerFullAccess, codexResolvedConfigFromEnv, type CodexResolvedConfig } from './config.js'
@@ -319,6 +319,14 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         'Use `/cx help` for supported commands, or `/cx raw /command ...` to explicitly try an experimental raw Codex turn.',
       ].join('\n'),
     }
+  }
+
+  async sendRawCommand(input: SendRawCommandInput): Promise<AgentCommandResult> {
+    const runtime = this.runtimeForSession(input.session)
+    if (!runtime) throw new Error(`No Codex app-server runtime for ${input.session.sessionId}`)
+    const command = input.command.command.trim()
+    if (!command.startsWith('/')) throw new Error('command must be slash-shaped')
+    return await this.sendSlashCommandAsTurn(runtime, { ...input.command, command })
   }
 
 

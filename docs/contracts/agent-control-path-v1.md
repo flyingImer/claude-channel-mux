@@ -68,6 +68,24 @@ Result facts:
 - Requires prior `bind_worker_room` cwd metadata.
 - This explicit operation is part of the contract; `send_worker_task` must not hide lazy-start behavior.
 
+### `send_worker_raw_command`
+
+Input:
+
+- `chat_id`: current orchestrator room channel key.
+- `chat_id`: current parent/orchestrator room key used for bound-session routing.
+- `room_id`: worker room channel key or platform-local id.
+- `runtime`: worker agent runtime, `claude` or `codex`.
+- `command`: slash-shaped native runtime command, such as `/effort ultracode`.
+- `thread_id`: optional worker-room thread/message pointer for result facts only.
+
+Result facts:
+
+- Delivers a native runtime control command to an already-started worker agent.
+- Claude Code delivery writes the slash command into the worker Claude pane; Codex delivery starts an explicit raw slash-shaped app-server turn.
+- Requires an already-bound and already-started/running worker agent.
+- This is not a Worker Task. Orchestrators must not use `send_worker_task` to emulate native slash commands.
+
 ### `send_worker_task`
 
 Input:
@@ -109,9 +127,10 @@ The required worker execution path is:
 
 1. Bind worker room cwd/runtime/default agent metadata from the Orchestrator parent context with `bind_worker_room`.
 2. Start or resume the assigned worker agent in the worker room with `start_worker_agent`.
-3. Send the bounded Worker Task to that worker agent with `send_worker_task`.
-4. Monitor or retrieve the worker room reportback/transcript facts with `capture_worker_report`.
-5. Capture the Worker Report into Git-backed `reports/` before acceptance, abandonment, or archive.
+3. Send any required native setup commands with `send_worker_raw_command`, such as Claude Code `/effort ultracode`, before substantive Worker Tasks.
+4. Send the bounded Worker Task to that worker agent with `send_worker_task`.
+5. Monitor or retrieve the worker room reportback/transcript facts with `capture_worker_report`.
+6. Capture the Worker Report into Git-backed `reports/` before acceptance, abandonment, or archive.
 
 Manual human or Guiding Principal commands inside the worker room are allowed only as optional observation/inspection or as a degraded recovery fallback. If the orchestration depends on human or Guiding Principal intervention to bind, start, prompt, debug, or unblock a worker room, that is an orchestration failure and must not be counted as successful autonomous orchestration.
 
@@ -123,4 +142,4 @@ Manual human or Guiding Principal commands inside the worker room are allowed on
 - Lifecycle operations are never emulated on unsupported platforms.
 - CCM Core returns facts; orchestration policy lives outside CCM Core.
 - Completion Reportback and transcripts are freshness/evidence signals, not durable orchestration truth until captured.
-- Parent-controlled bind/start/send/capture is part of the orchestration contract; create/archive-only control is incomplete.
+- Parent-controlled bind/start/raw-command/task/capture is part of the orchestration contract; create/archive-only control is incomplete.

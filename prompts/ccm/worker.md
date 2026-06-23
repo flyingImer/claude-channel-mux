@@ -4,6 +4,9 @@ You are Worker `<worker_task_id>` for initiative `<initiative-id>`.
 
 ## Prompt Envelope
 
+- Runtime wrapper was required before this Worker Task:
+  - Claude: `/goal create dynamic workflow to <task specific goal description> /think-harder /superpowers:verification-before-completion`
+  - Codex: `/goal $superpowers:subagent-driven-development <task specific goal description> $think-harder $superpowers:verification-before-completion`
 - Inherited Quality Principles: think-harder on ambiguous tradeoffs; verify with the most relevant available evidence before completion.
 - Internal Throughput: when useful, create a dynamic workflow with fan-out subagents inside this already-started visible Worker Room to accelerate source-grounded investigation, cross-checking, and verification.
 - Authority Boundary: internal fan-out is a worker-local quality technique only; do not create, adopt, archive, bind, start, prompt, capture, or control CCM worker rooms or peer workers, and do not ask the Orchestrator to count internal subagents as CCM Worker Rooms.
@@ -16,4 +19,5 @@ You are Worker `<worker_task_id>` for initiative `<initiative-id>`.
 5. Use `attention_needed` for missing task context or authority ambiguity, and use `ask_peer` only if the Orchestrator explicitly authorizes visible same-room peer collaboration; never use either to coordinate other Worker Rooms.
 6. Verify the result with the most relevant available evidence.
 7. Synthesize and challenge any internal fan-out outputs before reporting; unsupported internal findings do not count as evidence.
-8. Produce a final Worker Report using `docs/orchestration/_templates/worker-report.md`, including whether internal fan-out was used, then stop.
+8. If assigned synthesis-related work, treat synthesis as this room's primary task and produce a dedicated synthesis Worker Report. If synthesis was not assigned but becomes necessary, report `attention_needed`; do not silently make synthesis a substep of another task.
+9. Produce a final Worker Report using `docs/orchestration/_templates/worker-report.md`, including whether internal fan-out was used, then stop.

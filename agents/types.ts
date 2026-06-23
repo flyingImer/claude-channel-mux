@@ -176,6 +176,8 @@ export type SendCommandInput = {
   command: AgentCommand
 }
 
+export type SendRawCommandInput = SendCommandInput
+
 export type ResolveServerRequestInput = {
   session: AgentSession
   requestId: string
@@ -190,6 +192,7 @@ export interface AgentDriver {
   sendTurn(input: SendTurnInput): Promise<string>
   commandSpec?(): AgentCommandSpec
   sendCommand?(input: SendCommandInput): Promise<AgentCommandResult>
+  sendRawCommand?(input: SendRawCommandInput): Promise<AgentCommandResult>
   snapshot?(input: GetSnapshotInput): Promise<AgentSnapshot>
   transcript?(input: GetTranscriptInput): Promise<AgentTranscript>
   resolveServerRequest?(input: ResolveServerRequestInput): Promise<void>

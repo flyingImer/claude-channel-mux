@@ -26,6 +26,7 @@ export const CCM_MCP_TOOL_NAMES = [
   'archive_room',
   'bind_worker_room',
   'start_worker_agent',
+  'send_worker_raw_command',
   'send_worker_task',
   'capture_worker_report',
   'ask_peer',
@@ -122,7 +123,7 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
         orchestrator_source: { type: 'string', description: 'Why the resolved room is or is not orchestrator-capable, such as ordinary-default-enabled, explicit-disabled, worker-forced-disabled, or worker-enabled.' },
         parent_room_id: { type: 'string', description: 'For a CCM-managed Worker Room, the channel key of the parent Orchestrator room that created or bound it.' },
         candidate_chat_ids: { type: 'array', items: { type: 'string' }, description: 'Candidate bound room channel keys when status is ambiguous.' },
-        authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
+        authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
       },
       required: ['status', 'authorized_control_tools'],
     },
@@ -177,6 +178,21 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
         runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to start or resume' },
       },
       required: ['room_id', 'runtime'],
+    },
+  },
+  {
+    name: 'send_worker_raw_command',
+    description: 'Agent Control Path V1: send a raw native runtime slash command to a started worker agent from the current Orchestrator parent room. Requires an orchestrator room. This is native control delivery, not a Worker Task; use it for setup commands such as Claude Code /effort ultracode. chat_id is optional when the current CCM turn/session binding resolves to one room.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
+        room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+        runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to receive the native command' },
+        command: { type: 'string', description: 'Slash-shaped native runtime command, for example /effort ultracode' },
+        thread_id: { type: 'string', description: 'Optional worker-room thread/message pointer for result facts; does not affect native command delivery' },
+      },
+      required: ['room_id', 'runtime', 'command'],
     },
   },
   {

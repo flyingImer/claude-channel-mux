@@ -485,7 +485,7 @@ function bindingEntries(): Array<{ channelKey: string; runtime: AgentRuntimeKind
   return entries
 }
 
-const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report'])
+const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'])
 
 type CurrentCcmContext =
   | { status: 'resolved'; chat_id: string; room_id: string; cwd: string; runtime: AgentRuntimeKind; is_orchestrator: boolean; orchestrator_source: string; parent_room_id?: string; source: 'route.channelKey' | 'session_binding' | 'orchestrator_session_binding'; authorized_control_tools: string[] }
@@ -3079,7 +3079,7 @@ function claudeSlashPassthroughText(command: string, ck: string, msg: InboundMes
 function claudeGoalRequiresOrchestrator(command: string): boolean {
   const text = command.trim()
   if (!/^\/goal(?:\s|$)/.test(text)) return false
-  return /\b(?:orchestrate-workers|Worker Rooms?|work rooms?|Agent Control Path|create_room_with_bot_invited|bind_worker_room|start_worker_agent|send_worker_task|capture_worker_report)\b/i.test(text)
+  return /\b(?:orchestrate-workers|Worker Rooms?|work rooms?|Agent Control Path|create_room_with_bot_invited|bind_worker_room|start_worker_agent|send_worker_raw_command|send_worker_task|capture_worker_report)\b/i.test(text)
 }
 
 function claudeGoalOrchestratorBlockedMessage(ck: string): string {
@@ -4266,7 +4266,7 @@ function auditInboundParsedCommand(ck: string, msg: InboundMessage, cmd: Cmd): v
   })
 }
 
-const VISIBLE_TOOL_COMMAND_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_task', 'capture_worker_report', 'ask_peer', 'chime_in'])
+const VISIBLE_TOOL_COMMAND_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report', 'ask_peer', 'chime_in'])
 
 function parseRuntimePrefix(args: string): { runtime?: AgentRuntimeKind; rest: string } {
   const m = args.match(/^(claude|cc|codex|cx)(?:\s+|$)(.*)$/i)
@@ -5409,6 +5409,53 @@ async function workerTranscriptFacts(workerCk: string, runtime: AgentRuntimeKind
   }
 }
 
+async function sendClaudePaneRawCommand(workerCk: string, sessionId: string, rawCommand: string): Promise<Record<string, unknown>> {
+  const paneId = resolvePaneId(sessionId.slice(0, 8))
+  if (paneId === null) throw new Error(`worker claude session ${sessionId.slice(0, 8)} is not running`)
+  const before = dumpScreen(paneId)
+  const { writeChars } = await import('./escort.js')
+  const writeOk = writeChars(paneId, rawCommand)
+  const enterOk = writeOk ? sendKeys(paneId, 'Enter') : false
+  if (!writeOk || !enterOk) throw new Error('failed to send raw command keys')
+  const changed = await waitForChange(paneId, before)
+  if (changed) {
+    const screen = dumpScreen(paneId)
+    if (isClaudeDialogScreen(screen)) {
+      const msgId = await sendDialogButtons(workerCk, sessionId.slice(0, 8), screen)
+      const entry = screenWatchers.get(sessionId)
+      if (entry) {
+        entry.lastDialogMsgId = msgId
+        entry.isDialog = true
+        entry.lastContent = screen
+        entry.nonDialogStreak = 0
+      }
+    }
+  }
+  return { delivery: 'claude_pane', screenChanged: changed }
+}
+
+async function sendCodexRawCommand(workerCk: string, sessionId: string, rawCommand: string, commandId: string, threadId?: string): Promise<Record<string, unknown>> {
+  const session = codexSessions.get(sessionId)
+  if (!session) throw new Error(`worker codex session ${sessionId.slice(0, 8)} is not loaded; call start_worker_agent before send_worker_raw_command`)
+  if (!codexDriver.sendRawCommand) throw new Error('Codex raw command proxy is not available')
+  const result = await codexDriver.sendRawCommand({
+    session,
+    command: {
+      commandId,
+      roomId: workerCk,
+      channelKey: workerCk,
+      platform: adapterFor(workerCk)?.platform ?? '',
+      channelId: localId(workerCk),
+      threadId: threadId ?? commandId,
+      messageId: commandId,
+      cwd: roomCwd(workerCk),
+      command: rawCommand,
+      meta: { source: 'agent_control_path_raw_command', chat_id: workerCk, room_id: workerCk, cwd: roomCwd(workerCk) },
+    },
+  })
+  return { delivery: 'codex_app_server_turn', nativeCommandId: result.nativeCommandId }
+}
+
 
 function renderAgentCommandHelp(runtime: AgentRuntimeKind): string {
   const driver = agentRegistry.get(runtime)
@@ -5837,36 +5884,16 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         ], commandNoticeOpts)
         return
       }
-      const before = dumpScreen(paneId)
-      const { writeChars } = await import('./escort.js')
       const commandText = claudeSlashPassthroughText(cmd.command, ck, msg, roomCwd(ck))
-      const writeOk = writeChars(paneId, commandText)
-      const enterOk = writeOk ? sendKeys(paneId, 'Enter') : false
-      if (!writeOk || !enterOk) {
+      try {
+        await sendClaudePaneRawCommand(ck, uuid, commandText)
+      } catch (err) {
         auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: parseAgentCommandName(cmd.command), ok: false, error: 'failed_to_send_keys' })
         await sendChannelNotice(ck, formatAgentReply('claude', `❌ Failed to send \`${cmd.command}\` to Claude session. Try \`/cc ss\` or resume the session.`), commandNoticeOpts, 'claude slash passthrough failure notice')
         return
       }
       auditEvent({ event: 'agent_command_executed', command_id: commandId, room_id: ck, runtime, command_name: parseAgentCommandName(cmd.command), ok: true })
       await sendChannelNotice(ck, formatAgentReply('claude', `⚡ Sent \`${cmd.command}\` to Claude session.`), commandNoticeOpts, 'claude slash passthrough notice')
-      // Detect interactive output (scroll views, confirms) immediately instead
-      // of waiting for the 3s screen watcher poll. Without this, commands like
-      // /btw leave the session stuck with no nav buttons in the channel.
-      const changed = await waitForChange(paneId, before)
-      if (changed) {
-        const screen = dumpScreen(paneId)
-        if (isClaudeDialogScreen(screen)) {
-          const u = uuid.slice(0, 8)
-          const msgId = await sendDialogButtons(ck, u, screen)
-          const entry = screenWatchers.get(uuid)
-          if (entry) {
-            entry.lastDialogMsgId = msgId
-            entry.isDialog = true
-            entry.lastContent = screen
-            entry.nonDialogStreak = 0
-          }
-        }
-      }
       return
     }
     case 'new': {
@@ -6496,6 +6523,27 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         if (runtime === 'claude' && !(await waitForLiveBridge(sessionId, 30_000))) throw new Error(`worker ${runtime} session ${sessionId.slice(0, 8)} did not connect after start`)
         setAgentDesiredRunning(workerCk, runtime, true)
         result = JSON.stringify({ ok: true, operation: 'start_worker_agent', platform: workerAdapter.platform, roomId: workerCk, runtime, sessionId, action })
+        break
+      }
+      case 'send_worker_raw_command': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const workerAdapter = adapterFor(workerCk)
+        if (!workerAdapter) throw new Error(`No adapter for worker room ${workerCk}`)
+        const runtime = runtimeArg(msg.args.runtime)
+        const rawCommand = stringValue(msg.args.command).trim()
+        if (!rawCommand.startsWith('/')) throw new Error('command must be slash-shaped')
+        if (!roomHasExplicitCwd(workerCk)) throw new Error('worker room must be bound to a cwd before sending a raw command')
+        const sessionId = bindingUuid(workerCk, runtime)
+        if (!sessionId) throw new Error('worker agent must be started before sending a raw command')
+        if (!live.has(sessionId)) throw new Error(`worker ${runtime} session ${sessionId.slice(0, 8)} is not running; call start_worker_agent before send_worker_raw_command`)
+        const commandId = `acpraw:${randomUUID()}`
+        const threadId = optionalString(msg.args.thread_id)
+        const delivery = runtime === 'claude'
+          ? await sendClaudePaneRawCommand(workerCk, sessionId, rawCommand)
+          : await sendCodexRawCommand(workerCk, sessionId, rawCommand, commandId, threadId)
+        result = JSON.stringify({ ok: true, operation: 'send_worker_raw_command', platform: workerAdapter.platform, roomId: workerCk, runtime, sessionId, commandName: parseAgentCommandName(rawCommand), commandId, ...delivery })
         break
       }
       case 'send_worker_task': {
