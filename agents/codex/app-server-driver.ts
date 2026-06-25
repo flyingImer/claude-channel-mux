@@ -197,6 +197,7 @@ export class CodexAppServerAgentDriver implements AgentDriver {
         { name: 'nav', status: 'supported', summary: 'Show pending actions, or resolve one with `/cx nav N allow|session|policy|network|deny|abort|answer <text>`.' },
         { name: 'transcript', status: 'supported', summary: 'Show recent Codex transcript from app-server, with jsonl fallback.' },
         { name: 'status', status: 'supported', summary: 'Show loaded Codex thread/config status.' },
+        { name: 'tui', status: 'supported', summary: 'Create, show, or stop the disposable Codex zellij TUI with `/cx tui on|off|status`.' },
         { name: 'compact', status: 'supported', summary: 'Start Codex app-server compaction.' },
         { name: 'cancel', status: 'supported', summary: 'Interrupt the latest Codex turn.', aliases: ['stop', 'interrupt'] },
         { name: 'mcp', status: 'supported', summary: 'List Codex MCP servers reported by app-server.' },

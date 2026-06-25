@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { findZellijSessionLine, stripAnsi } from '../zellij.ts'
+import { claudeBackendZellijSessionName, codexTuiZellijSessionName, findZellijSessionLine, parseZellijClients, stripAnsi, zellijAttachCommand } from '../zellij.ts'
 
 test('findZellijSessionLine matches the exact session name token', () => {
   const output = [
@@ -55,4 +55,37 @@ test('zellijTabs keeps only typed tab records from unknown JSON', () => {
 test('parseZellijJson ignores malformed zellij output', () => {
   expect(parseZellijJson('[{"id":1}]')).toEqual([{ id: 1 }])
   expect(parseZellijJson('not json')).toBeUndefined()
+})
+
+test('per-session zellij names use deterministic safe prefixes', () => {
+  expect(claudeBackendZellijSessionName('019e94e57c377cb3b3152443705b9aaf')).toBe('ccm-cc-019e94e5')
+  expect(codexTuiZellijSessionName('ccm-session')).toBe('ccm-cx-ccm-sess')
+  expect(() => claudeBackendZellijSessionName('!bad')).toThrow('invalid session uuid prefix')
+})
+
+test('zellij attach command rejects unsafe session names', () => {
+  expect(zellijAttachCommand('ccm-cc-019e94e5')).toBe('zellij attach ccm-cc-019e94e5')
+  expect(() => zellijAttachCommand('ccm;rm -rf /')).toThrow('unsafe zellij session name')
+})
+
+test('parseZellijClients parses table output without leaking command parsing assumptions', () => {
+  expect(parseZellijClients([
+    'CLIENT_ID PANE_ID RUNNING_COMMAND',
+    '1 42 zsh',
+    'client-2 7 claude',
+  ].join('\n'))).toEqual([
+    { clientId: '1', paneId: '42', runningCommand: 'zsh' },
+    { clientId: 'client-2', paneId: '7', runningCommand: 'claude' },
+  ])
+})
+
+import { spawnSync } from 'child_process'
+import { existsSync } from 'fs'
+
+test('memory measurement script exposes rollout gate options', () => {
+  expect(existsSync('scripts/measure-zellij-tui-memory.ts')).toBe(true)
+  const result = spawnSync('bun', ['scripts/measure-zellij-tui-memory.ts'], { encoding: 'utf8' })
+  expect(result.status).toBe(2)
+  expect(result.stderr).toContain('--max-per-session-rss-kb')
+  expect(result.stderr).toContain('--require-per-session')
 })

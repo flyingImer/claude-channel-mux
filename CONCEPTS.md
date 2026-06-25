@@ -24,7 +24,7 @@ Human or Guiding Principal presence in a Worker Room is optional inspection. Req
 ### Agent Control Path
 The structured parent-room control surface that lets an Orchestrator operate worker-room lifecycle without simulating chat commands or requiring humans to type in worker rooms.
 
-For worker execution, Agent Control Path must make bind, start/resume, send, capture/reportback, and archive steps explicit so the Orchestrator can prove what happened without entering the worker room manually. Lifecycle calls may recover a missing room identity only through Current CCM Context; they must not guess from unrelated rooms or bridge ids.
+For worker execution, Agent Control Path must make bind, start/resume, native setup, task delivery, capture/reportback, and archive steps explicit so the Orchestrator can prove what happened without entering the worker room manually. Lifecycle calls may recover a missing room identity only through Current CCM Context; they must not guess from unrelated rooms or bridge ids.
 
 ### Orchestrator Room Flag
 The effective CCM Room capability that authorizes Agent Control Path lifecycle tools from a parent room.
@@ -39,7 +39,7 @@ The matrix weighs task independence, dependencies, concurrency value, expected c
 ### Worker Task
 A bounded assignment sent to a worker agent with objective, inputs, non-goals, output format, and acceptance evidence.
 
-A Worker Task should be durable in orchestration state before room creation starts and should be delivered by the Orchestrator through Agent Control Path after the worker room is bound and the worker agent is running.
+A Worker Task should be durable in orchestration state before room creation starts and should be delivered by the Orchestrator through Agent Control Path after the worker room is bound, the worker agent is running, and any native setup has been sent. Runtime-native setup configures the worker session; it is not part of the Worker Task.
 
 ## CCM Agent Bridge
 
@@ -61,7 +61,7 @@ Current CCM Context is a control boundary: a resolved context may authorize Agen
 ### CCM Daemon
 The local long-running service that owns CCM Room state, platform connections, agent registrations, and tool-call routing.
 
-Exactly one CCM Daemon should own active routing state at a time. A replacement daemon may take over only after the previous owner is gone or its ownership records are stale.
+Exactly one CCM Daemon should own active routing state at a time. In normal operation that owner is the supervised user service; detached manual daemons are emergency-only and must hand ownership back to the supervisor before status or recovery decisions are trusted. A replacement daemon may take over only after the previous owner is gone or its ownership records are stale.
 
 ### Agent Routing Environment
 The provider-routing and authentication environment that CCM must pass to every managed agent launch surface so model calls use the intended local or remote provider path.
@@ -77,6 +77,18 @@ Attachment Command Turns must use the CCM turn envelope when attachment metadata
 A CCM room command that starts or replaces an agent's native goal while still preserving the CCM room context needed for visible orchestration.
 
 Native Goal Passthrough must not be treated as plain terminal text. If the goal originates from a CCM Room, the turn must carry or recover Current CCM Context before deciding whether Agent Control Path Worker Rooms are available.
+
+Worker-native goal setup follows the same separation: native slash-shaped setup configures a worker session, while the Worker Task remains the bounded assignment delivered afterward.
+
+### Backend Zellij Session
+A zellij session that owns a running agent TUI process without requiring a human client to be attached.
+
+For Claude, a Backend Zellij Session is the durable terminal owner: detaching or closing human zellij clients must not kill the Claude process. Backend sessions are named and observed per logical agent session so memory growth and lifecycle actions do not accumulate inside one shared `ccmux` server.
+
+### Disposable Codex TUI Session
+A zellij session that hosts only the Codex remote TUI connected to a durable Codex app-server session.
+
+Unlike a Claude Backend Zellij Session, a Disposable Codex TUI Session may be killed without stopping the Codex app-server or losing the logical Codex session. It exists to provide an on-demand local TUI, not to own the agent runtime.
 
 ### CCM MCP Tool Registry
 The canonical inventory of callable CCM tool names, descriptions, and input schemas shared by the MCP bridge and runtime launch surfaces.

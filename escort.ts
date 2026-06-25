@@ -15,6 +15,7 @@ import { execFile, execFileSync } from 'child_process'
 import { promisify } from 'util'
 import { parseZellijJson, zellijPanes, zellijTabs, type ZellijPane } from './zellij-json.js'
 import { errorMessage } from './redact.js'
+import { findZellijSessionLine, parseZellijClients, zellijListSessionsNoFormatting, type ZellijClient } from './zellij.js'
 
 const ZELLIJ_SESSION = process.env.CHANNEL_DAEMON_ZELLIJ_SESSION ?? 'ccmux'
 const execFileAsync = promisify(execFile)
@@ -23,60 +24,85 @@ const execFileAsync = promisify(execFile)
 // Zellij helpers
 // ---------------------------------------------------------------------------
 
-function zj(...args: string[]): string {
-  return execFileSync('zellij', ['--session', ZELLIJ_SESSION, 'action', ...args], {
+function zjForSession(sessionName: string, ...args: string[]): string {
+  return execFileSync('zellij', ['--session', sessionName, 'action', ...args], {
     encoding: 'utf8',
     timeout: 5000,
   }).trim()
+}
+
+function zj(...args: string[]): string {
+  return zjForSession(ZELLIJ_SESSION, ...args)
 }
 
 function listZellijSessions(): string {
-  return execFileSync('zellij', ['list-sessions', '--no-formatting'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 5000,
-  }).trim()
+  return zellijListSessionsNoFormatting()
 }
 
 export function zellijSessionAlive(output = listZellijSessions(), sessionName = ZELLIJ_SESSION): boolean {
-  const line = output.split('\n').find(item => item.trim().split(/\s+/)[0] === sessionName)
+  const line = findZellijSessionLine(output, sessionName)
   return !!line && !line.includes('EXITED')
 }
 
+export function zellijTargetSessionAlive(sessionName: string): boolean {
+  try { return zellijSessionAlive(listZellijSessions(), sessionName) } catch { return false }
+}
+
 export function listPanes(): ZellijPane[] {
-  if (!zellijSessionAlive()) return []
-  return zellijPanes(parseZellijJson(zj('list-panes', '--json')))
+  return listPanesInSession(ZELLIJ_SESSION)
+}
+
+export function listPanesInSession(sessionName: string): ZellijPane[] {
+  if (!zellijTargetSessionAlive(sessionName)) return []
+  return zellijPanes(parseZellijJson(zjForSession(sessionName, 'list-panes', '--json', '--tab', '--state', '--command')))
 }
 
 export function findPaneByTabName(tabName: string): { paneId: number; exited: boolean; exitStatus: number | null } | null {
-  const panes = listPanes()
+  return findPaneByTabNameInSession(ZELLIJ_SESSION, tabName)
+}
+
+export function findPaneByTabNameInSession(sessionName: string, tabName: string): { paneId: number; exited: boolean; exitStatus: number | null; terminalCommand?: string; paneCommand?: string } | null {
+  const panes = listPanesInSession(sessionName)
   for (const p of panes) {
     if (p.tab_name === tabName && !p.is_plugin) {
-      return { paneId: p.id, exited: p.exited ?? false, exitStatus: p.exit_status ?? null }
+      return { paneId: p.id, exited: p.exited ?? false, exitStatus: p.exit_status ?? null, terminalCommand: p.terminal_command, paneCommand: p.pane_command }
     }
   }
   return null
 }
 
+export function firstTerminalPaneInSession(sessionName: string): { paneId: number; exited: boolean; exitStatus: number | null; terminalCommand?: string; paneCommand?: string } | null {
+  const pane = listPanesInSession(sessionName).find(p => !p.is_plugin)
+  return pane ? { paneId: pane.id, exited: pane.exited ?? false, exitStatus: pane.exit_status ?? null, terminalCommand: pane.terminal_command, paneCommand: pane.pane_command } : null
+}
+
 export function dumpScreen(paneId: number): string {
+  return dumpScreenInSession(ZELLIJ_SESSION, paneId)
+}
+
+export function dumpScreenInSession(sessionName: string, paneId: number): string {
   try {
-    return zj('dump-screen', '--pane-id', String(paneId))
+    return zjForSession(sessionName, 'dump-screen', '--pane-id', String(paneId))
   } catch (err) {
-    process.stderr.write(`escort: dump-screen failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    process.stderr.write(`escort: dump-screen failed for ${sessionName} pane ${paneId}: ${errorMessage(err)}\n`)
     return ''
   }
 }
 
 /** Async version of dumpScreen — doesn't block event loop */
 export async function dumpScreenAsync(paneId: number): Promise<string> {
+  return dumpScreenInSessionAsync(ZELLIJ_SESSION, paneId)
+}
+
+export async function dumpScreenInSessionAsync(sessionName: string, paneId: number): Promise<string> {
   try {
-    const { stdout } = await execFileAsync('zellij', ['--session', ZELLIJ_SESSION, 'action', 'dump-screen', '--pane-id', String(paneId)], {
+    const { stdout } = await execFileAsync('zellij', ['--session', sessionName, 'action', 'dump-screen', '--pane-id', String(paneId)], {
       encoding: 'utf8',
       timeout: 5000,
     })
     return stdout.trim()
   } catch (err) {
-    process.stderr.write(`escort: async dump-screen failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    process.stderr.write(`escort: async dump-screen failed for ${sessionName} pane ${paneId}: ${errorMessage(err)}\n`)
     return ''
   }
 }
@@ -116,46 +142,72 @@ export function parseEscortCallback(data: string): EscortCallbackAction | undefi
 }
 
 export function sendKeys(paneId: number, ...keys: string[]): boolean {
+  return sendKeysInSession(ZELLIJ_SESSION, paneId, ...keys)
+}
+
+export function sendKeysInSession(sessionName: string, paneId: number, ...keys: string[]): boolean {
   try {
     const normalized = keys.map(k => ZELLIJ_KEY_ALIASES[k] ?? k)
-    zj('send-keys', '--pane-id', String(paneId), ...normalized)
+    zjForSession(sessionName, 'send-keys', '--pane-id', String(paneId), ...normalized)
     return true
   } catch (err) {
-    process.stderr.write(`escort: send-keys failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    process.stderr.write(`escort: send-keys failed for ${sessionName} pane ${paneId}: ${errorMessage(err)}\n`)
     return false
   }
 }
 
 /** Write raw bytes to a pane's PTY. More reliable than sendKeys for Ink TUIs. */
 export function writeRaw(paneId: number, ...bytes: number[]): void {
+  writeRawInSession(ZELLIJ_SESSION, paneId, ...bytes)
+}
+
+export function writeRawInSession(sessionName: string, paneId: number, ...bytes: number[]): void {
   try {
-    zj('write', '-p', String(paneId), ...bytes.map(String))
+    zjForSession(sessionName, 'write', '-p', String(paneId), ...bytes.map(String))
   } catch (err) {
-    process.stderr.write(`escort: write raw failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    process.stderr.write(`escort: write raw failed for ${sessionName} pane ${paneId}: ${errorMessage(err)}\n`)
   }
 }
 
 export function writeChars(paneId: number, text: string): boolean {
+  return writeCharsInSession(ZELLIJ_SESSION, paneId, text)
+}
+
+export function writeCharsInSession(sessionName: string, paneId: number, text: string): boolean {
   try {
-    zj('write-chars', '--pane-id', String(paneId), text)
+    zjForSession(sessionName, 'write-chars', '--pane-id', String(paneId), text)
     return true
   } catch (err) {
-    process.stderr.write(`escort: write chars failed for pane ${paneId}: ${errorMessage(err)}\n`)
+    process.stderr.write(`escort: write chars failed for ${sessionName} pane ${paneId}: ${errorMessage(err)}\n`)
     return false
   }
 }
 
 export function closeTab(tabName: string): void {
+  closeTabInSession(ZELLIJ_SESSION, tabName)
+}
+
+export function closeTabInSession(sessionName: string, tabName: string): void {
   try {
-    if (!zellijSessionAlive()) return
+    if (!zellijTargetSessionAlive(sessionName)) return
     // Find tab ID by name
-    const tabs = zellijTabs(parseZellijJson(zj('list-tabs', '--json')))
+    const tabs = zellijTabs(parseZellijJson(zjForSession(sessionName, 'list-tabs', '--json')))
     const tab = tabs.find(t => t.name === tabName)
     if (tab) {
-      zj('close-tab-by-id', String(tab.tab_id))
+      zjForSession(sessionName, 'close-tab-by-id', String(tab.tab_id))
     }
   } catch (err) {
-    process.stderr.write(`escort: close tab ${JSON.stringify(tabName)} failed: ${errorMessage(err)}\n`)
+    process.stderr.write(`escort: close tab ${JSON.stringify(tabName)} in ${sessionName} failed: ${errorMessage(err)}\n`)
+  }
+}
+
+export function listClientsInSession(sessionName: string): ZellijClient[] {
+  try {
+    if (!zellijTargetSessionAlive(sessionName)) return []
+    return parseZellijClients(zjForSession(sessionName, 'list-clients'))
+  } catch (err) {
+    process.stderr.write(`escort: list clients failed for ${sessionName}: ${errorMessage(err)}\n`)
+    return []
   }
 }
 

@@ -21,6 +21,17 @@ test('Claude confirmation prompts still trigger nav dialogs', () => {
 Enter to confirm`)).toBe(true)
 })
 
+test('Claude selection prompts with task-list-like key hints still trigger nav dialogs', () => {
+  const screen = `  Resume conversation
+
+  ❯ 1. 1f0012eb-c6b1-42cd-bef3-01e5ccc5e27b  /home/repo/ejwang/ws-spi-r8
+    2. Start new conversation
+
+  ↑/↓ to select · Enter to view · Esc to cancel`
+
+  expect(isClaudeDialogScreen(screen)).toBe(true)
+})
+
 test('Claude nav message text is bounded below channel edit limits', () => {
   const longScreen = Array.from({ length: 120 }, (_, index) => `line ${index} ${'x'.repeat(140)}`).join('\n')
 

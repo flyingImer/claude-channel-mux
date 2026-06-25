@@ -25,6 +25,7 @@ export class ClaudeChannelAgentDriver implements AgentDriver {
         { name: 'nav', status: 'supported', summary: 'Show and operate pending Claude TUI prompts.' },
         { name: 'transcript', status: 'supported', summary: 'Show recent Claude transcript from jsonl.' },
         { name: 'status', status: 'supported', summary: 'Alias of ccm agents/status for room state.' },
+        { name: 'tui', status: 'supported', summary: 'Show, attach, or detach the per-session Claude zellij TUI with `/cc tui on|off|status`.' },
         { name: 'compact', status: 'supported', summary: 'Forward to Claude Code native /compact.' },
         { name: 'cancel', status: 'supported', summary: 'Forward to Claude Code native interruption command.', aliases: ['stop', 'interrupt'] },
         { name: 'model', status: 'supported', summary: 'Forward to Claude Code native /model.' },

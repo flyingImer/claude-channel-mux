@@ -2,6 +2,7 @@ const CLAUDE_NAV_SCREEN_LINE_LIMIT = 80
 const CLAUDE_NAV_MESSAGE_CHAR_LIMIT = 3500
 const CLAUDE_TASK_LIST_FOOTER_RE = /\b(?:↑\/↓ to select|Enter to view|ctrl\+t to hide tasks|↓ to manage)\b/i
 const PROMPT_HINT_RE = /(?<![+\w])(?:Esc|Enter|Tab|Space|Ctrl\+[A-Z]|[↑↓←→]+\/[↑↓←→]+) to [a-z]/
+const CLAUDE_TASK_LIST_SCREEN_RE = /\bctrl\+t to hide tasks\b|\b↓ to manage\b/i
 
 export function truncateClaudeNavScreen(text: string, maxChars = CLAUDE_NAV_MESSAGE_CHAR_LIMIT): string {
   const lines = text.split('\n')
@@ -22,7 +23,7 @@ export function truncateClaudeNavScreen(text: string, maxChars = CLAUDE_NAV_MESS
 
 export function isClaudeDialogScreen(screen: string, permissionInFlight = false): boolean {
   if (permissionInFlight) return false
-  if (CLAUDE_TASK_LIST_FOOTER_RE.test(screen)) return false
+  if (CLAUDE_TASK_LIST_FOOTER_RE.test(screen) && CLAUDE_TASK_LIST_SCREEN_RE.test(screen)) return false
   return PROMPT_HINT_RE.test(screen)
 }
 

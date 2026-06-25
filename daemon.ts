@@ -38,7 +38,7 @@ import { promisify } from 'util'
 import type { ButtonItem, ChannelAdapter, InboundMessage, SendOptions } from './adapters/types.js'
 import { SlackAdapter } from './adapters/slack.js'
 import { TelegramAdapter } from './adapters/telegram.js'
-import { closeTab, findPaneByTabName, sendKeys, dumpScreen, dumpScreenAsync } from './escort.js'
+import { closeTab, closeTabInSession, findPaneByTabName, findPaneByTabNameInSession, sendKeys, dumpScreen, dumpScreenAsync, dumpScreenInSession, dumpScreenInSessionAsync, sendKeysInSession, writeCharsInSession, listClientsInSession } from './escort.js'
 import { watch as fsWatch, readFileSync as fsReadSync } from 'fs'
 import { ClaudeChannelAgentDriver } from './agents/claude/channel-driver.js'
 import { CodexAppServerAgentDriver } from './agents/codex/app-server-driver.js'
@@ -50,7 +50,7 @@ import { agentLabel, agentName, formatAgentReply } from './agents/identity.js'
 import { truncateAgentContextTurnText as truncateAgentContextTurnTextToMax } from './agents/turn-format.js'
 import { chimeInTurnText, collabRoutingPlan } from './agents/collab-routing.js'
 import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanStep, AgentRoomCapability, AgentServerRequest, AgentSession, AgentSnapshot, AgentTranscript, AgentTurn } from './agents/types.js'
-import { findZellijSessionLine } from './zellij.js'
+import { claudeBackendZellijSessionName, codexTuiZellijSessionName, findZellijServerProcess, findZellijSessionLine, zellijAttachCommand } from './zellij.js'
 import { DEFAULT_FORWARDED_AGENT_ENV, commandLine, forwardedEnvExports, forwardedEnvObject, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
@@ -3128,6 +3128,58 @@ async function zellijActionAsync(args: string[], options: { timeout?: number } =
   return zellijAsync(['--session', ZELLIJ_SESSION, 'action', ...args], options)
 }
 
+function zellijActionInSessionSync(sessionName: string, args: string[], options: { timeout?: number } = {}): string {
+  return zellijSync(['--session', sessionName, 'action', ...args], options)
+}
+
+async function zellijActionInSessionAsync(sessionName: string, args: string[], options: { timeout?: number } = {}): Promise<string> {
+  return zellijAsync(['--session', sessionName, 'action', ...args], options)
+}
+
+function zellijSessionLine(sessionName: string): string | undefined {
+  try { return findZellijSessionLine(zellijSync(['list-sessions']), sessionName) } catch { return undefined }
+}
+
+function isNamedZellijSessionAlive(sessionName: string): boolean {
+  const line = zellijSessionLine(sessionName)
+  return !!line && !line.includes('EXITED')
+}
+
+async function deleteExitedZellijSession(sessionName: string): Promise<void> {
+  const line = zellijSessionLine(sessionName)
+  if (!line || !line.includes('EXITED')) return
+  try {
+    await zellijAsync(['delete-session', sessionName, '--force'])
+  } catch (err) {
+    process.stderr.write(`daemon: failed to delete exited zellij session ${JSON.stringify(sessionName)}: ${errorMessage(err)}\n`)
+  }
+}
+
+async function ensureDetachedZellijSession(sessionName: string, label: string): Promise<void> {
+  await deleteExitedZellijSession(sessionName)
+  if (isNamedZellijSessionAlive(sessionName)) return
+  const scriptProc = spawn('script', ['-qfc', `zellij -s ${shellArg(sessionName)}`, '/dev/null'], {
+    stdio: 'ignore', detached: true,
+  })
+  scriptProc.unref()
+  let lastBootstrapCheckError: unknown
+  for (let i = 0; i < 20; i++) {
+    try {
+      if (isNamedZellijSessionAlive(sessionName)) {
+        try { scriptProc.kill() } catch (err) { process.stderr.write(`daemon: failed to stop ${label} zellij bootstrap client: ${errorMessage(err)}\n`) }
+        process.stderr.write(`daemon: created ${label} zellij session ${JSON.stringify(sessionName)}\n`)
+        return
+      }
+    } catch (err) {
+      lastBootstrapCheckError = err
+    }
+    await new Promise(r => setTimeout(r, 500))
+  }
+  try { scriptProc.kill() } catch (err) { process.stderr.write(`daemon: failed to stop ${label} zellij bootstrap client after timeout: ${errorMessage(err)}\n`) }
+  if (lastBootstrapCheckError) process.stderr.write(`daemon: ${label} zellij bootstrap session check failed: ${errorMessage(lastBootstrapCheckError)}\n`)
+  throw new Error(`could not create ${label} zellij session ${sessionName}`)
+}
+
 async function zellijPipeAsync(message: string, options: { timeout?: number } = {}): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn('zellij', ['--session', ZELLIJ_SESSION, 'pipe', '--plugin', `file:${WASM_PLUGIN_PATH}`], {
@@ -3235,7 +3287,18 @@ function isZellijSessionAlive(): boolean {
 }
 
 function getPaneStatus(uuid: string): PaneStatus {
+  const backendSessionName = claudeBackendZellijSessionName(uuid)
   const tabName = `ccm:${uuid.slice(0, 8)}`
+  if (isNamedZellijSessionAlive(backendSessionName)) {
+    try {
+      const pane = findPaneByTabNameInSession(backendSessionName, tabName)
+      if (!pane) return { kind: 'missing' }
+      if (pane.exited) return { kind: 'exited', paneId: pane.paneId, exitStatus: pane.exitStatus ?? null }
+      return { kind: 'alive', paneId: pane.paneId, terminalCommand: pane.terminalCommand, paneCommand: pane.paneCommand }
+    } catch (err) {
+      return { kind: 'unknown', reason: errorMessage(err) }
+    }
+  }
   try {
     const panes = zellijPanes(parseZellijJson(zellijActionSync(['list-panes', '--json', '--tab', '--state'], { timeout: 5000 })))
     const pane = panes.find(p => p.tab_name === tabName && !p.is_plugin)
@@ -3249,6 +3312,20 @@ function getPaneStatus(uuid: string): PaneStatus {
 }
 
 function getCodexTuiPaneStatusByTabName(tabName: string): PaneStatus {
+  const codexPrefix = 'ccm:cx:'
+  if (tabName.startsWith(codexPrefix)) {
+    const uuidShort = tabName.slice(codexPrefix.length)
+    const sessionName = codexTuiZellijSessionName(uuidShort)
+    try {
+      const pane = findPaneByTabNameInSession(sessionName, tabName)
+      if (!pane) return { kind: 'missing' }
+      if (pane.exited) return { kind: 'exited', paneId: pane.paneId, exitStatus: pane.exitStatus ?? null }
+      return { kind: 'alive', paneId: pane.paneId, terminalCommand: pane.terminalCommand, paneCommand: pane.paneCommand }
+    } catch (err) {
+      if (!isNamedZellijSessionAlive(sessionName)) return { kind: 'zellij_down' }
+      return { kind: 'unknown', reason: errorMessage(err) }
+    }
+  }
   try {
     const panes = zellijPanes(parseZellijJson(zellijActionSync(['list-panes', '--json', '--tab', '--state'], { timeout: 5000 })))
     const pane = panes.find(p => p.tab_name === tabName && !p.is_plugin)
@@ -3270,9 +3347,11 @@ function codexUpdatePromptVisible(screen: string): boolean {
 }
 
 async function autoSkipCodexUpdatePrompt(uuid: string, paneId: number): Promise<void> {
-  const screen = await dumpScreenAsync(paneId)
+  const sessionName = codexTuiZellijSessionName(uuid)
+  const useDisposableSession = isNamedZellijSessionAlive(sessionName)
+  const screen = useDisposableSession ? await dumpScreenInSessionAsync(sessionName, paneId) : await dumpScreenAsync(paneId)
   if (!codexUpdatePromptVisible(screen)) return
-  const ok = sendKeys(paneId, 'Down', 'Down', 'Enter')
+  const ok = useDisposableSession ? sendKeysInSession(sessionName, paneId, 'Down', 'Down', 'Enter') : sendKeys(paneId, 'Down', 'Down', 'Enter')
   process.stderr.write(`daemon: codex update prompt auto-skip ${uuid.slice(0, 8)} ok=${ok}\n`)
 }
 
@@ -3289,11 +3368,28 @@ const codexSessionLifecycle = new CodexAppServerSession({
   log: line => process.stderr.write(`${line}\n`),
   tui: {
     available: () => zellijAvailable,
-    ensureSession: () => ensureZellijSession(),
+    ensureSession: sessionId => ensureDetachedZellijSession(codexTuiZellijSessionName(sessionId), 'Codex TUI'),
     status: (tabName: string) => getCodexTuiPaneStatusByTabName(tabName) as CodexRemoteTuiStatus,
-    screen: (paneId: number) => dumpScreenAsync(paneId),
-    closeTab,
+    screen: async (sessionId: string, paneId: number) => {
+      const sessionName = codexTuiZellijSessionName(sessionId)
+      return isNamedZellijSessionAlive(sessionName) ? dumpScreenInSessionAsync(sessionName, paneId) : dumpScreenAsync(paneId)
+    },
+    closeTab: (sessionId: string, tabName: string) => {
+      if (tabName.startsWith('ccm:cx:')) closeTabInSession(codexTuiZellijSessionName(sessionId), tabName)
+      else closeTab(tabName)
+    },
+    closeSession: async (sessionId: string) => {
+      const sessionName = codexTuiZellijSessionName(sessionId)
+      if (!isNamedZellijSessionAlive(sessionName)) return
+      await zellijAsync(['kill-session', sessionName], { timeout: 10000 })
+    },
     newTab: async (tabName: string, command: string) => {
+      if (tabName.startsWith('ccm:cx:')) {
+        const sessionName = codexTuiZellijSessionName(tabName.slice('ccm:cx:'.length))
+        await ensureDetachedZellijSession(sessionName, 'Codex TUI')
+        await zellijActionInSessionAsync(sessionName, ['new-tab', '--name', tabName, '--', 'bash', '-lc', command], { timeout: 10000 })
+        return
+      }
       await zellijActionAsync(['new-tab', '--name', tabName, '--', 'bash', '-lc', command], { timeout: 10000 })
     },
     waitForPane: async (tabName: string) => {
@@ -3358,6 +3454,7 @@ function unbindUnresumableClaudeSession(ck: string, uuid: string, status: Extrac
 /** Clean up exited ccm tabs in zellij. Run on startup and after session exit. */
 function cleanExitedTabs(): void {
   if (!zellijAvailable) return
+  if (!isNamedZellijSessionAlive(ZELLIJ_SESSION)) return
   try {
     const panes = zellijPanes(parseZellijJson(zellijActionSync(['list-panes', '--json', '--tab', '--state'])))
     for (const p of panes) {
@@ -3511,19 +3608,19 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
     CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',      // no survey dialogs
   }
   const tabName = `ccm:${uuid.slice(0, 8)}`
+  const backendSessionName = claudeBackendZellijSessionName(uuid)
 
   if (zellijAvailable) {
     try {
-      // Ensure ccmux session exists (may have been killed/exited)
-      await ensureZellijSession()
+      await ensureDetachedZellijSession(backendSessionName, 'Claude backend')
 
       // Kill stale tab if it exists — its CC holds a dead IPC socket
       // from a previous daemon lifetime and won't reconnect.
-      const existingPane = findPaneByTabName(tabName)
+      const existingPane = findPaneByTabNameInSession(backendSessionName, tabName)
       if (existingPane && !existingPane.exited) {
-        process.stderr.write(`daemon: tab "${tabName}" exists (pane ${existingPane.paneId}), killing stale session\n`)
-        closeTab(tabName)
-        await new Promise(r => setTimeout(r, 500))
+        process.stderr.write(`daemon: Claude backend "${backendSessionName}" already has live pane ${existingPane.paneId}; reusing session\n`)
+        live.set(uuid, { runtime: 'claude', ipcConn: null, child: null })
+        return true
       }
 
       const cmd = [CLAUDE_BIN, ...args].map(shellArg).join(' ')
@@ -3538,8 +3635,8 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
         process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
       })
       const envExports = `export ${forwardedExports} CC_CHANNEL_SESSION_UUID=${shellArg(uuid)} CC_CHANNEL_DAEMON_SOCK=${shellArg(SOCK_PATH)} CLAUBBIT=1 DISABLE_AUTOUPDATER=1;`
-      await zellijActionAsync(['new-tab', '--name', tabName, '--', 'bash', '-c', `${envExports} cd ${shellArg(effectiveCwd)} && exec ${cmd}`], { timeout: 10000 })
-      process.stderr.write(`daemon: spawned ${uuid.slice(0, 8)} in zellij tab "${tabName}"\n`)
+      await zellijActionInSessionAsync(backendSessionName, ['new-tab', '--name', tabName, '--', 'bash', '-c', `${envExports} cd ${shellArg(effectiveCwd)} && exec ${cmd}`], { timeout: 10000 })
+      process.stderr.write(`daemon: spawned ${uuid.slice(0, 8)} in Claude backend zellij session "${backendSessionName}"\n`)
 
       // Dev channels dialog will be shown to user via screen watcher buttons
     } catch (err) {
@@ -3655,7 +3752,17 @@ function clearRuntimeState(uuid: string, reason: string, opts: { closePane?: boo
     try { l.child.kill('SIGTERM') } catch (err) { process.stderr.write(`daemon: child SIGTERM failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
   }
   if (opts.closePane && zellijAvailable) {
-    try { closeTab(`ccm:${uuid.slice(0, 8)}`) } catch (err) { process.stderr.write(`daemon: close tab failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
+    try {
+      const runtime = l?.runtime ?? runtimeForUuid(uuid)
+      if (runtime === 'codex') {
+        const sessionName = codexTuiZellijSessionName(uuid)
+        if (isNamedZellijSessionAlive(sessionName)) zellijSync(['kill-session', sessionName], { timeout: 10000 })
+      } else {
+        const sessionName = claudeBackendZellijSessionName(uuid)
+        if (isNamedZellijSessionAlive(sessionName)) zellijSync(['kill-session', sessionName], { timeout: 10000 })
+        else closeTab(`ccm:${uuid.slice(0, 8)}`)
+      }
+    } catch (err) { process.stderr.write(`daemon: close zellij session failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
   }
   const claudeSession = claudeSessions.get(uuid)
   if (claudeSession) {
@@ -3865,11 +3972,11 @@ const DEV_CHANNEL_CONFIRM_RE = /WARNING:\s+Loading development channels[\s\S]*I 
 // we don't flag the status bar (e.g. "shift+tab to cycle" — lowercase).
 const MAYBE_PROMPT_HINT_RE = /\b(Esc|Enter|Tab|Space|Ctrl\+|Alt\+|Shift\+|Press)\b.*\bto\b/
 
-function maybeAutoConfirmDevelopmentChannels(uuid: string, paneId: number, screen: string): boolean {
+function maybeAutoConfirmDevelopmentChannels(uuid: string, paneId: number, screen: string, sessionName = ZELLIJ_SESSION): boolean {
   if (!DEV_CHANNEL_CONFIRM_RE.test(screen)) return false
   const selectedFirstOption = /[❯›▸►]\s*1\.\s*I am using this for local development/i.test(screen)
   if (!selectedFirstOption) return false
-  const ok = sendKeys(paneId, 'Enter')
+  const ok = sessionName === ZELLIJ_SESSION ? sendKeys(paneId, 'Enter') : sendKeysInSession(sessionName, paneId, 'Enter')
   process.stderr.write(`daemon: auto-confirmed Claude development-channel prompt for ${uuid.slice(0, 8)} ok=${ok}\n`)
   return ok
 }
@@ -3892,14 +3999,14 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
   const u = uuid.slice(0, 8)
 
   // Find pane
-  let paneId: number | null = null
+  let paneHandle: ZellijPaneHandle | null = null
   for (let i = 0; i < 20; i++) {
-    paneId = resolvePaneId(u)
-    if (paneId !== null) break
+    paneHandle = resolveClaudePaneHandle(uuid)
+    if (paneHandle !== null) break
     await new Promise(r => setTimeout(r, 500))
     if (!screenWatchStarting.has(uuid)) return
   }
-  if (paneId === null) { screenWatchStarting.delete(uuid); return }
+  if (paneHandle === null) { screenWatchStarting.delete(uuid); return }
   if (!screenWatchStarting.has(uuid)) return
 
   // No WASM plugin needed — periodic dumpScreenAsync replaces it
@@ -3917,7 +4024,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     // Read fresh screen
     let content: string
     try {
-      content = await dumpScreenAsync(paneId)
+      content = await dumpScreenInSessionAsync(paneHandle.sessionName, paneHandle.paneId)
     } catch (err) {
       process.stderr.write(`daemon: dumpScreenAsync failed for ${u}: ${errorMessage(err)}\n`)
       return
@@ -3925,7 +4032,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
     if (!content || content === entry.lastContent) return
     entry.lastContent = content
 
-    if (maybeAutoConfirmDevelopmentChannels(uuid, paneId, content)) return
+    if (maybeAutoConfirmDevelopmentChannels(uuid, paneHandle.paneId, content, paneHandle.sessionName)) return
 
     const lines = content.split('\n')
 
@@ -3999,7 +4106,7 @@ async function startScreenWatch(ck: string, uuid: string): Promise<void> {
 
   screenWatchers.set(uuid, {
     watcher: { close: () => clearInterval(interval) },
-    lastContent: '', channelKey: ck, paneId,
+    lastContent: '', channelKey: ck, paneId: paneHandle.paneId,
     lastUpdateTime: 0, isDialog: false, nonDialogStreak: 0, compactingActive: false, compactingStartedAt: undefined,
   })
   screenWatchStarting.delete(uuid)
@@ -4036,35 +4143,52 @@ async function sendWithButtonsReturn(ck: string, text: string, buttons: ButtonIt
   }
 }
 
-/** Resolve pane_id from UUID short at click time */
+type ZellijPaneHandle = { sessionName: string; paneId: number }
+
+function resolveClaudePaneHandle(uuid: string): ZellijPaneHandle | null {
+  const sessionName = claudeBackendZellijSessionName(uuid)
+  const pane = findPaneByTabNameInSession(sessionName, `ccm:${uuid.slice(0, 8)}`)
+  return pane && !pane.exited ? { sessionName, paneId: pane.paneId } : null
+}
+
+function resolveCodexTuiPaneHandle(uuid: string): ZellijPaneHandle | null {
+  const status = getCodexTuiPaneStatus(uuid)
+  return status.kind === 'alive' ? { sessionName: codexTuiZellijSessionName(uuid), paneId: status.paneId } : null
+}
+
+/** Resolve Claude pane_id from UUID short at click time */
 function resolvePaneId(uuidShort: string): number | null {
+  const uuid = [...claudeSessions.keys(), ...live.keys(), ...bindingEntries().filter(e => e.runtime === 'claude').map(e => e.uuid)]
+    .find(candidate => candidate.slice(0, 8) === uuidShort)
+  if (uuid) return resolveClaudePaneHandle(uuid)?.paneId ?? null
   const pane = findPaneByTabName(`ccm:${uuidShort}`)
   return pane ? pane.paneId : null
 }
 
 /** Navigate to option index and confirm. Event-based: each step verifies screen changed. */
-async function navigateAndConfirm(paneId: number, targetIdx: number): Promise<boolean> {
+async function navigateAndConfirm(paneId: number, targetIdx: number, sessionName = ZELLIJ_SESSION): Promise<boolean> {
   // Go to top
   for (let i = 0; i < 10; i++) {
-    const before = dumpScreen(paneId)
-    if (!sendKeys(paneId, 'Up')) return false
-    if (!await waitForChange(paneId, before)) break  // at top
+    const before = sessionName === ZELLIJ_SESSION ? dumpScreen(paneId) : dumpScreenInSession(sessionName, paneId)
+    if (!(sessionName === ZELLIJ_SESSION ? sendKeys(paneId, 'Up') : sendKeysInSession(sessionName, paneId, 'Up'))) return false
+    if (!await waitForChange(paneId, before, undefined, sessionName)) break  // at top
   }
   // Navigate down to target
   for (let i = 0; i < targetIdx; i++) {
-    const before = dumpScreen(paneId)
-    if (!sendKeys(paneId, 'Down')) return false
-    await waitForChange(paneId, before)
+    const before = sessionName === ZELLIJ_SESSION ? dumpScreen(paneId) : dumpScreenInSession(sessionName, paneId)
+    if (!(sessionName === ZELLIJ_SESSION ? sendKeys(paneId, 'Down') : sendKeysInSession(sessionName, paneId, 'Down'))) return false
+    await waitForChange(paneId, before, undefined, sessionName)
   }
   // Confirm
-  return sendKeys(paneId, 'Enter')
+  return sessionName === ZELLIJ_SESSION ? sendKeys(paneId, 'Enter') : sendKeysInSession(sessionName, paneId, 'Enter')
 }
 
-async function waitForChange(paneId: number, before: string, timeoutMs = 2000): Promise<boolean> {
+async function waitForChange(paneId: number, before: string, timeoutMs = 2000, sessionName = ZELLIJ_SESSION): Promise<boolean> {
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     await new Promise(r => setTimeout(r, 100))
-    if (dumpScreen(paneId) !== before) return true
+    const screen = sessionName === ZELLIJ_SESSION ? dumpScreen(paneId) : dumpScreenInSession(sessionName, paneId)
+    if (screen !== before) return true
   }
   return false
 }
@@ -4122,10 +4246,11 @@ async function sendDialogButtons(
 // Session cleanup
 // ---------------------------------------------------------------------------
 
-async function killSession(uuid: string): Promise<void> {
+async function killSession(uuid: string, options: { runtimeHint?: AgentRuntimeKind } = {}): Promise<void> {
   stopScreenWatch(uuid)
   stopTranscriptPoll(uuid)
   const l = live.get(uuid)
+  const runtime = options.runtimeHint ?? l?.runtime ?? runtimeForUuid(uuid)
   const claudeSession = claudeSessions.get(uuid)
   if (claudeSession) {
     claudeSessions.delete(uuid)
@@ -4138,12 +4263,19 @@ async function killSession(uuid: string): Promise<void> {
   }
   if (l?.child) {
     try { l.child.kill('SIGTERM') } catch (err) { process.stderr.write(`daemon: child SIGTERM failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
-  } else if (l && zellijAvailable) {
+  } else if (zellijAvailable) {
     try {
-      closeTab(`ccm:${uuid.slice(0, 8)}`)
-      try { l.ipcConn?.destroy() } catch (err) { process.stderr.write(`daemon: IPC destroy failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
+      if (runtime === 'codex') {
+        const sessionName = codexTuiZellijSessionName(uuid)
+        if (isNamedZellijSessionAlive(sessionName)) await zellijAsync(['kill-session', sessionName], { timeout: 10000 })
+      } else {
+        const sessionName = claudeBackendZellijSessionName(uuid)
+        if (isNamedZellijSessionAlive(sessionName)) await zellijAsync(['kill-session', sessionName], { timeout: 10000 })
+        else closeTab(`ccm:${uuid.slice(0, 8)}`)
+      }
+      try { l?.ipcConn?.destroy() } catch (err) { process.stderr.write(`daemon: IPC destroy failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`) }
     } catch (err) {
-      process.stderr.write(`daemon: close tab failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
+      process.stderr.write(`daemon: close zellij session failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
     }
   }
   live.delete(uuid)
@@ -4192,7 +4324,7 @@ function roomHasResettableState(ck: string): boolean {
 async function deleteRoomState(ck: string): Promise<void> {
   const binding = normalizeBinding(loadBindings()[ck])
   for (const entry of bindingSessionEntries(binding)) {
-    await killSession(entry.uuid)
+    await killSession(entry.uuid, { runtimeHint: entry.runtime })
   }
   const b = loadBindings()
   delete b[ck]
@@ -4229,6 +4361,7 @@ type Cmd =
   | { t: 'find'; query: string; runtime?: AgentRuntimeKind }
   | { t: 'screen'; runtime?: AgentRuntimeKind }
   | { t: 'nav'; runtime?: AgentRuntimeKind }
+  | { t: 'tui'; runtime: AgentRuntimeKind; action: 'on' | 'off' | 'status' }
   | { t: 'slash'; command: string }
   | { t: 'agent_command'; runtime: AgentRuntimeKind; command: string }
   | { t: 'collab_status' }
@@ -4363,6 +4496,8 @@ function parseCmd(text: string): Cmd {
     const stopRuntimeM = args.match(/^stop\s+(claude|cc|codex|cx)$/i)
     if (stopRuntimeM) return { t: 'stop', runtime: /^(codex|cx)$/i.test(stopRuntimeM[1]) ? 'codex' : 'claude' }
     if (/^stop$/i.test(args)) return { t: 'stop', runtime }
+    const tuiM = args.match(/^tui(?:\s+(on|off|status))?$/i)
+    if (tuiM) return { t: 'tui', runtime, action: (tuiM[1]?.toLowerCase() as 'on' | 'off' | 'status' | undefined) ?? 'status' }
     if (/^(screen|ss)$/i.test(args)) return { t: 'screen', runtime }
     if (/^nav$/i.test(args)) return { t: 'nav', runtime }
     const resumeRuntimeIdM = args.match(/^resume\s+(claude|cc|codex|cx)\s+([0-9a-f-]{8,36})$/i)
@@ -4381,6 +4516,8 @@ function parseCmd(text: string): Cmd {
   const ccSub = agentCommandBodyAfterPrefix(c, 'cc')
   if (ccSub !== undefined) {
     const sub = ccSub.trim()
+    const tuiSubM = sub.match(/^tui(?:\s+(on|off|status))?$/i)
+    if (tuiSubM) return { t: 'tui', runtime: 'claude', action: (tuiSubM[1]?.toLowerCase() as 'on' | 'off' | 'status' | undefined) ?? 'status' }
     if (/^help$/i.test(sub)) return { t: 'agent_command', runtime: 'claude', command: '/help' }
     if (/^(screen|ss)$/i.test(sub)) return { t: 'agent_command', runtime: 'claude', command: '/ss' }
     if (/^status$/i.test(sub)) return { t: 'agent_command', runtime: 'claude', command: '/status' }
@@ -4394,6 +4531,8 @@ function parseCmd(text: string): Cmd {
   const cxSub = agentCommandBodyAfterPrefix(c, 'cx')
   if (cxSub !== undefined) {
     const sub = cxSub.trim()
+    const tuiSubM = sub.match(/^tui(?:\s+(on|off|status))?$/i)
+    if (tuiSubM) return { t: 'tui', runtime: 'codex', action: (tuiSubM[1]?.toLowerCase() as 'on' | 'off' | 'status' | undefined) ?? 'status' }
     if (/^help$/i.test(sub)) return { t: 'agent_command', runtime: 'codex', command: '/help' }
     if (/^(screen|ss)$/i.test(sub)) return { t: 'agent_command', runtime: 'codex', command: '/ss' }
     if (/^nav(?:\s+.*)?$/i.test(sub)) return { t: 'agent_command', runtime: 'codex', command: '/' + sub }
@@ -5131,8 +5270,8 @@ function readClaudeTranscriptEntries(path: string, limit: number): Array<{ role:
 
 function claudeSnapshot(ck: string, session: AgentSession): AgentSnapshot {
   const uuid = session.sessionId
-  const paneId = resolvePaneId(uuid.slice(0, 8))
-  const screen = paneId !== null ? dumpScreen(paneId) : ''
+  const pane = resolveClaudePaneHandle(uuid)
+  const screen = pane ? dumpScreenInSession(pane.sessionName, pane.paneId) : ''
   const transcript = findTranscript(uuid, 'claude')
   const recent = transcript ? readClaudeTranscriptEntries(transcript.path, 8) : []
   const pending = screen && isClaudeDialogScreen(screen)
@@ -5141,14 +5280,14 @@ function claudeSnapshot(ck: string, session: AgentSession): AgentSnapshot {
   return {
     kind: 'claude',
     session,
-    source: paneId !== null ? 'live' : transcript ? 'transcript' : 'partial',
+    source: pane ? 'live' : transcript ? 'transcript' : 'partial',
     title: 'Claude snapshot',
     cwd: session.cwd,
-    status: paneId !== null ? `${session.status}; pane ${paneId}` : `${session.status}; no active pane`,
+    status: pane ? `${session.status}; ${pane.sessionName} pane ${pane.paneId}` : `${session.status}; no active pane`,
     current: screen ? screen.split('\n').filter(l => l.trim()).slice(-1)[0] : recent.length ? `${recent[recent.length - 1].role}: ${recent[recent.length - 1].text}` : undefined,
     pending,
     recent,
-    health: paneId === null ? ['Claude zellij pane is not active; showing transcript fallback if available.'] : [],
+    health: pane ? [] : ['Claude backend zellij pane is not active; showing transcript fallback if available.'],
   }
 }
 
@@ -5260,6 +5399,118 @@ async function sendAgentSnapshot(ck: string, runtime: AgentRuntimeKind): Promise
   return true
 }
 
+function formatKb(kb: number | undefined): string {
+  if (kb == null) return 'unknown'
+  if (kb >= 1024 * 1024) return `${(kb / 1024 / 1024).toFixed(1)} GiB`
+  if (kb >= 1024) return `${(kb / 1024).toFixed(1)} MiB`
+  return `${kb} KiB`
+}
+
+function zellijSessionStatusLines(sessionName: string): string[] {
+  const alive = isNamedZellijSessionAlive(sessionName)
+  const clients = alive ? listClientsInSession(sessionName) : []
+  const memory = alive ? findZellijServerProcess(sessionName) : undefined
+  return [
+    `zellij_session: ${sessionName}`,
+    `zellij_alive: ${alive ? 'yes' : 'no'}`,
+    `attach: ${zellijAttachCommand(sessionName)}`,
+    `clients: ${clients.length}`,
+    `server_pid: ${memory?.pid ?? 'unknown'}`,
+    `server_rss: ${formatKb(memory?.vmRssKb)}`,
+    `server_rss_anon: ${formatKb(memory?.rssAnonKb)}`,
+  ]
+}
+
+async function sendClaudeTuiCommand(ck: string, action: 'on' | 'off' | 'status'): Promise<boolean> {
+  const runtime: AgentRuntimeKind = 'claude'
+  const uuid = bindingUuid(ck, runtime)
+  if (!uuid) {
+    await sendWithButtons(ck, formatAgentReply(runtime, 'No Claude agent slot session in this room.'), [
+      { text: '🚀 Start Claude', data: 'cmd:new:claude' },
+      { text: '📋 Resume', data: 'cmd:resume' },
+    ])
+    return false
+  }
+  const sessionName = claudeBackendZellijSessionName(uuid)
+  const pane = resolveClaudePaneHandle(uuid)
+  if (action === 'off') {
+    const clients = listClientsInSession(sessionName)
+    const lines = [
+      `🧹 Claude TUI clients for \`${uuid.slice(0, 8)}\`: ${clients.length ? `${clients.length} connected` : 'none connected'}.`,
+      `Claude continues running in backend zellij session \`${sessionName}\`.`,
+      'This zellij version does not expose targeted client termination through the CCM helper; close or detach attached terminals if any remain.',
+      ...zellijSessionStatusLines(sessionName),
+    ]
+    await sendChannelNotice(ck, formatAgentReply(runtime, lines.join('\n')), undefined, 'claude tui off notice')
+    return true
+  }
+  const intro = action === 'on'
+    ? `🖥 Claude TUI backend for \`${uuid.slice(0, 8)}\` is ${pane ? 'ready' : 'not showing an active pane yet'}. Attach locally with:`
+    : `🖥 Claude TUI status for \`${uuid.slice(0, 8)}\`:`
+  const lines = [
+    intro,
+    `\`${zellijAttachCommand(sessionName)}\``,
+    `agent_running: ${agentDesiredRunning(ck, runtime) ? 'yes' : 'no'}`,
+    `pane: ${pane ? `${pane.paneId}` : 'missing'}`,
+    ...zellijSessionStatusLines(sessionName),
+  ]
+  await sendChannelNotice(ck, formatAgentReply(runtime, lines.join('\n')), undefined, `claude tui ${action} notice`)
+  return true
+}
+
+async function sendCodexTuiCommand(ck: string, action: 'on' | 'off' | 'status'): Promise<boolean> {
+  const runtime: AgentRuntimeKind = 'codex'
+  const uuid = bindingUuid(ck, runtime)
+  if (!uuid) {
+    await sendWithButtons(ck, formatAgentReply(runtime, 'No Codex agent slot session in this room.'), [
+      { text: '🚀 Start Codex', data: 'cmd:new:codex' },
+      { text: '📋 Resume', data: 'cmd:resume' },
+    ])
+    return false
+  }
+  const session = codexSessions.get(uuid)
+  if (!session) {
+    await sendWithButtons(ck, formatAgentReply(runtime, `Codex app-server session \`${uuid.slice(0, 8)}\` is not loaded.`), [
+      { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
+    ])
+    return false
+  }
+  const sessionName = codexTuiZellijSessionName(uuid)
+  if (action === 'off') {
+    const existed = isNamedZellijSessionAlive(sessionName)
+    if (existed) {
+      try {
+        await zellijAsync(['kill-session', sessionName], { timeout: 10000 })
+      } catch (err) {
+        await sendChannelNotice(ck, formatAgentReply(runtime, `❌ Failed to stop Codex disposable TUI \`${sessionName}\`: ${errorMessage(err)}`), undefined, 'codex tui off failure notice')
+        return false
+      }
+    }
+    await sendChannelNotice(ck, formatAgentReply(runtime, `🧹 Codex disposable TUI \`${sessionName}\` ${existed ? 'stopped' : 'was not running'}. Codex app-server session \`${uuid.slice(0, 8)}\` continues.`), undefined, 'codex tui off notice')
+    return true
+  }
+  if (action === 'on') {
+    try {
+      await codexSessionLifecycle.attachTui(uuid, session)
+    } catch (err) {
+      await sendChannelNotice(ck, formatAgentReply(runtime, `❌ Failed to attach Codex TUI: ${errorMessage(err)}`), undefined, 'codex tui on failure notice')
+      return false
+    }
+  }
+  const pane = resolveCodexTuiPaneHandle(uuid)
+  const lines = [
+    action === 'on'
+      ? `🖥 Codex disposable TUI for \`${uuid.slice(0, 8)}\` is ${pane ? 'ready' : 'not showing an active pane yet'}. Attach locally with:`
+      : `🖥 Codex TUI status for \`${uuid.slice(0, 8)}\`:`,
+    `\`${zellijAttachCommand(sessionName)}\``,
+    `app_server: running`,
+    `pane: ${pane ? `${pane.paneId}` : 'missing'}`,
+    ...zellijSessionStatusLines(sessionName),
+  ]
+  await sendChannelNotice(ck, formatAgentReply(runtime, lines.join('\n')), undefined, `codex tui ${action} notice`)
+  return true
+}
+
 async function sendStoppedAgentPanel(ck: string, runtime: AgentRuntimeKind, uuid: string): Promise<boolean> {
   await sendWithButtons(ck, formatAgentReply(runtime, `⏸ ${agentName(runtime)} session \`${uuid.slice(0, 8)}\` is stopped. Room mapping is kept.`), [
     { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
@@ -5272,12 +5523,12 @@ async function sendStoppedAgentPanel(ck: string, runtime: AgentRuntimeKind, uuid
 
 async function sendClaudeNav(ck: string, uuid: string): Promise<boolean> {
   const u = uuid.slice(0, 8)
-  const paneId = resolvePaneId(u)
-  if (paneId === null) {
+  const pane = resolveClaudePaneHandle(uuid)
+  if (!pane) {
     await sendChannelNotice(ck, formatAgentReply('claude', `Session \`${u}\` has no active pane.`), undefined, 'claude nav inactive pane notice')
     return false
   }
-  const screen = await dumpScreenAsync(paneId)
+  const screen = await dumpScreenInSessionAsync(pane.sessionName, pane.paneId)
   const clean = screen.split('\n').filter(l => l.trim()).join('\n').trim()
   const msg = formatAgentReply('claude', `🎮 Claude screen \`${u}\`:\n\`\`\`\n${clean}\n\`\`\``)
   const buttons = [
@@ -5294,7 +5545,7 @@ async function sendClaudeNav(ck: string, uuid: string): Promise<boolean> {
 
 async function sendCodexTuiNav(ck: string, uuid: string, paneId: number): Promise<boolean> {
   const u = uuid.slice(0, 8)
-  const screen = await dumpScreenAsync(paneId)
+  const screen = await dumpScreenInSessionAsync(codexTuiZellijSessionName(uuid), paneId)
   const clean = screen.split('\n').filter(l => l.trim()).join('\n').trim()
   const msg = formatAgentReply('codex', `🎮 Codex TUI \`${u}\`:\n\`\`\`\n${clean || '(empty screen)'}\n\`\`\``)
   const buttons = [
@@ -5410,16 +5661,15 @@ async function workerTranscriptFacts(workerCk: string, runtime: AgentRuntimeKind
 }
 
 async function sendClaudePaneRawCommand(workerCk: string, sessionId: string, rawCommand: string): Promise<Record<string, unknown>> {
-  const paneId = resolvePaneId(sessionId.slice(0, 8))
-  if (paneId === null) throw new Error(`worker claude session ${sessionId.slice(0, 8)} is not running`)
-  const before = dumpScreen(paneId)
-  const { writeChars } = await import('./escort.js')
-  const writeOk = writeChars(paneId, rawCommand)
-  const enterOk = writeOk ? sendKeys(paneId, 'Enter') : false
+  const pane = resolveClaudePaneHandle(sessionId)
+  if (!pane) throw new Error(`worker claude session ${sessionId.slice(0, 8)} is not running`)
+  const before = dumpScreenInSession(pane.sessionName, pane.paneId)
+  const writeOk = writeCharsInSession(pane.sessionName, pane.paneId, rawCommand)
+  const enterOk = writeOk ? sendKeysInSession(pane.sessionName, pane.paneId, 'Enter') : false
   if (!writeOk || !enterOk) throw new Error('failed to send raw command keys')
-  const changed = await waitForChange(paneId, before)
+  const changed = await waitForChange(pane.paneId, before, undefined, pane.sessionName)
   if (changed) {
-    const screen = dumpScreen(paneId)
+    const screen = dumpScreenInSession(pane.sessionName, pane.paneId)
     if (isClaudeDialogScreen(screen)) {
       const msgId = await sendDialogButtons(workerCk, sessionId.slice(0, 8), screen)
       const entry = screenWatchers.get(sessionId)
@@ -5877,8 +6127,8 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         await sendWithButtons(ck, formatAgentReply('claude', 'No Claude agent slot session in this room.'), [{ text: '🚀 Start Claude', data: 'cmd:new:claude' }], commandNoticeOpts)
         return
       }
-      const paneId = resolvePaneId(uuid.slice(0, 8))
-      if (paneId === null) {
+      const pane = resolveClaudePaneHandle(uuid)
+      if (!pane) {
         await sendWithButtons(ck, formatAgentReply('claude', `Claude agent slot session \`${uuid.slice(0, 8)}\` is not running.`), [
           { text: `▶️ Resume`, data: `ccr:${runtime}:${uuid}` },
         ], commandNoticeOpts)
@@ -5965,6 +6215,21 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       const runtime = cmd.runtime ?? bindingRuntime(ck)
       if (runtime === 'codex') await handleAgentNavCommand(ck, runtime, '')
       else await sendAgentNav(ck, runtime)
+      return
+    }
+    case 'tui': {
+      const runtime = cmd.runtime
+      auditEvent({ event: 'tui_command_received', room_id: ck, runtime, action: cmd.action, source: msg.meta?.source, raw_slash_command: msg.meta?.command, raw_slash_text: typeof msg.meta?.raw_text === 'string' ? commandPreview(msg.meta.raw_text) : undefined })
+      try {
+        const ok = runtime === 'claude'
+          ? await sendClaudeTuiCommand(ck, cmd.action)
+          : await sendCodexTuiCommand(ck, cmd.action)
+        auditEvent({ event: 'tui_command_executed', room_id: ck, runtime, action: cmd.action, ok })
+      } catch (err) {
+        auditEvent({ event: 'tui_command_executed', room_id: ck, runtime, action: cmd.action, ok: false, error: errorMessage(err) })
+        process.stderr.write(`daemon: ${runtime} tui ${cmd.action} failed for ${ck}: ${errorMessage(err)}\n`)
+        await sendChannelNotice(ck, formatAgentReply(runtime, `❌ ${agentName(runtime)} TUI ${cmd.action} failed: ${errorMessage(err)}`), undefined, `${runtime} tui failure notice`)
+      }
       return
     }
     case 'stop': {
@@ -6479,7 +6744,10 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         if (!adapter.archiveRoom) throw new Error(`Room lifecycle operation is not supported by ${adapter.platform}`)
         const roomId = stringValue(msg.args.room_id).trim()
         if (!roomId) throw new Error('room_id is required')
+        const workerCk = channelKeyForRoomId(route.channelKey, roomId)
+        assertSamePlatformRoom(route.channelKey, workerCk)
         const resultFacts = await adapter.archiveRoom({ roomId })
+        await deleteRoomState(workerCk)
         result = JSON.stringify(resultFacts)
         break
       }
@@ -7126,13 +7394,14 @@ for (const adapter of activeAdapters) {
     } else if (data.startsWith('nav:')) {
       const parsed = parseClaudeNavCallbackData(data)
       if (!parsed) { await sendInvalidButtonMessage(ck, 'claude'); return }
-      const paneId = resolvePaneId(parsed.uuidShort)
       const codexUuid = bindingUuid(ck, 'codex')
-      const codexPane = codexUuid?.slice(0, 8) === parsed.uuidShort ? getCodexTuiPaneStatus(codexUuid) : null
-      const targetPaneId = codexPane?.kind === 'alive' ? codexPane.paneId : paneId
-      const navRuntime: AgentRuntimeKind = codexPane?.kind === 'alive' ? 'codex' : 'claude'
-      if (targetPaneId === null) { await sendInvalidButtonMessage(ck, navRuntime); return }
-      if (targetPaneId !== null) {
+      const codexPane = codexUuid?.slice(0, 8) === parsed.uuidShort ? resolveCodexTuiPaneHandle(codexUuid) : null
+      const claudeUuid = bindingUuid(ck, 'claude')
+      const claudePane = !codexPane && claudeUuid?.slice(0, 8) === parsed.uuidShort ? resolveClaudePaneHandle(claudeUuid) : null
+      const targetPane = codexPane ?? claudePane
+      const navRuntime: AgentRuntimeKind = codexPane ? 'codex' : 'claude'
+      if (!targetPane) { await sendInvalidButtonMessage(ck, navRuntime); return }
+      if (targetPane) {
         // For Telegram: answerCallbackQuery would be ideal but we don't have the callback_query_id here.
         // Instead, send a quick status after the callback payload is fully validated.
         const _legacyClaudeNavStatusText = "formatAgentReply('claude', '⏳ Navigating Claude...')"
@@ -7140,8 +7409,8 @@ for (const adapter of activeAdapters) {
         await sendChannelNotice(ck, formatAgentReply(navRuntime, `⏳ Navigating ${agentName(navRuntime)}...`), undefined, `${navRuntime} nav status`)
 
         const navOk = parsed.action.type === 'select'
-          ? await navigateAndConfirm(targetPaneId, parsed.action.index)
-          : sendKeys(targetPaneId, parsed.action.key)
+          ? await navigateAndConfirm(targetPane.paneId, parsed.action.index, targetPane.sessionName)
+          : sendKeysInSession(targetPane.sessionName, targetPane.paneId, parsed.action.key)
         if (!navOk) {
           const _legacyClaudeNavFailureLabel = "undefined, 'claude nav failure notice'"
           await sendChannelNotice(ck, formatAgentReply(navRuntime, `❌ Failed to send navigation key to ${agentName(navRuntime)}. Try \`/${navRuntime === 'codex' ? 'cx' : 'cc'} ss\` or resume the session.`), undefined, `${navRuntime} nav failure notice`)

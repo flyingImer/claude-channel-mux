@@ -12,10 +12,11 @@ export type CodexRemoteTuiStatus =
 
 export type CodexRemoteTuiAdapter = {
   available(): boolean
-  ensureSession(): Promise<void>
+  ensureSession(sessionId: string): Promise<void>
   status(tabName: string): CodexRemoteTuiStatus
-  screen(paneId: number): Promise<string>
-  closeTab(tabName: string): void
+  screen(sessionId: string, paneId: number): Promise<string>
+  closeTab(sessionId: string, tabName: string): void
+  closeSession?(sessionId: string): void | Promise<void>
   newTab(tabName: string, command: string): Promise<void>
   waitForPane(tabName: string): Promise<CodexRemoteTuiStatus>
   autoSkipUpdatePrompt(sessionId: string, paneId: number): Promise<void>
@@ -97,10 +98,10 @@ export class CodexAppServerSession {
     const tabName = this.tabName(sessionId)
     const status = this.tui.status(tabName)
     if (!codexTuiPaneReadyForSession(status, appServerUrl, session.nativeSessionId)) return false
-    const screen = await this.tui.screen(status.paneId)
+    const screen = await this.tui.screen(sessionId, status.paneId)
     if (!codexTuiLooksStuckWorking(screen)) return false
     this.tui.log(`daemon: restarting stale codex remote TUI ${sessionId.slice(0, 8)} tab=${tabName}: pane still shows Working after app-server idle`)
-    this.tui.closeTab(tabName)
+    this.tui.closeTab(sessionId, tabName)
     await this.launchTui(sessionId, session, tabName, appServerUrl)
     return true
   }
@@ -116,7 +117,7 @@ export class CodexAppServerSession {
       return undefined
     }
 
-    await this.tui.ensureSession()
+    await this.tui.ensureSession(sessionId)
     const status = this.tui.status(tabName)
     if (status.kind === 'alive') {
       if (codexTuiPaneMatchesSession(status, appServerUrl, session.nativeSessionId)) {
@@ -124,9 +125,9 @@ export class CodexAppServerSession {
         return { appServerUrl, codexHome: this.config.home, tuiTabName: tabName }
       }
       this.tui.log('daemon: closing stale codex remote TUI ' + sessionId.slice(0, 8) + ' tab=' + tabName + ' expected=' + appServerUrl)
-      this.tui.closeTab(tabName)
+      this.tui.closeTab(sessionId, tabName)
     }
-    if (status.kind === 'exited') this.tui.closeTab(tabName)
+    if (status.kind === 'exited') this.tui.closeTab(sessionId, tabName)
 
     return await this.launchTui(sessionId, session, tabName, appServerUrl)
   }
@@ -161,6 +162,9 @@ export class CodexAppServerSession {
     if (!session) return
     this.opts.forget(sessionId)
     await this.opts.driver.stop?.(session)
-    if (this.tui.available()) this.tui.closeTab(this.tabName(sessionId))
+    if (this.tui.available()) {
+      if (this.tui.closeSession) await this.tui.closeSession(sessionId)
+      else this.tui.closeTab(sessionId, this.tabName(sessionId))
+    }
   }
 }

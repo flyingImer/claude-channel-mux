@@ -1,6 +1,7 @@
 ---
 title: CCM orchestration must separate steering from execution
 date: 2026-06-11
+last_updated: 2026-06-23
 category: docs/solutions/workflow-issues
 module: CCM orchestration harness
 problem_type: workflow_issue
@@ -30,11 +31,13 @@ Encode steering-vs-execution as an invariant everywhere the orchestration stack 
 - Worker-room human/Guiding Principal presence is optional inspection; required intervention is degraded recovery or orchestration failure.
 - Agent Control Path must cover more than create/archive. Parent-controlled worker execution needs explicit bind, start/resume, send, capture/reportback, and archive operations.
 - Tool semantics should not hide control-plane steps. For example, `send_worker_task` must not silently lazy-start an agent because that masks whether `start_worker_agent` worked.
+- Native worker setup is a control-plane step, not task text. Commands such as Claude `/effort ultracode`, Claude worker `/goal create dynamic workflow ...`, and Codex worker `/goal $superpowers:subagent-driven-development ...` belong in `send_worker_raw_command`; `send_worker_task` carries only the task-specific Worker Task brief.
 
 For the first parent-controlled execution patch, the harness added:
 
 - `bind_worker_room` for parent-controlled cwd/runtime metadata binding.
 - `start_worker_agent` for explicit start/resume/already-running worker session facts.
+- `send_worker_raw_command` for runtime-native slash setup that configures the worker session.
 - `send_worker_task` for delivering the bounded Worker Task only after the worker agent is running.
 - `capture_worker_report` for retrieving worker-room transcript/reportback facts from the parent Orchestrator room before durable Git capture.
 
@@ -42,6 +45,7 @@ The patch also hardened semantics after review:
 
 - `bind_worker_room` rejects non-absolute `cwd` instead of relying on implicit normalization.
 - `send_worker_task` requires an existing running worker session instead of falling through to lazy-start behavior.
+- `send_worker_task` remains task-only; raw native setup is sent before it through `send_worker_raw_command`.
 
 ## Why This Matters
 
@@ -82,10 +86,23 @@ Good tool semantic:
 start_worker_agent reports started/resumed/already_running. send_worker_task fails if that explicit start did not happen or the session is not running.
 ```
 
+Bad worker setup semantic:
+
+```text
+send_worker_task sends /goal create dynamic workflow ... plus the Worker Task brief in one message.
+```
+
+Good worker setup semantic:
+
+```text
+send_worker_raw_command sends /goal create dynamic workflow ... first. send_worker_task then sends only the bounded Worker Task brief.
+```
+
 ## Related
 
 - `docs/contracts/agent-control-path-v1.md`
 - `docs/orchestration/AGENTS.md`
 - `prompts/ccm/orchestrator.md`
 - `docs/checklists/worker-dispatch.md`
+- `docs/solutions/integration-issues/ccm-native-goal-passthrough-must-preserve-room-context.md`
 - `docs/dogfood-reports/2026-06-11-orchestration-harness-ws-tag-dogfood.md`

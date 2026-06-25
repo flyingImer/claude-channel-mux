@@ -88,6 +88,7 @@ Claude Code terminal commands (forwarded only to the Claude slot):
 | `/cc transcript [N]` | Show recent Claude transcript from jsonl |
 | `/cc status` | Show room/Claude status |
 | `/cc nav` | Show and operate pending Claude TUI prompts |
+| `/cc tui on\|off\|status` | Show/attach/detach the per-session Claude zellij TUI; `off` keeps Claude running |
 | `/cc compact` | Forward to Claude Code native `/compact` |
 | `/cc model` | Forward to Claude Code native `/model` |
 | `/cc cancel` / `/cc stop` | Forward Claude Code interruption command |
@@ -100,6 +101,7 @@ Codex command proxy (forwarded only to the Codex slot):
 | `/cx nav [N] [allow\|session\|policy\|network\|deny\|abort\|answer <text>]` | Show or resolve pending Codex approvals/input actions scoped to the current Codex slot; stale requests expose a safe `Clear stale request` button |
 | `/cx transcript [N]` | Show recent Codex transcript from app-server, with jsonl fallback |
 | `/cx status` | Show loaded Codex thread/config status |
+| `/cx tui on\|off\|status` | Create/show/stop the disposable Codex zellij TUI; `off` keeps the app-server running |
 | `/cx compact` | Start Codex app-server compaction |
 | `/cx stop` / `/cx cancel` | Interrupt the latest Codex turn |
 | `/cx mcp` | List Codex MCP servers reported by app-server |
@@ -108,6 +110,8 @@ Codex command proxy (forwarded only to the Codex slot):
 | `/cx raw /command ...` | Explicit experimental raw slash-shaped turn; unsupported `/cx <other>` commands show help instead of silently running |
 
 Agent Control Path can also send native slash-shaped setup commands from an Orchestrator parent room to started worker agents with `send_worker_raw_command`, for example configuring a Claude worker with `/effort ultracode` before `send_worker_task`. This is distinct from human `/cc` passthrough and must not be emulated by sending slash commands as Worker Task text.
+
+See `docs/per-session-zellij-tui.md` for the zellij attach lifecycle and RSS measurement workflow.
 
 Codex pending request UX:
 

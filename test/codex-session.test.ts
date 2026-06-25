@@ -22,20 +22,21 @@ function fakeTui(
   status: CodexRemoteTuiStatus = { kind: 'missing' },
   waitStatus: CodexRemoteTuiStatus = { kind: 'alive', paneId: 1, terminalCommand: "codex --remote ws://127.0.0.1:0 resume thread-1 -C /repo" },
   screen = '',
-): CodexRemoteTuiAdapter & { commands: string[]; tabs: string[]; closed: string[]; skipped: string[]; logs: string[]; ensured: number; screens: number[] } {
+): CodexRemoteTuiAdapter & { commands: string[]; tabs: string[]; closed: string[]; closedSessions: string[]; skipped: string[]; logs: string[]; ensured: string[]; screens: Array<{ sessionId: string; paneId: number }> } {
   const tui = {
     commands: [] as string[],
     tabs: [] as string[],
     closed: [] as string[],
+    closedSessions: [] as string[],
     skipped: [] as string[],
     logs: [] as string[],
-    screens: [] as number[],
-    ensured: 0,
+    screens: [] as Array<{ sessionId: string; paneId: number }>,
+    ensured: [] as string[],
     available: () => true,
-    ensureSession: async () => { tui.ensured += 1 },
+    ensureSession: async (sessionId: string) => { tui.ensured.push(sessionId) },
     status: () => status,
-    screen: async (paneId: number) => { tui.screens.push(paneId); return screen },
-    closeTab: (tabName: string) => { tui.closed.push(tabName) },
+    screen: async (sessionId: string, paneId: number) => { tui.screens.push({ sessionId, paneId }); return screen },
+    closeTab: (sessionId: string, tabName: string) => { tui.closed.push(`${sessionId}:${tabName}`) },
     newTab: async (tabName: string, command: string) => {
       tui.tabs.push(tabName)
       tui.commands.push(command)
@@ -148,7 +149,25 @@ test('Codex session lifecycle owns app-server stop and closes remote TUI tab', a
   await lifecycle.stop('ccm-session')
   expect(stopped).toEqual(['ccm-session'])
   expect(stored.has('ccm-session')).toBe(false)
-  expect(tui.closed).toEqual(['ccm:cx:ccm-sess'])
+  expect(tui.closed).toEqual(['ccm-session:ccm:cx:ccm-sess'])
+})
+
+test('Codex session lifecycle prefers closing disposable TUI session on stop', async () => {
+  const stored = new Map<string, AgentSession>([['ccm-session', session('ccm-session', 'thread-1')]])
+  const stopped: string[] = []
+  const tui = fakeTui()
+  tui.closeSession = async sessionId => { tui.closedSessions.push(sessionId) }
+  const lifecycle = lifecycleWith({
+    stored,
+    tui,
+    driver: { stop: async value => { stopped.push(value.sessionId) } },
+  })
+
+  await lifecycle.stop('ccm-session')
+  expect(stopped).toEqual(['ccm-session'])
+  expect(stored.has('ccm-session')).toBe(false)
+  expect(tui.closedSessions).toEqual(['ccm-session'])
+  expect(tui.closed).toEqual([])
 })
 
 test('Codex remote TUI launch details stay behind the lifecycle seam', async () => {
@@ -160,7 +179,7 @@ test('Codex remote TUI launch details stay behind the lifecycle seam', async () 
   try {
     const meta = await lifecycle.attachTui('019e94e57c377cb3b3152443705b9aaf', session())
     expect(meta).toEqual({ appServerUrl: 'ws://127.0.0.1:0', codexHome: '/codex-home', tuiTabName: 'ccm:cx:019e94e5' })
-    expect(tui.ensured).toBe(1)
+    expect(tui.ensured).toEqual(['019e94e57c377cb3b3152443705b9aaf'])
     expect(tui.tabs).toEqual(['ccm:cx:019e94e5'])
     expect(tui.commands[0]).toContain("ANTHROPIC_BASE_URL='http://127.0.0.1:24000'")
     expect(tui.commands[0]).toContain('CODEX_HOME=')
@@ -210,12 +229,12 @@ test('Codex remote TUI reuses matching app-server pane and closes stale panes', 
 
   const sharedWrongThreadTui = fakeTui({ kind: 'alive', paneId: 8, terminalCommand: 'codex --remote ws://127.0.0.1:0 resume other-thread -C /repo' })
   await lifecycleWith({ tui: sharedWrongThreadTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1'))
-  expect(sharedWrongThreadTui.closed).toEqual(['ccm:cx:ccm-sess'])
+  expect(sharedWrongThreadTui.closed).toEqual(['ccm-session:ccm:cx:ccm-sess'])
   expect(sharedWrongThreadTui.tabs).toEqual(['ccm:cx:ccm-sess'])
 
   const staleTui = fakeTui({ kind: 'alive', paneId: 9, terminalCommand: 'codex --remote ws://127.0.0.1:9999 resume thread-1 -C /repo' })
   await lifecycleWith({ tui: staleTui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1'))
-  expect(staleTui.closed).toEqual(['ccm:cx:ccm-sess'])
+  expect(staleTui.closed).toEqual(['ccm-session:ccm:cx:ccm-sess'])
   expect(staleTui.tabs).toEqual(['ccm:cx:ccm-sess'])
 })
 
@@ -234,8 +253,8 @@ test('Codex idle reconciliation restarts matching remote TUI stuck in working st
 
   await expect(lifecycle.reconcileIdleTui('ccm-session', session('ccm-session', 'thread-1'))).resolves.toBe(true)
 
-  expect(tui.screens).toEqual([42])
-  expect(tui.closed).toEqual(['ccm:cx:ccm-sess'])
+  expect(tui.screens).toEqual([{ sessionId: 'ccm-session', paneId: 42 }])
+  expect(tui.closed).toEqual(['ccm-session:ccm:cx:ccm-sess'])
   expect(tui.tabs).toEqual(['ccm:cx:ccm-sess'])
   expect(tui.logs.join('\n')).toContain('pane still shows Working after app-server idle')
 })
@@ -250,7 +269,7 @@ test('Codex idle reconciliation leaves healthy remote TUI alone', async () => {
 
   await expect(lifecycle.reconcileIdleTui('ccm-session', session('ccm-session', 'thread-1'))).resolves.toBe(false)
 
-  expect(tui.screens).toEqual([42])
+  expect(tui.screens).toEqual([{ sessionId: 'ccm-session', paneId: 42 }])
   expect(tui.closed).toEqual([])
   expect(tui.tabs).toEqual([])
 })
@@ -283,6 +302,6 @@ test('Codex remote TUI skips non-websocket app-server sessions', async () => {
   const tui = fakeTui()
   const meta = await lifecycleWith({ tui, driver: {} }).attachTui('ccm-session', session('ccm-session', 'thread-1', 'stdio://'))
   expect(meta).toBeUndefined()
-  expect(tui.ensured).toBe(0)
+  expect(tui.ensured).toEqual([])
   expect(tui.tabs).toEqual([])
 })
