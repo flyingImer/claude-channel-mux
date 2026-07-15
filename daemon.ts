@@ -64,6 +64,7 @@ import { parseZellijJson, zellijPanes, type ZellijPane } from './zellij-json.js'
 import { ipcMessageFromLine } from './ipc.js'
 import { errorMessage, redactSensitiveText } from './redact.js'
 import { ccmMcpToolIds } from './mcp-tools.js'
+import { listCcmSessionUuids, reapCcmSessionProcesses } from './process-cleanup.js'
 
 // ---------------------------------------------------------------------------
 // Config
@@ -3474,6 +3475,35 @@ function cleanExitedTabs(): void {
 
 cleanExitedTabs()
 
+async function reapClaudeOwnedProcesses(uuid: string, reason: string, runtimeHint?: AgentRuntimeKind): Promise<void> {
+  if (uuid === SHARED_CODEX_BRIDGE_ID) return
+  if ((runtimeHint ?? runtimeForUuid(uuid)) !== 'claude') return
+  try {
+    const result = await reapCcmSessionProcesses(uuid)
+    if (result.terminatedPids.length > 0 || result.killedPids.length > 0) {
+      process.stderr.write(`daemon: reaped ${result.terminatedPids.length} CCM-owned process(es) for ${uuid.slice(0, 8)} (${reason})${result.killedPids.length ? `; SIGKILL ${result.killedPids.length}` : ''}\n`)
+    }
+  } catch (err) {
+    process.stderr.write(`daemon: process reap failed for ${uuid.slice(0, 8)} (${reason}): ${errorMessage(err)}\n`)
+  }
+}
+
+function sweepStaleCcmOwnedProcessesOnStartup(): void {
+  if (!zellijAvailable) return
+  for (const uuid of listCcmSessionUuids()) {
+    if (uuid === SHARED_CODEX_BRIDGE_ID) continue
+    const status = getPaneStatus(uuid)
+    if (status.kind === 'alive') continue
+    if (status.kind === 'unknown') {
+      process.stderr.write(`daemon: startup process sweep preserved ${uuid.slice(0, 8)} because pane status is unknown (${status.reason})\n`)
+      continue
+    }
+    void reapClaudeOwnedProcesses(uuid, `startup stale pane ${status.kind}`)
+  }
+}
+
+sweepStaleCcmOwnedProcessesOnStartup()
+
 // ---------------------------------------------------------------------------
 // Session lifecycle
 // ---------------------------------------------------------------------------
@@ -3776,6 +3806,7 @@ function clearRuntimeState(uuid: string, reason: string, opts: { closePane?: boo
   live.delete(uuid)
   socketToUuid.forEach((u, s) => { if (u === uuid) socketToUuid.delete(s) })
   clearPerSessionUiState(uuid)
+  void reapClaudeOwnedProcesses(uuid, reason, l?.runtime)
   process.stderr.write(`daemon: cleared runtime state for ${uuid.slice(0, 8)} (${reason})\n`)
 }
 
@@ -4280,6 +4311,7 @@ async function killSession(uuid: string, options: { runtimeHint?: AgentRuntimeKi
   }
   live.delete(uuid)
   socketToUuid.forEach((u, s) => { if (u === uuid) socketToUuid.delete(s) })
+  await reapClaudeOwnedProcesses(uuid, 'killSession', runtime)
   // The session is gone — next time a server.ts for this uuid registers,
   // treat it as a first-ever reconnect so the "✅ Session reconnected"
   // confirmation fires again. Without this, user does `ccm stop` and then
