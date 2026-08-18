@@ -3517,6 +3517,51 @@ const MARKETPLACE = process.env.CLAUDE_CHANNEL_MUX_MARKETPLACE ?? 'claude-channe
 
 // Spawn mode: 'same-dir' (default) or 'worktree' (git worktree isolation per session)
 const SPAWN_MODE = (process.env.CHANNEL_DAEMON_SPAWN_MODE ?? 'same-dir') as 'same-dir' | 'worktree' | 'disabled'
+
+// Worker rooms must never silently inherit the user's global model default (e.g. fable).
+// A worker room gets this model unless the room carries an explicit per-room override,
+// which is the only way an operator opts a worker room onto a different model.
+const WORKER_DEFAULT_CLAUDE_MODEL = process.env.CHANNEL_DAEMON_WORKER_CLAUDE_MODEL ?? 'opus'
+
+function channelKeysForUuid(uuid: string, runtime: AgentRuntimeKind): string[] {
+  const out: string[] = []
+  for (const entry of bindingEntries()) {
+    if (entry.uuid === uuid && entry.runtime === runtime) out.push(entry.channelKey)
+  }
+  return out
+}
+
+function isWorkerRoomKey(ck: string): boolean {
+  return !!normalizeBinding(loadBindings()[ck]).parentRoomId
+}
+
+// Effective claude model for a session: explicit per-room override wins; worker rooms
+// otherwise get WORKER_DEFAULT_CLAUDE_MODEL; non-worker rooms are left to CC's own
+// resolution (undefined => omit `model` from the session settings file).
+// Post the model a worker room actually came up on, so a wrong model is visible in the
+// room instead of silently shaping the work. Failures here must never break a spawn.
+async function announceClaudeModel(uuid: string, resolved: { model?: string; ck?: string; source: string }, resumeMode: boolean): Promise<void> {
+  try {
+    const ck = resolved.ck ?? channelKeysForUuid(uuid, 'claude')[0]
+    if (!ck) return
+    const verb = resumeMode ? 'resumed' : 'started'
+    const note = resolved.model
+      ? `model: \`${resolved.model}\` (${resolved.source === 'override' ? 'per-room override' : 'worker default'})`
+      : 'model: inherited from user settings (no CCM pin)'
+    await sendChannelNotice(ck, formatAgentReply('claude', `Claude ${verb}. ${note}`), undefined, 'claude model announce')
+  } catch (err) {
+    process.stderr.write(`daemon: claude model announce failed for ${uuid.slice(0, 8)}: ${errorMessage(err)}\n`)
+  }
+}
+
+function effectiveClaudeModel(uuid: string): { model?: string; ck?: string; source: 'override' | 'worker-default' | 'inherited' } {
+  const ck = channelKeysForUuid(uuid, 'claude')[0]
+  if (!ck) return { source: 'inherited' }
+  const override = agentMeta(ck, 'claude')?.model
+  if (override) return { model: override, ck, source: 'override' }
+  if (isWorkerRoomKey(ck)) return { model: WORKER_DEFAULT_CLAUDE_MODEL, ck, source: 'worker-default' }
+  return { ck, source: 'inherited' }
+}
 /**
  * Create a git worktree for a session. Returns the worktree path,
  * or null if not in a git repo or worktree creation fails.
@@ -3603,6 +3648,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   const forwardedEnvSettings = forwardedEnvObject(forwardList, process.env, name => {
     process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
   })
+  const claudeModel = effectiveClaudeModel(uuid)
   writeFileSync(settingsFile, JSON.stringify({
     enabledPlugins: {
       'telegram@claude-plugins-official': false,
@@ -3612,6 +3658,8 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
     },
     env: forwardedEnvSettings,
     prefersReducedMotion: true,
+    // Pin the model so a worker room never inherits the global default silently.
+    ...(claudeModel.model ? { model: claudeModel.model } : {}),
     hooks: {
       PreCompact: [
         { hooks: [{ type: 'command', command: `bun ${preCompactScript}` }] },
@@ -3649,6 +3697,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
       const existingPane = findPaneByTabNameInSession(backendSessionName, tabName)
       if (existingPane && !existingPane.exited) {
         process.stderr.write(`daemon: Claude backend "${backendSessionName}" already has live pane ${existingPane.paneId}; reusing session\n`)
+        void announceClaudeModel(uuid, claudeModel, resumeMode)
         live.set(uuid, { runtime: 'claude', ipcConn: null, child: null })
         return true
       }
@@ -3667,6 +3716,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
       const envExports = `export ${forwardedExports} CC_CHANNEL_SESSION_UUID=${shellArg(uuid)} CC_CHANNEL_DAEMON_SOCK=${shellArg(SOCK_PATH)} CLAUBBIT=1 DISABLE_AUTOUPDATER=1;`
       await zellijActionInSessionAsync(backendSessionName, ['new-tab', '--name', tabName, '--', 'bash', '-c', `${envExports} cd ${shellArg(effectiveCwd)} && exec ${cmd}`], { timeout: 10000 })
       process.stderr.write(`daemon: spawned ${uuid.slice(0, 8)} in Claude backend zellij session "${backendSessionName}"\n`)
+      void announceClaudeModel(uuid, claudeModel, resumeMode)
 
       // Dev channels dialog will be shown to user via screen watcher buttons
     } catch (err) {
@@ -5905,6 +5955,29 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
       'Use `/cx help` for supported commands, or `/cx raw /command ...` to explicitly try an experimental raw Codex turn.',
     ].join('\n')), commandNoticeOpts, 'codex unsupported command notice')
     return false
+  }
+  // Claude per-room model pin. This is the ONLY sanctioned way to put a worker room on a
+  // non-default model (including fable): it must be requested explicitly, per room.
+  if (runtime === 'claude' && commandVerb === 'ccmmodel') {
+    const model = parseAgentCommandArgs(normalizedCommand)
+    if (/^(reset|default|clear|unset)$/i.test(model)) {
+      clearAgentMetaField(ck, runtime, 'model')
+      await sendChannelNotice(ck, formatAgentReply(runtime, `Claude per-room model pin cleared. Worker rooms fall back to \`${WORKER_DEFAULT_CLAUDE_MODEL}\` on the next start/resume; other rooms fall back to your user settings.`), commandNoticeOpts, 'claude model reset notice')
+      return true
+    }
+    if (model) {
+      setAgentMeta(ck, runtime, { model })
+      await sendChannelNotice(ck, formatAgentReply(runtime, `Claude per-room model pin set to \`${model}\`. It takes effect on the next start/resume of this room; your global user settings were not changed. Use \`/cc ccmmodel reset\` to clear it.`), commandNoticeOpts, 'claude model set notice')
+      return true
+    }
+    const pinned = agentMeta(ck, 'claude')?.model
+    const shown = pinned
+      ? `\`${pinned}\` (per-room pin)`
+      : isWorkerRoomKey(ck)
+        ? `\`${WORKER_DEFAULT_CLAUDE_MODEL}\` (worker default, no pin)`
+        : 'inherited from your user settings (no pin)'
+    await sendChannelNotice(ck, formatAgentReply(runtime, `Claude model for this room: ${shown}. Set one with \`/cc ccmmodel <model>\`.`), commandNoticeOpts, 'claude model status')
+    return true
   }
   if (runtime === 'codex' && commandVerb === 'model') {
     const model = parseAgentCommandArgs(normalizedCommand)
