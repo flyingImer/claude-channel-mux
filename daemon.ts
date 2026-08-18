@@ -5956,28 +5956,33 @@ async function deliverAgentCommand(ck: string, msg: InboundMessage, runtime: Age
     ].join('\n')), commandNoticeOpts, 'codex unsupported command notice')
     return false
   }
-  // Claude per-room model pin. This is the ONLY sanctioned way to put a worker room on a
-  // non-default model (including fable): it must be requested explicitly, per room.
-  if (runtime === 'claude' && commandVerb === 'ccmmodel') {
+  // Claude model: `/cc model <m>` pins the model for THIS room and forwards to the live
+  // session, so the choice survives a restart instead of dying with the pane. Without the
+  // pin a restart falls back to the global default, which is how worker rooms silently
+  // ended up on fable.
+  if (runtime === 'claude' && commandVerb === 'model') {
     const model = parseAgentCommandArgs(normalizedCommand)
     if (/^(reset|default|clear|unset)$/i.test(model)) {
       clearAgentMetaField(ck, runtime, 'model')
-      await sendChannelNotice(ck, formatAgentReply(runtime, `Claude per-room model pin cleared. Worker rooms fall back to \`${WORKER_DEFAULT_CLAUDE_MODEL}\` on the next start/resume; other rooms fall back to your user settings.`), commandNoticeOpts, 'claude model reset notice')
+      await sendChannelNotice(ck, formatAgentReply(runtime, `Claude model pin cleared for this room. Worker rooms fall back to \`${WORKER_DEFAULT_CLAUDE_MODEL}\` on the next start/resume; other rooms fall back to your user settings.`), commandNoticeOpts, 'claude model reset notice')
       return true
     }
     if (model) {
+      // Persist first, then let the command fall through to the live session below so the
+      // running pane switches now and the next start/resume agrees with it.
       setAgentMeta(ck, runtime, { model })
-      await sendChannelNotice(ck, formatAgentReply(runtime, `Claude per-room model pin set to \`${model}\`. It takes effect on the next start/resume of this room; your global user settings were not changed. Use \`/cc ccmmodel reset\` to clear it.`), commandNoticeOpts, 'claude model set notice')
+      await sendChannelNotice(ck, formatAgentReply(runtime, `Claude model pinned to \`${model}\` for this room; applying to the live session now. Your global user settings were not changed. Use \`/cc model reset\` to clear the pin.`), commandNoticeOpts, 'claude model set notice')
+      // fall through: the generic proxy forwards `/model <m>` into the running session
+    } else {
+      const pinned = agentMeta(ck, 'claude')?.model
+      const shown = pinned
+        ? `\`${pinned}\` (room pin)`
+        : isWorkerRoomKey(ck)
+          ? `\`${WORKER_DEFAULT_CLAUDE_MODEL}\` (worker default, no pin)`
+          : 'inherited from your user settings (no pin)'
+      await sendChannelNotice(ck, formatAgentReply(runtime, `Claude model for this room: ${shown}.`), commandNoticeOpts, 'claude model status')
       return true
     }
-    const pinned = agentMeta(ck, 'claude')?.model
-    const shown = pinned
-      ? `\`${pinned}\` (per-room pin)`
-      : isWorkerRoomKey(ck)
-        ? `\`${WORKER_DEFAULT_CLAUDE_MODEL}\` (worker default, no pin)`
-        : 'inherited from your user settings (no pin)'
-    await sendChannelNotice(ck, formatAgentReply(runtime, `Claude model for this room: ${shown}. Set one with \`/cc ccmmodel <model>\`.`), commandNoticeOpts, 'claude model status')
-    return true
   }
   if (runtime === 'codex' && commandVerb === 'model') {
     const model = parseAgentCommandArgs(normalizedCommand)
