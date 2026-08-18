@@ -5,7 +5,7 @@ import type { AgentKind } from './agents/types.js'
 
 export type AgentRuntimeKind = AgentKind
 export const AGENT_RUNTIMES = ['claude', 'codex'] as const satisfies readonly AgentRuntimeKind[]
-export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; codexHome?: string; tuiTabName?: string; bindingGeneration?: string; desiredRunning?: boolean }
+export type AgentSlotMeta = { transport?: string; nativeSessionId?: string; cwd?: string; model?: string; sourceCwd?: string; worktreeBranch?: string; worktreePath?: string; codexHome?: string; tuiTabName?: string; bindingGeneration?: string; desiredRunning?: boolean; label?: string }
 export type ChannelBinding = {
   active?: AgentRuntimeKind
   orchestrator?: boolean
@@ -70,7 +70,7 @@ function slotMeta(value: unknown): AgentSlotMeta | undefined {
   const record = recordValue(value)
   if (!record) return undefined
   const meta: AgentSlotMeta = {}
-  for (const key of ['transport', 'nativeSessionId', 'cwd', 'model', 'sourceCwd', 'worktreeBranch', 'worktreePath', 'codexHome', 'tuiTabName', 'bindingGeneration'] as const) {
+  for (const key of ['transport', 'nativeSessionId', 'cwd', 'model', 'sourceCwd', 'worktreeBranch', 'worktreePath', 'codexHome', 'tuiTabName', 'bindingGeneration', 'label'] as const) {
     const string = stringValue(record[key])
       if (string) meta[key] = key === 'cwd' || key === 'sourceCwd' || key === 'worktreePath' ? cwdValue(string)! : string
   }

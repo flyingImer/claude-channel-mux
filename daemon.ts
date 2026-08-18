@@ -486,7 +486,7 @@ function bindingEntries(): Array<{ channelKey: string; runtime: AgentRuntimeKind
   return entries
 }
 
-const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'])
+const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'stop_worker_agent', 'get_worker_status', 'list_worker_rooms', 'set_worker_model', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'])
 
 type CurrentCcmContext =
   | { status: 'resolved'; chat_id: string; room_id: string; cwd: string; runtime: AgentRuntimeKind; is_orchestrator: boolean; orchestrator_source: string; parent_room_id?: string; source: 'route.channelKey' | 'session_binding' | 'orchestrator_session_binding'; authorized_control_tools: string[] }
@@ -4394,6 +4394,32 @@ async function stopRoomMappedSession(ck: string, runtime: AgentRuntimeKind, uuid
   await killSession(uuid)
 }
 
+// Read-only status facts for one worker room slot; shared by get_worker_status and
+// list_worker_rooms. Distinguishes "pane alive but IPC not connected" from "not running".
+function workerStatusFacts(ck: string, runtime: AgentRuntimeKind): Record<string, unknown> {
+  const binding = normalizeBinding(loadBindings()[ck])
+  const sessionId = binding.sessions[runtime]
+  const liveEntry = sessionId ? live.get(sessionId) : undefined
+  const meta = binding.agentMeta[runtime]
+  const pin = meta?.model
+  const isWorker = !!binding.parentRoomId
+  const model = runtime === 'claude' ? (pin ?? (isWorker ? WORKER_DEFAULT_CLAUDE_MODEL : undefined)) : pin
+  const modelSource = pin ? 'pin' : (isWorker && runtime === 'claude' ? 'worker-default' : 'inherited')
+  return {
+    roomId: ck,
+    runtime,
+    ...(binding.parentRoomId ? { parentRoomId: binding.parentRoomId } : {}),
+    ...(meta?.label ? { label: meta.label } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    running: !!(sessionId && live.has(sessionId)),
+    ipcConnected: !!liveEntry?.ipcConn,
+    desiredRunning: meta?.desiredRunning ?? false,
+    ...(binding.cwd ? { cwd: binding.cwd } : {}),
+    ...(model ? { model } : {}),
+    modelSource,
+  }
+}
+
 function roomHasResettableState(ck: string): boolean {
   const binding = normalizeBinding(loadBindings()[ck])
   return !!binding.cwd
@@ -4481,7 +4507,7 @@ function auditInboundParsedCommand(ck: string, msg: InboundMessage, cmd: Cmd): v
   })
 }
 
-const VISIBLE_TOOL_COMMAND_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report', 'ask_peer', 'chime_in'])
+const VISIBLE_TOOL_COMMAND_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'stop_worker_agent', 'get_worker_status', 'list_worker_rooms', 'set_worker_model', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report', 'ask_peer', 'chime_in'])
 
 function parseRuntimePrefix(args: string): { runtime?: AgentRuntimeKind; rest: string } {
   const m = args.match(/^(claude|cc|codex|cx)(?:\s+|$)(.*)$/i)
@@ -6873,7 +6899,8 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         const runtime = runtimeArg(msg.args.runtime)
         setRoom(workerCk, cwd, runtime)
         setRoomWorkerRole(workerCk, route.channelKey)
-        setAgentMeta(workerCk, runtime, { cwd, desiredRunning: false })
+        const bindLabel = optionalString(msg.args.label)
+        setAgentMeta(workerCk, runtime, { cwd, desiredRunning: false, ...(bindLabel ? { label: bindLabel } : {}) })
         result = JSON.stringify({ ok: true, operation: 'bind_worker_room', platform: workerAdapter.platform, roomId: workerCk, cwd: roomCwd(workerCk), runtime, isOrchestrator: false, orchestratorSource: 'worker-forced-disabled' })
         break
       }
@@ -6901,6 +6928,66 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         if (runtime === 'claude' && !(await waitForLiveBridge(sessionId, 30_000))) throw new Error(`worker ${runtime} session ${sessionId.slice(0, 8)} did not connect after start`)
         setAgentDesiredRunning(workerCk, runtime, true)
         result = JSON.stringify({ ok: true, operation: 'start_worker_agent', platform: workerAdapter.platform, roomId: workerCk, runtime, sessionId, action })
+        break
+      }
+      case 'stop_worker_agent': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const runtime = runtimeArg(msg.args.runtime)
+        const sessionId = bindingUuid(workerCk, runtime)
+        if (!sessionId) throw new Error('no session mapped for this worker room and runtime')
+        await stopRoomMappedSession(workerCk, runtime, sessionId)
+        result = JSON.stringify({ ok: true, operation: 'stop_worker_agent', roomId: workerCk, runtime, sessionId, mappingKept: true, note: 'start_worker_agent will resume this session' })
+        break
+      }
+      case 'get_worker_status': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const runtime = msg.args.runtime ? runtimeArg(msg.args.runtime) : bindingRuntime(workerCk)
+        result = JSON.stringify({ ok: true, operation: 'get_worker_status', ...workerStatusFacts(workerCk, runtime) })
+        break
+      }
+      case 'list_worker_rooms': {
+        assertOrchestratorRoom(route.channelKey)
+        const includeAll = msg.args.all === true
+        const rooms: Record<string, unknown>[] = []
+        for (const [ck, raw] of Object.entries(loadBindings())) {
+          const b = normalizeBinding(raw)
+          if (!b.parentRoomId) continue
+          if (!includeAll && b.parentRoomId !== route.channelKey) continue
+          rooms.push(workerStatusFacts(ck, b.active))
+        }
+        result = JSON.stringify({ ok: true, operation: 'list_worker_rooms', scope: includeAll ? 'all-parents' : 'this-parent', count: rooms.length, rooms })
+        break
+      }
+      case 'set_worker_model': {
+        assertOrchestratorRoom(route.channelKey)
+        const workerCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.room_id))
+        assertSamePlatformRoom(route.channelKey, workerCk)
+        const runtime = msg.args.runtime ? runtimeArg(msg.args.runtime) : 'claude'
+        if (runtime !== 'claude') throw new Error('set_worker_model supports claude only; codex has /cx model')
+        const model = stringValue(msg.args.model).trim()
+        if (!model) throw new Error('model is required (a model name, or "reset" to clear the pin)')
+        const sessionId = bindingUuid(workerCk, 'claude')
+        const isLive = !!(sessionId && live.has(sessionId))
+        if (/^(reset|default|clear|unset)$/i.test(model)) {
+          clearAgentMetaField(workerCk, 'claude', 'model')
+          result = JSON.stringify({ ok: true, operation: 'set_worker_model', roomId: workerCk, pin: null, live: isLive, note: 'pin cleared; next start/resume uses the worker default model' })
+          break
+        }
+        setAgentMeta(workerCk, 'claude', { model })
+        let forwardedToLiveSession = false
+        if (isLive && sessionId) {
+          try {
+            await sendClaudePaneRawCommand(workerCk, sessionId, `/model ${model}`)
+            forwardedToLiveSession = true
+          } catch (err) {
+            process.stderr.write(`daemon: set_worker_model live forward failed for ${workerCk}: ${errorMessage(err)}\n`)
+          }
+        }
+        result = JSON.stringify({ ok: true, operation: 'set_worker_model', roomId: workerCk, pin: model, live: isLive, forwardedToLiveSession })
         break
       }
       case 'send_worker_raw_command': {

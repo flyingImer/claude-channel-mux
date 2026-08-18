@@ -26,6 +26,10 @@ export const CCM_MCP_TOOL_NAMES = [
   'archive_room',
   'bind_worker_room',
   'start_worker_agent',
+  'stop_worker_agent',
+  'get_worker_status',
+  'list_worker_rooms',
+  'set_worker_model',
   'send_worker_raw_command',
   'send_worker_task',
   'capture_worker_report',
@@ -123,7 +127,7 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
         orchestrator_source: { type: 'string', description: 'Why the resolved room is or is not orchestrator-capable, such as ordinary-default-enabled, explicit-disabled, worker-forced-disabled, or worker-enabled.' },
         parent_room_id: { type: 'string', description: 'For a CCM-managed Worker Room, the channel key of the parent Orchestrator room that created or bound it.' },
         candidate_chat_ids: { type: 'array', items: { type: 'string' }, description: 'Candidate bound room channel keys when status is ambiguous.' },
-        authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
+        authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'stop_worker_agent', 'get_worker_status', 'list_worker_rooms', 'set_worker_model', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
       },
       required: ['status', 'authorized_control_tools'],
     },
@@ -163,6 +167,7 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
         room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
         cwd: { type: 'string', description: 'Absolute working directory to bind to the worker room' },
         runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Default worker agent runtime' },
+        label: { type: 'string', description: 'Optional short human-readable purpose label stored in the room binding' },
       },
       required: ['room_id', 'cwd', 'runtime'],
     },
@@ -222,6 +227,58 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
         limit: { type: 'number', description: 'Maximum transcript entries to return, clamped by daemon limits' },
       },
       required: ['room_id', 'runtime'],
+    },
+  },
+  {
+    name: 'stop_worker_agent',
+    description: 'Agent Control Path V1: stop the worker agent session in a bound worker room while KEEPING the room mapping, so a later start_worker_agent resumes the same session with its context (the ccm stop / ccm resume pair). Also clears a wedged pane so the next start spawns fresh. Requires an orchestrator room. chat_id is optional when the current CCM turn/session binding resolves to one room.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
+        room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+        runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to stop' },
+      },
+      required: ['room_id', 'runtime'],
+    },
+  },
+  {
+    name: 'get_worker_status',
+    description: 'Agent Control Path V1: read-only status probe for a bound worker room: session id, live/IPC state, desiredRunning, effective Claude model and its source (pin / worker-default / inherited), cwd, and label. Distinguishes "pane alive but IPC not connected" from "not running". Requires an orchestrator room.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
+        room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+        runtime: { type: 'string', enum: ['claude', 'codex'], description: 'Worker agent runtime to probe; defaults to the room default' },
+      },
+      required: ['room_id'],
+    },
+  },
+  {
+    name: 'list_worker_rooms',
+    description: 'Agent Control Path V1: list worker rooms whose parent is the current Orchestrator room, each with get_worker_status facts and label. Read-only. Requires an orchestrator room.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
+        all: { type: 'boolean', description: 'When true, include worker rooms of OTHER parent rooms too (read-only visibility; lifecycle operations still require the owning parent)' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'set_worker_model',
+    description: 'Agent Control Path V1: set or clear the persistent per-room Claude model pin for a worker room, and forward /model to the live session when one is running so it takes effect immediately. The pin survives restarts; without a pin, worker rooms come up on the worker default model. This is the sanctioned way to put a worker room on a non-default model. Requires an orchestrator room.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Current Orchestrator parent room channel key; optional when resolver fallback can infer it from this turn/session binding' },
+        room_id: { type: 'string', description: 'Worker room channel key or platform-local id' },
+        runtime: { type: 'string', enum: ['claude'], description: 'Runtime whose model to pin; only claude is supported (codex has /cx model)' },
+        model: { type: 'string', description: 'Model to pin (e.g. opus, fable[1m]), or "reset" to clear the pin' },
+      },
+      required: ['room_id', 'model'],
     },
   },
   {
