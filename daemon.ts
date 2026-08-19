@@ -3671,9 +3671,13 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   // Tool name format: mcp__plugin_<plugin>_<server>__<tool>
   const toolPrefix = 'mcp__plugin_claude-channel-mux_claude-channel-mux'
   const allowedToolsArgs = ['--allowedTools', ...ccmMcpToolIds(toolPrefix)]
+  // The settings-file model pin loses to the user's global settings at CC's own precedence
+  // (observed: daemon writes model into the --settings file, CC resolves the global default and
+  // writes it back ~0.7s later). The CLI flag outranks every settings layer, so the pin rides argv.
+  const modelArgs = claudeModel.model ? ['--model', claudeModel.model] : []
   const args = resumeMode
-    ? ['--resume', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...allowedToolsArgs]
-    : ['--session-id', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...allowedToolsArgs]
+    ? ['--resume', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
+    : ['--session-id', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
 
   const env = {
     ...process.env,
