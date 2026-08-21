@@ -345,8 +345,13 @@ Claude agent slot sessions get these tools via the MCP bridge (`server.ts`). Cod
 | `archive_room` | Archive a worker room from an orchestrator room |
 | `bind_worker_room` | Bind worker-room cwd/runtime metadata from an orchestrator room |
 | `start_worker_agent` | Start or resume the assigned worker agent in a bound worker room |
+| `send_worker_raw_command` | Send a native slash-shaped setup command to a started worker agent |
 | `send_worker_task` | Send a bounded Worker Task to a started/bound worker room |
 | `capture_worker_report` | Retrieve worker-room transcript/reportback facts for durable orchestration state |
+| `stop_worker_agent` | Stop a worker agent while preserving its room mapping and resumable session |
+| `get_worker_status` | Inspect worker-room binding, runtime, session, pane, and model facts |
+| `list_worker_rooms` | List worker rooms owned by the current orchestrator room |
+| `set_worker_model` | Persist or clear the model pin for a worker room runtime |
 | `ask_peer` | Asynchronously cue another agent in the same room for context/second opinion; answer is visible in the room |
 | `chime_in` | Observer-only collaboration note injected into the lead/default agent context |
 
@@ -386,6 +391,7 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CHANNEL_DAEMON_FORWARD_ENV` | unset | Extra comma-separated env var names to export into Claude zellij tabs when zellij inherited stale environment; CCM always forwards common agent routing/auth vars (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `OPENAI_API_KEY`) so Claude/Codex rooms stay on the daemon's LiteLLM/provider route; invalid shell env names are ignored |
 | `CHANNEL_DAEMON_DEFAULT_AGENT` / `CHANNEL_DAEMON_AGENT` / `CCM_AGENT` | `claude` | Default agent for plain messages in new rooms; override per room with `ccm default` |
 | `CLAUDE_BIN` | `claude` | Path to Claude Code binary |
+| `CHANNEL_DAEMON_WORKER_CLAUDE_MODEL` | `opus` | Default Claude model pin for worker rooms without an explicit per-room override |
 | `CODEX_BIN` | `codex` | Codex CLI command prefix; may include deployment-specific CLI flags before CCM appends runtime args |
 | `CODEX_HOME` | `~/.codex` | Codex config/auth home used by the auto-attached remote TUI |
 | `CCM_CODEX_APP_SERVER_LISTEN` / `CHANNEL_DAEMON_CODEX_APP_SERVER_LISTEN` | `websocket` | Codex app-server transport; `websocket` enables native `codex --remote` TUI attachment, `stdio` is retained for tests/fallback |
