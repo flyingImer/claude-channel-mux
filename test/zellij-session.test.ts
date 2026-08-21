@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test'
-import { claudeBackendZellijSessionName, codexTuiZellijSessionName, findZellijSessionLine, parseZellijClients, stripAnsi, zellijAttachCommand } from '../zellij.ts'
+import { claudeBackendZellijSessionName, codexTuiZellijSessionName, exitedCcmZellijSessionNames, findZellijSessionLine, parseZellijClients, stripAnsi, zellijAttachCommand } from '../zellij.ts'
 
 test('findZellijSessionLine matches the exact session name token', () => {
   const output = [
@@ -27,6 +27,22 @@ test('findZellijSessionLine ignores whitespace and substring matches', () => {
 
   expect(findZellijSessionLine(output, 'ccmux')).toBe('\tccmux ACTIVE')
   expect(findZellijSessionLine(output, 'mux')).toBeUndefined()
+})
+
+test('exitedCcmZellijSessionNames returns only exited per-session CCM resources', () => {
+  const output = [
+    '\x1b[32;1mccm-cc-deadbeef\x1b[m [Created 2days ago] (\x1b[31;1mEXITED\x1b[m - attach to resurrect)',
+    'ccm-cx-cafebabe [Created 1h ago] (EXITED - attach to resurrect)',
+    'ccm-cc-01234567 [Created 5m ago]',
+    'ccmux [Created 2h ago] (EXITED - attach to resurrect)',
+    'unrelated [Created 3h ago] (EXITED - attach to resurrect)',
+    'ccm-cc-deadbeef [Created 2days ago] (EXITED - attach to resurrect)',
+  ].join('\n')
+
+  expect(exitedCcmZellijSessionNames(output)).toEqual([
+    'ccm-cc-deadbeef',
+    'ccm-cx-cafebabe',
+  ])
 })
 
 import { parseZellijJson, zellijPanes, zellijTabs } from '../zellij-json.ts'

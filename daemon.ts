@@ -50,7 +50,7 @@ import { agentLabel, agentName, formatAgentReply } from './agents/identity.js'
 import { truncateAgentContextTurnText as truncateAgentContextTurnTextToMax } from './agents/turn-format.js'
 import { chimeInTurnText, collabRoutingPlan } from './agents/collab-routing.js'
 import type { AgentCommand, AgentEvent, AgentKind, AgentPeerPointer, AgentPlanStep, AgentRoomCapability, AgentServerRequest, AgentSession, AgentSnapshot, AgentTranscript, AgentTurn } from './agents/types.js'
-import { claudeBackendZellijSessionName, codexTuiZellijSessionName, findZellijServerProcess, findZellijSessionLine, zellijAttachCommand } from './zellij.js'
+import { claudeBackendZellijSessionName, codexTuiZellijSessionName, exitedCcmZellijSessionNames, findZellijServerProcess, findZellijSessionLine, zellijAttachCommand } from './zellij.js'
 import { DEFAULT_FORWARDED_AGENT_ENV, commandLine, forwardedEnvExports, forwardedEnvObject, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
@@ -3156,6 +3156,23 @@ async function deleteExitedZellijSession(sessionName: string): Promise<void> {
   }
 }
 
+let exitedCcmZellijCleanupRunning = false
+
+async function cleanExitedCcmZellijSessions(): Promise<void> {
+  if (!zellijAvailable || exitedCcmZellijCleanupRunning) return
+  exitedCcmZellijCleanupRunning = true
+  try {
+    const output = await zellijAsync(['list-sessions'])
+    for (const sessionName of exitedCcmZellijSessionNames(output)) {
+      await deleteExitedZellijSession(sessionName)
+    }
+  } catch (err) {
+    process.stderr.write('daemon: failed to clean exited CCM zellij sessions: ' + errorMessage(err) + '\n')
+  } finally {
+    exitedCcmZellijCleanupRunning = false
+  }
+}
+
 async function ensureDetachedZellijSession(sessionName: string, label: string): Promise<void> {
   await deleteExitedZellijSession(sessionName)
   if (isNamedZellijSessionAlive(sessionName)) return
@@ -3474,6 +3491,8 @@ function cleanExitedTabs(): void {
 }
 
 cleanExitedTabs()
+void cleanExitedCcmZellijSessions()
+setInterval(() => void cleanExitedCcmZellijSessions(), 5 * 60 * 1000).unref()
 
 async function reapClaudeOwnedProcesses(uuid: string, reason: string, runtimeHint?: AgentRuntimeKind): Promise<void> {
   if (uuid === SHARED_CODEX_BRIDGE_ID) return

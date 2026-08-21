@@ -12,6 +12,17 @@ export function findZellijSessionLine(output: string, sessionName: string): stri
     .find(line => line.trim().split(/\s+/)[0] === sessionName)
 }
 
+export function exitedCcmZellijSessionNames(output: string): string[] {
+  const names = new Set<string>()
+  for (const rawLine of output.split('\n')) {
+    const line = stripAnsi(rawLine).trim()
+    if (!/\bEXITED\b/.test(line)) continue
+    const sessionName = line.split(/\s+/)[0]
+    if (/^ccm-(?:cc|cx)-[a-z0-9][a-z0-9_-]{0,7}$/.test(sessionName)) names.add(sessionName)
+  }
+  return [...names]
+}
+
 function uuidPrefix(uuid: string): string {
   const prefix = uuid.trim().slice(0, 8).toLowerCase()
   if (!/^[a-z0-9][a-z0-9_-]{0,7}$/.test(prefix)) throw new Error(`invalid session uuid prefix: ${uuid}`)
