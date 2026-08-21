@@ -148,6 +148,7 @@ const LOCK_FILE = join(STATE_DIR, 'daemon.lock')
 const INBOX_DIR = join(STATE_DIR, 'inbox')
 const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
+const CLAUDE_EFFORT = (process.env.CHANNEL_DAEMON_CLAUDE_EFFORT ?? 'ultracode').trim()
 const CODEX_CONFIG = codexResolvedConfigFromEnv(process.env)
 const CODEX_COMMAND = CODEX_CONFIG.command
 const CODEX_WORKTREE_MODE = CODEX_CONFIG.worktreeMode
@@ -3101,6 +3102,17 @@ function claudeGoalOrchestratorBlockedMessage(ck: string): string {
 
 const ZELLIJ_SESSION = process.env.CHANNEL_DAEMON_ZELLIJ_SESSION ?? 'ccmux'
 const execFileAsync = promisify(execFile)
+const ZELLIJ_BOOTSTRAP_ROWS = 60
+const ZELLIJ_BOOTSTRAP_COLS = 100
+const ZELLIJ_BOOTSTRAP_HOLD_MS = 15_000
+
+type ZellijBootstrapClient = {
+  process: ChildProcess
+  timeout: ReturnType<typeof setTimeout>
+  label: string
+}
+
+const zellijBootstrapClients = new Map<string, ZellijBootstrapClient>()
 
 function parseableZellijArgs(args: string[]): string[] {
   return args[0] === 'list-sessions' && !args.includes('--no-formatting')
@@ -3115,10 +3127,15 @@ function zellijSync(args: string[], options: { timeout?: number } = {}): string 
 }
 
 async function zellijAsync(args: string[], options: { timeout?: number } = {}): Promise<string> {
-  const { stdout } = await execFileAsync('zellij', parseableZellijArgs(args), {
-    encoding: 'utf8', timeout: options.timeout ?? 5000,
-  })
-  return stdout.trim()
+  try {
+    const { stdout } = await execFileAsync('zellij', parseableZellijArgs(args), {
+      encoding: 'utf8', timeout: options.timeout ?? 5000,
+    })
+    return stdout.trim()
+  } catch (err) {
+    if (args[0] === 'list-sessions' && errorMessage(err).includes('No active zellij sessions found.')) return ''
+    throw err
+  }
 }
 
 function zellijActionSync(args: string[], options: { timeout?: number } = {}): string {
@@ -3173,10 +3190,19 @@ async function cleanExitedCcmZellijSessions(): Promise<void> {
   }
 }
 
+function stopDetachedZellijBootstrapClient(sessionName: string): void {
+  const bootstrap = zellijBootstrapClients.get(sessionName)
+  if (!bootstrap) return
+  zellijBootstrapClients.delete(sessionName)
+  clearTimeout(bootstrap.timeout)
+  try { bootstrap.process.kill() } catch (err) { process.stderr.write(`daemon: failed to stop ${bootstrap.label} zellij bootstrap client: ${errorMessage(err)}\n`) }
+}
+
 async function ensureDetachedZellijSession(sessionName: string, label: string): Promise<void> {
   await deleteExitedZellijSession(sessionName)
   if (isNamedZellijSessionAlive(sessionName)) return
-  const scriptProc = spawn('script', ['-qfc', `zellij -s ${shellArg(sessionName)}`, '/dev/null'], {
+  const bootstrapCommand = `stty rows ${ZELLIJ_BOOTSTRAP_ROWS} cols ${ZELLIJ_BOOTSTRAP_COLS}; exec zellij -s ${shellArg(sessionName)}`
+  const scriptProc = spawn('script', ['-qfc', bootstrapCommand, '/dev/null'], {
     stdio: 'ignore', detached: true,
   })
   scriptProc.unref()
@@ -3184,7 +3210,9 @@ async function ensureDetachedZellijSession(sessionName: string, label: string): 
   for (let i = 0; i < 20; i++) {
     try {
       if (isNamedZellijSessionAlive(sessionName)) {
-        try { scriptProc.kill() } catch (err) { process.stderr.write(`daemon: failed to stop ${label} zellij bootstrap client: ${errorMessage(err)}\n`) }
+        const timeout = setTimeout(() => stopDetachedZellijBootstrapClient(sessionName), ZELLIJ_BOOTSTRAP_HOLD_MS)
+        timeout.unref()
+        zellijBootstrapClients.set(sessionName, { process: scriptProc, timeout, label })
         process.stderr.write(`daemon: created ${label} zellij session ${JSON.stringify(sessionName)}\n`)
         return
       }
@@ -3256,7 +3284,8 @@ async function ensureZellijSession(): Promise<void> {
   // Kill the script process after session is up so no phantom client remains
   // (phantom client locks window size to 80x24, preventing resize on attach).
   try {
-    const scriptProc = spawn('script', ['-qfc', `zellij -s ${shellArg(ZELLIJ_SESSION)}`, '/dev/null'], {
+    const bootstrapCommand = `stty rows ${ZELLIJ_BOOTSTRAP_ROWS} cols ${ZELLIJ_BOOTSTRAP_COLS}; exec zellij -s ${shellArg(ZELLIJ_SESSION)}`
+    const scriptProc = spawn('script', ['-qfc', bootstrapCommand, '/dev/null'], {
       stdio: 'ignore', detached: true,
     })
     scriptProc.unref()
@@ -3405,7 +3434,11 @@ const codexSessionLifecycle = new CodexAppServerSession({
       if (tabName.startsWith('ccm:cx:')) {
         const sessionName = codexTuiZellijSessionName(tabName.slice('ccm:cx:'.length))
         await ensureDetachedZellijSession(sessionName, 'Codex TUI')
-        await zellijActionInSessionAsync(sessionName, ['new-tab', '--name', tabName, '--', 'bash', '-lc', command], { timeout: 10000 })
+        try {
+          await zellijActionInSessionAsync(sessionName, ['new-tab', '--name', tabName, '--', 'bash', '-lc', command], { timeout: 10000 })
+        } finally {
+          stopDetachedZellijBootstrapClient(sessionName)
+        }
         return
       }
       await zellijActionAsync(['new-tab', '--name', tabName, '--', 'bash', '-lc', command], { timeout: 10000 })
@@ -3651,6 +3684,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   // --channels only works for plugins on CC's hardcoded approved allowlist.
   const channelArgs = ['--dangerously-load-development-channels', channelTag]
   const modeArgs = ['--dangerously-skip-permissions']
+  const effortArgs = CLAUDE_EFFORT ? ['--effort', CLAUDE_EFFORT] : []
   // Disable other channel plugins to prevent tool name collisions (#38098)
   // Write to temp file because JSON in shell args gets mangled by bash -c quoting
   const settingsFile = join(STATE_DIR, `settings-${uuid.slice(0, 8)}.json`)
@@ -3695,8 +3729,8 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   // writes it back ~0.7s later). The CLI flag outranks every settings layer, so the pin rides argv.
   const modelArgs = claudeModel.model ? ['--model', claudeModel.model] : []
   const args = resumeMode
-    ? ['--resume', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
-    : ['--session-id', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
+    ? ['--resume', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...effortArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
+    : ['--session-id', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...effortArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
 
   const env = {
     ...process.env,
@@ -3714,18 +3748,19 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   if (zellijAvailable) {
     try {
       await ensureDetachedZellijSession(backendSessionName, 'Claude backend')
+      try {
 
-      // Kill stale tab if it exists — its CC holds a dead IPC socket
-      // from a previous daemon lifetime and won't reconnect.
-      const existingPane = findPaneByTabNameInSession(backendSessionName, tabName)
-      if (existingPane && !existingPane.exited) {
-        process.stderr.write(`daemon: Claude backend "${backendSessionName}" already has live pane ${existingPane.paneId}; reusing session\n`)
-        void announceClaudeModel(uuid, claudeModel, resumeMode)
-        live.set(uuid, { runtime: 'claude', ipcConn: null, child: null })
-        return true
-      }
+        // Kill stale tab if it exists — its CC holds a dead IPC socket
+        // from a previous daemon lifetime and won't reconnect.
+        const existingPane = findPaneByTabNameInSession(backendSessionName, tabName)
+        if (existingPane && !existingPane.exited) {
+          process.stderr.write(`daemon: Claude backend "${backendSessionName}" already has live pane ${existingPane.paneId}; reusing session\n`)
+          void announceClaudeModel(uuid, claudeModel, resumeMode)
+          live.set(uuid, { runtime: 'claude', ipcConn: null, child: null })
+          return true
+        }
 
-      const cmd = [CLAUDE_BIN, ...args].map(shellArg).join(' ')
+        const cmd = [CLAUDE_BIN, ...args].map(shellArg).join(' ')
       // zellij server is long-lived; its env is frozen at creation. If .env
       // is updated and daemon restarts but zellij session is still alive,
       // new tabs inherit stale zellij env. To make a var reliably visible
@@ -3733,13 +3768,16 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
       // comma-separated list of var names. Daemon always includes common agent
       // routing/auth vars so CCM-launched Claude/Codex sessions stay on the same
       // LiteLLM/Snowhouse route as the daemon even when zellij inherited stale env.
-      const forwardedExports = forwardedEnvExports(forwardList, process.env, name => {
-        process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
-      })
-      const envExports = `export ${forwardedExports} CC_CHANNEL_SESSION_UUID=${shellArg(uuid)} CC_CHANNEL_DAEMON_SOCK=${shellArg(SOCK_PATH)} CLAUBBIT=1 DISABLE_AUTOUPDATER=1;`
-      await zellijActionInSessionAsync(backendSessionName, ['new-tab', '--name', tabName, '--', 'bash', '-c', `${envExports} cd ${shellArg(effectiveCwd)} && exec ${cmd}`], { timeout: 10000 })
-      process.stderr.write(`daemon: spawned ${uuid.slice(0, 8)} in Claude backend zellij session "${backendSessionName}"\n`)
-      void announceClaudeModel(uuid, claudeModel, resumeMode)
+        const forwardedExports = forwardedEnvExports(forwardList, process.env, name => {
+          process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
+        })
+        const envExports = `export ${forwardedExports} CC_CHANNEL_SESSION_UUID=${shellArg(uuid)} CC_CHANNEL_DAEMON_SOCK=${shellArg(SOCK_PATH)} CLAUBBIT=1 DISABLE_AUTOUPDATER=1;`
+        await zellijActionInSessionAsync(backendSessionName, ['new-tab', '--name', tabName, '--', 'bash', '-c', `${envExports} cd ${shellArg(effectiveCwd)} && exec ${cmd}`], { timeout: 10000 })
+        process.stderr.write(`daemon: spawned ${uuid.slice(0, 8)} in Claude backend zellij session "${backendSessionName}"\n`)
+        void announceClaudeModel(uuid, claudeModel, resumeMode)
+      } finally {
+        stopDetachedZellijBootstrapClient(backendSessionName)
+      }
 
       // Dev channels dialog will be shown to user via screen watcher buttons
     } catch (err) {
