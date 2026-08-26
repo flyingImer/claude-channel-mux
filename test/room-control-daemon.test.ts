@@ -197,3 +197,19 @@ test('get_worker_status exposes claude pane dialog state via the same detection 
   expect(daemon).not.toContain('await workerStatusFacts')
   expect(toolText).toContain('paneDialog')
 })
+
+test('get_worker_status exposes queueDepth and sessionStatus, with the claude idle-signal gap documented rather than silently fixed', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const toolText = JSON.stringify(CCM_MCP_TOOLS)
+
+  const factsFn = daemon.slice(daemon.indexOf('function workerStatusFacts'), daemon.indexOf('function roomHasResettableState'))
+  expect(factsFn).toContain('queueDepth: sessionId ? (pendingPeerReplyInjections.get(sessionId)?.length ?? 0) : 0')
+  expect(factsFn).toContain("sessionStatus: (runtime === 'codex' ? codexSessions.get(sessionId) : claudeSessions.get(sessionId) ?? claudeDriver.get(sessionId))?.status")
+  // The comment must actually say what's true: claude's status is running-sticky, codex's is not.
+  expect(factsFn).toContain("so for claude this reads\n    // 'running' forever after the first turn")
+  expect(factsFn).toContain('clearTurnState')
+
+  expect(toolText).toContain('queueDepth')
+  expect(toolText).toContain('sessionStatus')
+  expect(toolText.toLowerCase()).toContain('known gap')
+})

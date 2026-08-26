@@ -4504,6 +4504,14 @@ function workerStatusFacts(ck: string, runtime: AgentRuntimeKind): Record<string
     running: !!(sessionId && live.has(sessionId)),
     ipcConnected: !!liveEntry?.ipcConn,
     ...(runtime === 'claude' ? { paneDialog: claudeWorkerPaneDialog(sessionId) } : {}),
+    // pendingPeerReplyInjections is a real queue depth: absent means nothing pending, not unknown.
+    queueDepth: sessionId ? (pendingPeerReplyInjections.get(sessionId)?.length ?? 0) : 0,
+    // AgentSession.status flips 'idle' -> 'running' on the first turn (ClaudeChannelAgentDriver
+    // for claude, the codex app-server driver for codex) and nothing currently flips it back for
+    // claude rooms (a known structural gap, out of scope here) -- so for claude this reads
+    // 'running' forever after the first turn, not a live busy/idle signal. codex's own driver
+    // does clear it on turn completion (see clearTurnState), so it stays meaningful there.
+    ...(sessionId ? { sessionStatus: (runtime === 'codex' ? codexSessions.get(sessionId) : claudeSessions.get(sessionId) ?? claudeDriver.get(sessionId))?.status } : {}),
     desiredRunning: meta?.desiredRunning ?? false,
     ...(binding.cwd ? { cwd: binding.cwd } : {}),
     ...(model ? { model } : {}),
