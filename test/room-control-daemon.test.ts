@@ -137,3 +137,33 @@ test('rotate_orchestrator is registered as an Agent Control Path tool and succee
   expect(rotateBlock.match(/loadBindings\(\)/g)?.length).toBe(1)
   expect(rotateBlock.match(/saveBindings\(/g)?.length).toBe(1)
 })
+
+test('startNew resolves a claude worker room model pin/default before any uuid binding exists', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+
+  // effectiveClaudeModelForRoom does the override/worker-default/inherited resolution directly
+  // from a channel key, and effectiveClaudeModel (uuid-keyed) delegates to it rather than
+  // duplicating the logic.
+  const forRoomFn = daemon.slice(daemon.indexOf('function effectiveClaudeModelForRoom'), daemon.indexOf('function effectiveClaudeModel(uuid'))
+  expect(forRoomFn).toContain("agentMeta(ck, 'claude')?.model")
+  expect(forRoomFn).toContain('isWorkerRoomKey(ck)')
+  expect(forRoomFn).toContain('WORKER_DEFAULT_CLAUDE_MODEL')
+  const uuidFn = daemon.slice(daemon.indexOf('function effectiveClaudeModel(uuid'), daemon.indexOf('function effectiveClaudeModel(uuid') + 400)
+  expect(uuidFn).toContain('...effectiveClaudeModelForRoom(ck)')
+
+  // spawnClaude prefers an explicitly-passed channel key over the uuid lookup.
+  const spawnClaudeFn = daemon.slice(daemon.indexOf('async function spawnClaude'), daemon.indexOf('async function spawnCodexAppServer'))
+  expect(spawnClaudeFn).toContain('explicitChannelKey?: string')
+  expect(spawnClaudeFn).toContain('explicitChannelKey ? { ck: explicitChannelKey, ...effectiveClaudeModelForRoom(explicitChannelKey) } : effectiveClaudeModel(uuid)')
+
+  // spawnAgent forwards it from options into the claude driver; codex keeps taking options as-is.
+  const spawnAgentFn = daemon.slice(daemon.indexOf('async function spawnAgent'), daemon.indexOf('async function spawnClaude'))
+  expect(spawnAgentFn).toContain('channelKey?: string')
+  expect(spawnAgentFn).toContain('claudeDriver.start({ sessionId: uuid, cwd, channelKey: options.channelKey })')
+  expect(spawnAgentFn).toContain('claudeDriver.resume({ sessionId: uuid, cwd, channelKey: options.channelKey })')
+
+  // The claudeDriver wiring and startNew's first-spawn call both carry the channel key through.
+  expect(daemon).toContain('spawn: (sessionId, cwd, resumeMode, channelKey) => spawnClaude(sessionId, cwd, resumeMode, channelKey)')
+  const startNewFn = daemon.slice(daemon.indexOf('async function startNew'), daemon.indexOf('function clearRuntimeState'))
+  expect(startNewFn).toContain('spawnAgent(runtime, uuid, cwd, false, { model: existingMeta?.model, channelKey: ck })')
+})

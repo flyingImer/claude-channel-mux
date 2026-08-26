@@ -1541,7 +1541,7 @@ function ensureClaudeSession(uuid: string, cwd: string): AgentSession | undefine
 }
 
 const claudeDriver = new ClaudeChannelAgentDriver({
-  spawn: (sessionId, cwd, resumeMode) => spawnClaude(sessionId, cwd, resumeMode),
+  spawn: (sessionId, cwd, resumeMode, channelKey) => spawnClaude(sessionId, cwd, resumeMode, channelKey),
   sendInbound: (sessionId, msg) => sendToLive(sessionId, { type: 'inbound', ...msg }),
   log: line => process.stderr.write(`${line}\n`),
 })
@@ -3606,13 +3606,22 @@ async function announceClaudeModel(uuid: string, resolved: { model?: string; ck?
   }
 }
 
+// Same resolution as effectiveClaudeModel, for a channel key that's already known (no uuid
+// binding lookup needed). Both bind_worker_room and set_worker_model write agentMeta keyed by
+// channelKey, not uuid, so a room's pin/worker-default is resolvable before that room's session
+// even exists — the only reason effectiveClaudeModel needs the uuid indirection at all is for
+// callers that don't already have ck in hand.
+function effectiveClaudeModelForRoom(ck: string): { model?: string; source: 'override' | 'worker-default' | 'inherited' } {
+  const override = agentMeta(ck, 'claude')?.model
+  if (override) return { model: override, source: 'override' }
+  if (isWorkerRoomKey(ck)) return { model: WORKER_DEFAULT_CLAUDE_MODEL, source: 'worker-default' }
+  return { source: 'inherited' }
+}
+
 function effectiveClaudeModel(uuid: string): { model?: string; ck?: string; source: 'override' | 'worker-default' | 'inherited' } {
   const ck = channelKeysForUuid(uuid, 'claude')[0]
   if (!ck) return { source: 'inherited' }
-  const override = agentMeta(ck, 'claude')?.model
-  if (override) return { model: override, ck, source: 'override' }
-  if (isWorkerRoomKey(ck)) return { model: WORKER_DEFAULT_CLAUDE_MODEL, ck, source: 'worker-default' }
-  return { ck, source: 'inherited' }
+  return { ck, ...effectiveClaudeModelForRoom(ck) }
 }
 /**
  * Create a git worktree for a session. Returns the worktree path,
@@ -3654,12 +3663,12 @@ function removeWorktree(baseCwd: string, uuid: string): void {
   }
 }
 
-async function spawnAgent(runtime: AgentRuntimeKind, uuid: string, cwd: string, resumeMode: boolean, options: { model?: string; materializeCwd?: string } = {}, nativeSessionId?: string): Promise<SpawnResult> {
+async function spawnAgent(runtime: AgentRuntimeKind, uuid: string, cwd: string, resumeMode: boolean, options: { model?: string; materializeCwd?: string; channelKey?: string } = {}, nativeSessionId?: string): Promise<SpawnResult> {
   if (runtime === 'codex') return spawnCodexAppServer(uuid, cwd, nativeSessionId, options)
   try {
     const session = resumeMode
-      ? await claudeDriver.resume({ sessionId: uuid, cwd })
-      : await claudeDriver.start({ sessionId: uuid, cwd })
+      ? await claudeDriver.resume({ sessionId: uuid, cwd, channelKey: options.channelKey })
+      : await claudeDriver.start({ sessionId: uuid, cwd, channelKey: options.channelKey })
     claudeSessions.set(uuid, session)
     return { ok: true, uuid }
   } catch (err) {
@@ -3668,7 +3677,7 @@ async function spawnAgent(runtime: AgentRuntimeKind, uuid: string, cwd: string, 
   }
 }
 
-async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Promise<boolean> {
+async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean, explicitChannelKey?: string): Promise<boolean> {
   // Worktree isolation: create a git worktree for new sessions
   let effectiveCwd = cwd
   if (SPAWN_MODE === 'worktree' && !resumeMode) {
@@ -3701,7 +3710,11 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean): Prom
   const forwardedEnvSettings = forwardedEnvObject(forwardList, process.env, name => {
     process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
   })
-  const claudeModel = effectiveClaudeModel(uuid)
+  // On a room's first-ever spawn there is no uuid->ck binding yet for effectiveClaudeModel to
+  // find (setBindingSession runs after spawn succeeds), so the caller passes ck explicitly when
+  // it already has it (startNew does). Resume paths already bind before spawning and keep
+  // working via the uuid lookup.
+  const claudeModel = explicitChannelKey ? { ck: explicitChannelKey, ...effectiveClaudeModelForRoom(explicitChannelKey) } : effectiveClaudeModel(uuid)
   writeFileSync(settingsFile, JSON.stringify({
     enabledPlugins: {
       'telegram@claude-plugins-official': false,
@@ -3837,7 +3850,9 @@ function spawnDirect(runtime: AgentRuntimeKind, bin: string, uuid: string, args:
 async function startNew(ck: string, cwd: string, runtime = DEFAULT_AGENT_RUNTIME, announce = true, makeActive = true): Promise<string | undefined> {
   const uuid = randomUUID()
   const existingMeta = agentMeta(ck, runtime)
-  const result = await spawnAgent(runtime, uuid, cwd, false, { model: existingMeta?.model })
+  // channelKey lets the claude branch resolve the model pin/worker-default before this room has
+  // any uuid binding at all (see effectiveClaudeModelForRoom); codex ignores the extra field.
+  const result = await spawnAgent(runtime, uuid, cwd, false, { model: existingMeta?.model, channelKey: ck })
   if (!result.ok) {
     await sendChannelNotice(ck, formatAgentReply(runtime, formatAgentStartFailure(runtime, 'start', result.error)), undefined, `${runtime} start failure`)
     return undefined

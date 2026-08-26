@@ -1,7 +1,7 @@
 import type { AgentCommandSpec, AgentDriver, AgentEvent, AgentSession, AgentTurn, ResumeAgentInput, SendTurnInput, StartAgentInput } from '../types.js'
 
 export type ClaudeChannelDriverOptions = {
-  spawn: (sessionId: string, cwd: string, resumeMode: boolean) => Promise<boolean>
+  spawn: (sessionId: string, cwd: string, resumeMode: boolean, channelKey?: string) => Promise<boolean>
   sendInbound: (sessionId: string, msg: { channelKey: string; content: string; meta: Record<string, unknown> }) => boolean
   log?: (line: string) => void
 }
@@ -34,13 +34,13 @@ export class ClaudeChannelAgentDriver implements AgentDriver {
   }
 
   async start(input: StartAgentInput): Promise<AgentSession> {
-    const ok = await this.opts.spawn(input.sessionId, input.cwd, false)
+    const ok = await this.opts.spawn(input.sessionId, input.cwd, false, input.channelKey)
     if (!ok) throw new Error('failed to start Claude Code session')
     return this.record(input.sessionId, input.cwd, 'idle')
   }
 
   async resume(input: ResumeAgentInput): Promise<AgentSession> {
-    const ok = await this.opts.spawn(input.sessionId, input.cwd, true)
+    const ok = await this.opts.spawn(input.sessionId, input.cwd, true, input.channelKey)
     if (!ok) throw new Error('failed to resume Claude Code session')
     return this.record(input.sessionId, input.cwd, 'idle')
   }

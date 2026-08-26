@@ -78,6 +78,10 @@ export type AgentStartOptions = {
 export type StartAgentInput = {
   sessionId: string
   cwd: string
+  // Room channel key, when the caller already has it (e.g. a room's first-ever start, before any
+  // uuid->room binding exists). Optional: the claude driver uses it to resolve a model pin/default
+  // that a uuid-keyed lookup couldn't find yet; other drivers may ignore it.
+  channelKey?: string
   options?: AgentStartOptions
 }
 
