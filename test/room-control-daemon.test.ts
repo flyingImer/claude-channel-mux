@@ -167,3 +167,13 @@ test('startNew resolves a claude worker room model pin/default before any uuid b
   const startNewFn = daemon.slice(daemon.indexOf('async function startNew'), daemon.indexOf('function clearRuntimeState'))
   expect(startNewFn).toContain('spawnAgent(runtime, uuid, cwd, false, { model: existingMeta?.model, channelKey: ck })')
 })
+
+test('capture_worker_report transcript reads use unwrapClaudeTurnText, not the broken non-backreferenced tag strip', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+
+  expect(daemon).toContain('unwrapClaudeTurnText(extractTextFromContent(message?.content)).trim()')
+  expect(daemon).not.toContain('.replace(/<[^>]+>[\\s\\S]*?<\\/[^>]+>/g, \'\')')
+  const readEntriesFn = daemon.slice(daemon.indexOf('function readClaudeTranscriptEntries'), daemon.indexOf('function claudeSnapshot'))
+  expect(readEntriesFn).toContain("entry.type === 'user'")
+  expect(readEntriesFn).toContain('unwrapClaudeTurnText')
+})

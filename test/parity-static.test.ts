@@ -3028,7 +3028,7 @@ test('slash command audit and command visibility use central daemon paths', () =
 test('channel tag message id extraction avoids any casts', () => {
   const daemon = readFileSync('daemon.ts', 'utf8')
   const transcript = readFileSync('transcript.ts', 'utf8')
-  expect(daemon).toContain("import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'")
+  expect(daemon).toContain("import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks, unwrapClaudeTurnText } from './transcript.js'")
   expect(daemon).toContain('const entry = transcriptRecordFromLine(line)')
   expect(daemon).toContain('const replyTo = channelMessageIdFromContent(msg?.content)')
   expect(transcript).toContain('function transcriptRecord(value: unknown): Record<string, unknown> | undefined')

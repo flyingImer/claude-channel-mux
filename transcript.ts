@@ -57,6 +57,34 @@ export function textBlocksFromContent(content: unknown): string {
   }).filter(Boolean).join('\n').trim()
 }
 
+const CURRENT_MESSAGE_RE = /<current_message>([\s\S]*?)<\/current_message>/
+// A same-tag-name strip, unlike a bare <[^>]+>...<\/[^>]+> strip (which can't tell one tag's
+// closing tag from another's and spans across unrelated tags). Fallback only, for content that
+// never went through the <current_message> wrapper at all.
+const SAME_NAME_TAG_PAIR_RE = /<([\w:-]+)(?:\s[^>]*)?>[\s\S]*?<\/\1>/g
+
+function unescapeXmlEntities(value: string): string {
+  return value.replace(/&lt;/g, '<').replace(/&amp;/g, '&')
+}
+
+// Undo the CCM inbound turn wrapper (agents/claude/channel-driver.ts formatTurn) around a Claude
+// Code transcript's recorded user-role text, without corrupting the real message body. formatTurn
+// wraps every inbound turn as
+// <ccm_turn ...><context_pointers .../><message_meta>...</message_meta><current_message>
+// TEXT</current_message></ccm_turn>. A tag-agnostic strip can't tell one tag's closing tag from
+// another's, so it matches from the first '<' through an unrelated later '</...>' and swallows the
+// real body (verified: it consumes through </message_meta>, then a second /g pass consumes the
+// entirety of <current_message>...</current_message> too, leaving only a stray '</ccm_turn>').
+// Extract <current_message> directly when present — its content is guaranteed tag-free, since
+// escapeXmlText escapes every '<' in turn.text before embedding it — otherwise fall back to a
+// same-tag-name strip for content that never went through the wrapper (native continuations,
+// ask_peer/chime_in injections).
+export function unwrapClaudeTurnText(raw: string): string {
+  const wrapped = raw.match(CURRENT_MESSAGE_RE)
+  if (wrapped) return unescapeXmlEntities(wrapped[1])
+  return raw.replace(SAME_NAME_TAG_PAIR_RE, '')
+}
+
 
 export type TranscriptTextBlock = { index: number; text: string }
 

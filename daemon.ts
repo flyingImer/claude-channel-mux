@@ -56,7 +56,7 @@ import { safeWorktreeSlug } from './worktree.js'
 import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
 import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, setBindingSuccessorRole, setBindingWorkerRole, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding, type OrchestratorSource } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
-import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
+import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks, unwrapClaudeTurnText } from './transcript.js'
 import { compareTaskSnapshotItems, taskSnapshotItemFromJson, type TaskSnapshotItem, type TaskStatus } from './tasks.js'
 import { claudeNavMessageText, isClaudeDialogScreen } from './claude-nav.js'
 import { codexApprovalResult, codexOptionInputResult, codexPendingRequestButtons, codexRequestActionAllowed, codexTextResponseResult, summarizeCodexRequest } from './codex-response.js'
@@ -5438,7 +5438,7 @@ function readClaudeTranscriptEntries(path: string, limit: number): Array<{ role:
       if (!entry || entry.isSidechain === true) continue
       const message = nestedRecord(entry, 'message')
       if (entry.type === 'user') {
-        const text = extractTextFromContent(message?.content).replace(/<[^>]+>[\s\S]*?<\/[^>]+>/g, '').trim()
+        const text = unwrapClaudeTurnText(extractTextFromContent(message?.content)).trim()
         if (text) entries.push({ role: 'user', text })
       } else if (entry.type === 'assistant') {
         const text = textBlocksFromContent(message?.content)
