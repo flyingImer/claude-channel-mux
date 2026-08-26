@@ -177,3 +177,23 @@ test('capture_worker_report transcript reads use unwrapClaudeTurnText, not the b
   expect(readEntriesFn).toContain("entry.type === 'user'")
   expect(readEntriesFn).toContain('unwrapClaudeTurnText')
 })
+
+test('get_worker_status exposes claude pane dialog state via the same detection claudeSnapshot uses, without making workerStatusFacts async', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const toolText = JSON.stringify(CCM_MCP_TOOLS)
+
+  const dialogFn = daemon.slice(daemon.indexOf('function claudeWorkerPaneDialog'), daemon.indexOf('function workerStatusFacts'))
+  expect(dialogFn).toContain('resolveClaudePaneHandle(sessionId)')
+  expect(dialogFn).toContain('dumpScreenInSession(pane.sessionName, pane.paneId)')
+  expect(dialogFn).toContain('isClaudeDialogScreen(screen)')
+  expect(dialogFn).not.toContain('async')
+
+  const factsFn = daemon.slice(daemon.indexOf('function workerStatusFacts'), daemon.indexOf('function roomHasResettableState'))
+  expect(factsFn).not.toContain('async function workerStatusFacts')
+  expect(factsFn).toContain("...(runtime === 'claude' ? { paneDialog: claudeWorkerPaneDialog(sessionId) } : {})")
+
+  // Call sites stay synchronous too -- no await was added.
+  expect(daemon).toContain("result = JSON.stringify({ ok: true, operation: 'get_worker_status', ...workerStatusFacts(workerCk, runtime) })")
+  expect(daemon).not.toContain('await workerStatusFacts')
+  expect(toolText).toContain('paneDialog')
+})

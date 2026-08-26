@@ -245,7 +245,7 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
   },
   {
     name: 'get_worker_status',
-    description: 'Agent Control Path V1: read-only status probe for a bound worker room: session id, live/IPC state, desiredRunning, effective Claude model and its source (pin / worker-default / inherited), cwd, and label. Distinguishes "pane alive but IPC not connected" from "not running". Requires an orchestrator room.',
+    description: 'Agent Control Path V1: read-only status probe for a bound worker room: session id, live/IPC state, desiredRunning, effective Claude model and its source (pin / worker-default / inherited), cwd, label, and (claude only) paneDialog -- true/false when a Claude TUI dialog/prompt is currently showing in the zellij pane, or null when that can\'t be determined (no session, no pane, or a dump-screen failure). Distinguishes "pane alive but IPC not connected" from "not running". Requires an orchestrator room.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -4470,6 +4470,20 @@ async function stopRoomMappedSession(ck: string, runtime: AgentRuntimeKind, uuid
   await killSession(uuid)
 }
 
+// Same detection claudeSnapshot uses for /cc ss and /cc nav (resolveClaudePaneHandle ->
+// dumpScreenInSession -> isClaudeDialogScreen), reused read-only here so a Monitor can poll
+// get_worker_status's structured JSON instead of shelling out to dump-screen and regexing raw
+// terminal text. null covers every case where the answer isn't knowable: no session, no zellij
+// pane, or a dump-screen failure (dumpScreenInSession itself fails closed to '').
+function claudeWorkerPaneDialog(sessionId: string | undefined): boolean | null {
+  if (!sessionId) return null
+  const pane = resolveClaudePaneHandle(sessionId)
+  if (!pane) return null
+  const screen = dumpScreenInSession(pane.sessionName, pane.paneId)
+  if (!screen) return null
+  return isClaudeDialogScreen(screen)
+}
+
 // Read-only status facts for one worker room slot; shared by get_worker_status and
 // list_worker_rooms. Distinguishes "pane alive but IPC not connected" from "not running".
 function workerStatusFacts(ck: string, runtime: AgentRuntimeKind): Record<string, unknown> {
@@ -4489,6 +4503,7 @@ function workerStatusFacts(ck: string, runtime: AgentRuntimeKind): Record<string
     ...(sessionId ? { sessionId } : {}),
     running: !!(sessionId && live.has(sessionId)),
     ipcConnected: !!liveEntry?.ipcConn,
+    ...(runtime === 'claude' ? { paneDialog: claudeWorkerPaneDialog(sessionId) } : {}),
     desiredRunning: meta?.desiredRunning ?? false,
     ...(binding.cwd ? { cwd: binding.cwd } : {}),
     ...(model ? { model } : {}),
