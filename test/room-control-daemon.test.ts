@@ -112,3 +112,28 @@ test('daemon preflights Claude goals that request visible worker rooms', () => {
   expect(slashBlock.indexOf('claudeGoalRequiresOrchestrator(cmd.command)')).toBeLessThan(slashBlock.indexOf('const uuid = bindingUuid(ck, runtime)'))
   expect(slashBlock.indexOf('claudeGoalRequiresOrchestrator(cmd.command)')).toBeLessThan(slashBlock.indexOf('sendClaudePaneRawCommand(ck, uuid, commandText)'))
 })
+
+test('rotate_orchestrator is registered as an Agent Control Path tool and succeeds without growing the net orchestrator count', () => {
+  const daemon = readFileSync('daemon.ts', 'utf8')
+  const toolText = JSON.stringify(CCM_MCP_TOOLS)
+
+  expect(daemon).toContain("'rotate_orchestrator'")
+  expect(daemon).toContain("'capture_worker_report', 'rotate_orchestrator'")
+  expect(toolText).toContain('rotate_orchestrator')
+  expect(toolText).toContain('succession, not escalation')
+
+  const rotateBlock = daemon.slice(daemon.indexOf("case 'rotate_orchestrator':"), daemon.indexOf("case 'ask_peer':"))
+  expect(rotateBlock).toContain('assertOrchestratorRoom(route.channelKey)')
+  expect(rotateBlock).toContain('channelKeyForRoomId(route.channelKey, stringValue(msg.args.successor_room_id))')
+  expect(rotateBlock).toContain('assertSamePlatformRoom(route.channelKey, successorCk)')
+  expect(rotateBlock).toContain("throw new Error('successor_room_id must not be the calling orchestrator room')")
+  expect(rotateBlock).toContain('setBindingSuccessorRole(b, successorCk, DEFAULT_AGENT_RUNTIME)')
+  expect(rotateBlock).toContain('setBindingWorkerRole(b, workerCk, successorCk, DEFAULT_AGENT_RUNTIME)')
+  expect(rotateBlock).toContain('setBindingOrchestratorFlag(b, route.channelKey, false, DEFAULT_AGENT_RUNTIME)')
+  expect(rotateBlock).toContain("throw new Error(`worker_room_ids entry ${workerCk} has no existing binding`)")
+  expect(rotateBlock).toContain("event: 'orchestrator_rotated'")
+  expect(rotateBlock).toContain("operation: 'rotate_orchestrator'")
+  // Load-mutate-save as a single pass: exactly one loadBindings()/saveBindings() call in the block.
+  expect(rotateBlock.match(/loadBindings\(\)/g)?.length).toBe(1)
+  expect(rotateBlock.match(/saveBindings\(/g)?.length).toBe(1)
+})

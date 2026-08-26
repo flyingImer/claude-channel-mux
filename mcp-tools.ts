@@ -33,6 +33,7 @@ export const CCM_MCP_TOOL_NAMES = [
   'send_worker_raw_command',
   'send_worker_task',
   'capture_worker_report',
+  'rotate_orchestrator',
   'ask_peer',
   'chime_in',
 ] as const
@@ -127,7 +128,7 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
         orchestrator_source: { type: 'string', description: 'Why the resolved room is or is not orchestrator-capable, such as ordinary-default-enabled, explicit-disabled, worker-forced-disabled, or worker-enabled.' },
         parent_room_id: { type: 'string', description: 'For a CCM-managed Worker Room, the channel key of the parent Orchestrator room that created or bound it.' },
         candidate_chat_ids: { type: 'array', items: { type: 'string' }, description: 'Candidate bound room channel keys when status is ambiguous.' },
-        authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'stop_worker_agent', 'get_worker_status', 'list_worker_rooms', 'set_worker_model', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
+        authorized_control_tools: { type: 'array', items: { type: 'string', enum: ['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'stop_worker_agent', 'get_worker_status', 'list_worker_rooms', 'set_worker_model', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report', 'rotate_orchestrator'] }, description: 'Agent Control Path tools authorized for the resolved current CCM room.' },
       },
       required: ['status', 'authorized_control_tools'],
     },
@@ -279,6 +280,20 @@ export const CCM_MCP_TOOLS: CcmMcpToolDefinition[] = [
         model: { type: 'string', description: 'Model to pin (e.g. opus, fable[1m]), or "reset" to clear the pin' },
       },
       required: ['room_id', 'model'],
+    },
+  },
+  {
+    name: 'rotate_orchestrator',
+    description: 'Agent Control Path V1: promote an existing room to be the new Agent Control Path orchestrator, succeeding the current one. This is succession, not escalation: worker lifecycle automation never creates orchestrators, and this operation does not grow the net orchestrator count. It is the single audited exception, logged as an orchestrator_rotated event and announced in both rooms. Requires an orchestrator room. chat_id is optional when the current CCM turn/session binding resolves to one room.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        chat_id: { type: 'string', description: 'Current Orchestrator room channel key; optional when resolver fallback can infer it from this turn/session binding' },
+        successor_room_id: { type: 'string', description: 'Existing room channel key or platform-local id to promote to orchestrator, typically one just created via create_room_with_bot_invited' },
+        worker_room_ids: { type: 'array', items: { type: 'string' }, description: 'Worker room channel keys or platform-local ids to re-parent to the successor. Defaults to every worker room currently parented to this orchestrator, excluding the successor.' },
+        demote_self: { type: 'boolean', description: 'When true (default), demote this calling room to non-orchestrator after the successor is promoted' },
+      },
+      required: ['successor_room_id'],
     },
   },
   {

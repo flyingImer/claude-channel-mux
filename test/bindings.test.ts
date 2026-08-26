@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test'
 import { homedir } from 'os'
-import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding, setBindingOrchestratorFlag, setBindingWorkerRole } from '../bindings.ts'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding, serializeBinding, setBindingOrchestratorFlag, setBindingSuccessorRole, setBindingWorkerRole } from '../bindings.ts'
 
 test('bindingsFromJson migrates legacy string bindings to new session schema', () => {
   const parsed = bindingsFromJson({ 'slack:C1': 'legacy-uuid' })
@@ -153,6 +153,42 @@ test('setBindingOrchestratorFlag toggles current room without changing worker ro
   setBindingOrchestratorFlag(bindings, 'slack:ORCH', false, 'claude')
   expect(normalizeBinding(bindings['slack:ORCH'], 'claude').isOrchestrator).toBe(false)
   expect(normalizeBinding(bindings['slack:ORCH'], 'claude').orchestratorSource).toBe('explicit-disabled')
+})
+
+
+test('setBindingSuccessorRole promotes a worker-forced-disabled room and clears its parent lineage', () => {
+  const bindings = bindingsFromJson({
+    'slack:ORCH': { active: 'codex', sessions: { codex: 'cx' } },
+    'slack:SUCCESSOR': { active: 'claude', orchestrator: false, parentRoomId: 'slack:ORCH', sessions: { claude: 'cc' } },
+  })
+
+  setBindingSuccessorRole(bindings, 'slack:SUCCESSOR', 'claude')
+  const successor = normalizeBinding(bindings['slack:SUCCESSOR'], 'claude')
+  // orchestratorSource is derived from {orchestrator, parentRoomId}, not persisted itself: once
+  // parentRoomId is cleared this reads back as an ordinary explicit-enabled orchestrator, same as
+  // any other manually-flagged room. The "this happened via rotation" fact lives in the audit log.
+  expect(successor).toMatchObject({ isOrchestrator: true, orchestrator: true, orchestratorSource: 'explicit-enabled' })
+  expect(successor.parentRoomId).toBeUndefined()
+  expect(serializeBinding(successor, 'claude')).not.toHaveProperty('parentRoomId')
+})
+
+test('setBindingSuccessorRole promotes a room with no prior binding', () => {
+  const bindings = bindingsFromJson({})
+  setBindingSuccessorRole(bindings, 'slack:FRESH', 'claude')
+  expect(normalizeBinding(bindings['slack:FRESH'], 'claude')).toMatchObject({ isOrchestrator: true, orchestrator: true, orchestratorSource: 'explicit-enabled' })
+})
+
+test('setBindingSuccessorRole is reversible via setBindingOrchestratorFlag and does not resurrect worker lineage', () => {
+  const bindings = bindingsFromJson({
+    'slack:ORCH': { active: 'codex', sessions: { codex: 'cx' } },
+    'slack:SUCCESSOR': { active: 'claude', orchestrator: false, parentRoomId: 'slack:ORCH', sessions: { claude: 'cc' } },
+  })
+  setBindingSuccessorRole(bindings, 'slack:SUCCESSOR', 'claude')
+  setBindingOrchestratorFlag(bindings, 'slack:SUCCESSOR', false, 'claude')
+  // Once parentRoomId is cleared by promotion, later disabling reads as an ordinary explicit
+  // disable, not a worker-forced-disable: rotation is a one-way lineage break by design.
+  expect(normalizeBinding(bindings['slack:SUCCESSOR'], 'claude')).toMatchObject({ isOrchestrator: false, orchestratorSource: 'explicit-disabled' })
+  expect(normalizeBinding(bindings['slack:SUCCESSOR'], 'claude').parentRoomId).toBeUndefined()
 })
 
 

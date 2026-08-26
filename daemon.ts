@@ -54,7 +54,7 @@ import { claudeBackendZellijSessionName, codexTuiZellijSessionName, exitedCcmZel
 import { DEFAULT_FORWARDED_AGENT_ENV, commandLine, forwardedEnvExports, forwardedEnvObject, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
-import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, setBindingWorkerRole, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding, type OrchestratorSource } from './bindings.js'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, setBindingSuccessorRole, setBindingWorkerRole, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding, type OrchestratorSource } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks } from './transcript.js'
 import { compareTaskSnapshotItems, taskSnapshotItemFromJson, type TaskSnapshotItem, type TaskStatus } from './tasks.js'
@@ -487,7 +487,7 @@ function bindingEntries(): Array<{ channelKey: string; runtime: AgentRuntimeKind
   return entries
 }
 
-const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'stop_worker_agent', 'get_worker_status', 'list_worker_rooms', 'set_worker_model', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report'])
+const AGENT_CONTROL_PATH_TOOL_NAMES = new Set(['create_room_with_bot_invited', 'archive_room', 'bind_worker_room', 'start_worker_agent', 'stop_worker_agent', 'get_worker_status', 'list_worker_rooms', 'set_worker_model', 'send_worker_raw_command', 'send_worker_task', 'capture_worker_report', 'rotate_orchestrator'])
 
 type CurrentCcmContext =
   | { status: 'resolved'; chat_id: string; room_id: string; cwd: string; runtime: AgentRuntimeKind; is_orchestrator: boolean; orchestrator_source: string; parent_room_id?: string; source: 'route.channelKey' | 'session_binding' | 'orchestrator_session_binding'; authorized_control_tools: string[] }
@@ -7111,6 +7111,45 @@ async function handleTool(msg: { tool: string; args: Record<string, unknown>; ca
         const limit = clampCount(Number.isFinite(rawLimit) ? rawLimit : 50)
         const facts = await workerTranscriptFacts(workerCk, runtime, limit)
         result = JSON.stringify({ ...facts, platform: workerAdapter.platform })
+        break
+      }
+      case 'rotate_orchestrator': {
+        assertOrchestratorRoom(route.channelKey)
+        const successorCk = channelKeyForRoomId(route.channelKey, stringValue(msg.args.successor_room_id))
+        assertSamePlatformRoom(route.channelKey, successorCk)
+        if (successorCk === route.channelKey) throw new Error('successor_room_id must not be the calling orchestrator room')
+        const explicitWorkerIds = Array.isArray(msg.args.worker_room_ids)
+          ? msg.args.worker_room_ids.filter((item): item is string => typeof item === 'string')
+          : undefined
+        const demoteSelf = msg.args.demote_self !== false
+
+        const b = loadBindings()
+        const workerCks = explicitWorkerIds
+          ? explicitWorkerIds
+            .map(roomId => channelKeyForRoomId(route.channelKey, roomId))
+            .filter(workerCk => workerCk !== successorCk)
+            .map(workerCk => {
+              assertSamePlatformRoom(route.channelKey, workerCk)
+              if (!b[workerCk]) throw new Error(`worker_room_ids entry ${workerCk} has no existing binding`)
+              return workerCk
+            })
+          : Object.keys(b).filter(candidateCk => candidateCk !== successorCk && normalizeBinding(b[candidateCk]).parentRoomId === route.channelKey)
+
+        // Succession, not escalation: the outgoing orchestrator's own worker lifecycle
+        // automation never creates orchestrators — this is the single audited exception, and
+        // the net orchestrator count does not grow (one promoted, at most one demoted below).
+        setBindingSuccessorRole(b, successorCk, DEFAULT_AGENT_RUNTIME)
+        for (const workerCk of workerCks) setBindingWorkerRole(b, workerCk, successorCk, DEFAULT_AGENT_RUNTIME)
+        if (demoteSelf) setBindingOrchestratorFlag(b, route.channelKey, false, DEFAULT_AGENT_RUNTIME)
+        saveBindings(b)
+
+        auditEvent({ event: 'orchestrator_rotated', from_room: route.channelKey, to_room: successorCk, moved_worker_count: workerCks.length, moved_room_ids: workerCks, demoted_self: demoteSelf })
+        await sendChannelNotice(route.channelKey, demoteSelf
+          ? `⚠️ Orchestrator rotation: this room is no longer the Agent Control Path orchestrator. ${successorCk} is now the orchestrator and inherited ${workerCks.length} worker room(s). This is an audited succession, not routine worker lifecycle automation.`
+          : `⚠️ Orchestrator rotation: ${successorCk} is now also an Agent Control Path orchestrator and inherited ${workerCks.length} worker room(s). This room keeps its own orchestrator status. This is an audited succession, not routine worker lifecycle automation.`, undefined, 'orchestrator rotation notice')
+        await sendChannelNotice(successorCk, `✅ Orchestrator rotation: this room is now the Agent Control Path orchestrator, succeeding ${route.channelKey}. It inherited ${workerCks.length} worker room(s). Lifecycle tools may create/archive worker rooms from this room.`, undefined, 'orchestrator rotation notice')
+
+        result = JSON.stringify({ ok: true, operation: 'rotate_orchestrator', from: route.channelKey, to: successorCk, moved: workerCks, demoted_self: demoteSelf })
         break
       }
       case 'ask_peer':

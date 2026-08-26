@@ -352,6 +352,7 @@ Claude agent slot sessions get these tools via the MCP bridge (`server.ts`). Cod
 | `get_worker_status` | Inspect worker-room binding, runtime, session, pane, and model facts |
 | `list_worker_rooms` | List worker rooms owned by the current orchestrator room |
 | `set_worker_model` | Persist or clear the model pin for a worker room runtime |
+| `rotate_orchestrator` | Promote an existing room to succeed the current one as orchestrator (audited succession, not escalation) |
 | `ask_peer` | Asynchronously cue another agent in the same room for context/second opinion; answer is visible in the room |
 | `chime_in` | Observer-only collaboration note injected into the lead/default agent context |
 

@@ -221,6 +221,25 @@ export function setBindingWorkerRole(bindings: Record<string, ChannelBinding>, c
   if (serialized) bindings[channelKey] = serialized
 }
 
+// Succession, not escalation: promotes a room (typically one just created for this purpose, so
+// currently worker-forced-disabled under the outgoing orchestrator) to be the new orchestrator.
+// This is rotate_orchestrator's one exception to "worker lifecycle automation never creates
+// orchestrators" — the net orchestrator count does not grow, and the operation is audit-logged.
+// orchestratorSource is derived (normalizeBinding recomputes it from {orchestrator, parentRoomId}
+// on every read; serializeBinding never persists it), so once parentRoomId is cleared this room
+// reads back as plain 'explicit-enabled', same as any other manually-flagged orchestrator — there
+// is no persisted bit to distinguish "enabled via rotation" from "enabled via /ccm orch on".
+// That distinction lives in the append-only audit log (the orchestrator_rotated event), not here.
+export function setBindingSuccessorRole(bindings: Record<string, ChannelBinding>, channelKey: string, defaultRuntime: AgentRuntimeKind): void {
+  const binding = normalizeBinding(bindings[channelKey], defaultRuntime)
+  binding.isOrchestrator = true
+  binding.orchestrator = true
+  binding.parentRoomId = undefined
+  const serialized = serializeBinding(binding, defaultRuntime)
+  if (serialized) bindings[channelKey] = serialized
+  else delete bindings[channelKey]
+}
+
 
 export function keepAgentModelMeta(meta: AgentSlotMeta | undefined): AgentSlotMeta | undefined {
   const kept: AgentSlotMeta = {}
