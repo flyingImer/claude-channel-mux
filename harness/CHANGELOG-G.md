@@ -1,5 +1,10 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.5 — 2026-09-04
+- G9: single launcher binary. Daemon forwards CLAUDE_BIN into room settings env and
+  watchdog units; launch-audit-room.sh and all harness one-shots use `${CLAUDE_BIN:-claude}`.
+  Provenance: watchdog `claude -p` one-shots bypassed the wrapper (proxy, aliases, TTL).
+
 ## v2.4 — 2026-09-04
 - G1 rule 7 + `launch-audit-room.sh`: audit rooms launch only with an explicit `--model`
   (script refuses otherwise; model recorded in run-meta/launch.json). G9: HARD.

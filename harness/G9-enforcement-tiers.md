@@ -92,3 +92,10 @@ deferred stays CONTENT.
   verified. Provenance: three blind-audit revisions ran unpinned on the global default.
 - (v2.4) Room settings carry CLAUDE_CODE_SUBAGENT_MODEL (daemon-generated settings restate it,
   default sonnet) so in-room Agent subagents never inherit the room's pinned model.
+
+- (v2.5) Single launcher binary: BOOT — the daemon forwards CLAUDE_BIN into every room's
+  settings env and into every watchdog unit; harness scripts (audit-room launcher,
+  watchdog one-shots, any `-p` call) invoke `${CLAUDE_BIN:-claude}`, never a bare `claude`.
+  Rationale: the launcher wrapper is where proxy routing, model aliases and prompt-cache
+  TTL live; a bare `claude` silently escapes all three. Provenance: a seeding project's
+  watchdog one-shots ran outside the wrapper for three weeks.

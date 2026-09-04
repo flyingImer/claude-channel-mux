@@ -5,6 +5,7 @@
 # silently ran on the most expensive tier for three revisions because the launcher omitted
 # --model). No default is provided on purpose; choosing the tier is the caller's decision.
 #
+# Uses $CLAUDE_BIN (the same launcher the daemon starts rooms with) and falls back to `claude`.
 # usage: launch-audit-room.sh --model <model> --room <dir> --prompt <file> [--allowed "<tools>"]
 #        [--disallowed "<tools>"] [--settings <room-settings.json>] [-- <extra claude args>]
 set -euo pipefail
@@ -30,4 +31,4 @@ mkdir -p "$room/run-meta"
 printf '{"model":"%s","started":"%s","room":"%s"}\n' "$model" "$(date -u +%FT%TZ)" "$room" > "$room/run-meta/launch.json"
 cd "$room"
 # shellcheck disable=SC2086
-exec claude -p --model "$model" --settings "$settings" --allowedTools $allowed --disallowedTools $disallowed "$@" < "$prompt"
+exec "${CLAUDE_BIN:-claude}" -p --model "$model" --settings "$settings" --allowedTools $allowed --disallowedTools $disallowed "$@" < "$prompt"
