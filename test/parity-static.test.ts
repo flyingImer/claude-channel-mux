@@ -2537,7 +2537,9 @@ test('public environment knobs are documented in README and env example', () => 
   const env = readFileSync('.env.example', 'utf8')
   const keys = [...code.matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)].map(match => match[1])
   const internal = new Set(['CC_CHANNEL_DAEMON_SOCK', 'CC_CHANNEL_SESSION_UUID', 'NODE_ENV'])
-  const publicKeys = [...new Set(keys.filter(key => !internal.has(key)))].sort()
+  // Inherited OS variables (forwarded to harness watchdog units): neither knobs nor protocol vars.
+  const osVars = new Set(['PATH'])
+  const publicKeys = [...new Set(keys.filter(key => !internal.has(key) && !osVars.has(key)))].sort()
   for (const key of publicKeys) {
     expect(readme).toContain(key)
     expect(env).toContain(key)

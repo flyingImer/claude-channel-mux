@@ -809,8 +809,13 @@ function ensureHarnessWatchdogs(reason: string): void {
   for (const a of actions) {
     try {
       if (a.op === 'start' && a.wd) {
+        // Transient units inherit the systemd user manager's minimal environment, not the
+        // daemon's login PATH: tools the watchdog shells out to (gh, bun for `claude -p`)
+        // were not found (rc=127) until per-harness PATH shims were added. Pass the
+        // daemon's PATH explicitly so watchdogs see exactly what the daemon sees.
+        const envArgs = process.env.PATH ? ['--setenv', `PATH=${process.env.PATH}`] : []
         hExecFile('systemd-run', ['--user', '--unit', a.unit, '--collect', '--quiet', '-p', 'Restart=always', '-p', 'RestartSec=10',
-          '--working-directory', hRealpath(a.wd.cwd), '/bin/bash', '-c', `exec /bin/bash ${shellArg(a.wd.script)} >> ${shellArg(a.wd.log)} 2>&1`], { timeout: 15_000 })
+          ...envArgs, '--working-directory', hRealpath(a.wd.cwd), '/bin/bash', '-c', `exec /bin/bash ${shellArg(a.wd.script)} >> ${shellArg(a.wd.log)} 2>&1`], { timeout: 15_000 })
       } else if (a.op === 'restart') hExecFile('systemctl', ['--user', 'restart', a.unit], { timeout: 15_000 })
       else if (a.op === 'stop') hExecFile('systemctl', ['--user', 'stop', a.unit], { timeout: 15_000 })
       process.stderr.write(`daemon: harness watchdog ${a.op} ${a.unit} (${a.reason}; trigger=${reason})\n`)
