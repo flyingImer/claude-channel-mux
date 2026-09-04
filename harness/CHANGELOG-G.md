@@ -8,8 +8,9 @@
 ## v2.4 — 2026-09-04
 - G1 rule 7 + `launch-audit-room.sh`: audit rooms launch only with an explicit `--model`
   (script refuses otherwise; model recorded in run-meta/launch.json). G9: HARD.
-- Daemon-generated room settings restate CLAUDE_CODE_SUBAGENT_MODEL (default sonnet) so
-  in-room Agent subagents do not inherit the room's pinned model.
+- (reverted same day) daemon restating CLAUDE_CODE_SUBAGENT_MODEL: model policy belongs to the
+  user's settings.json, which the launcher wrapper carries into every room; CCM only forwards
+  CLAUDE_BIN.
 - Provenance: usage audit 2026-09-04 — three blind-audit revisions ran on the global default
   tier because the launcher omitted --model; in-room subagents landed on the room's tier.
 

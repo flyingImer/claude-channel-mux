@@ -90,8 +90,10 @@ deferred stays CONTENT.
 - (v2.4) Audit-room model pin: HARD — `launch-audit-room.sh` exits 2 without `--model`; the
   chosen model is written to run-meta/launch.json so the audit report's cost line can be
   verified. Provenance: three blind-audit revisions ran unpinned on the global default.
-- (v2.4) Room settings carry CLAUDE_CODE_SUBAGENT_MODEL (daemon-generated settings restate it,
-  default sonnet) so in-room Agent subagents never inherit the room's pinned model.
+- (v2.4, revised v2.5) Subagent model / prompt-cache TTL are OWNER POLICY: they live in the
+  owner's user settings.json (env block), which the launcher wrapper passes into every room;
+  neither CCM nor the wrapper restates them. Layering rule: wrapper = transport (proxy, auth,
+  aliases, sandbox); user settings = policy; CCM = room lifecycle; launcher = one-shot room.
 
 - (v2.5) Single launcher binary: BOOT — the daemon forwards CLAUDE_BIN into every room's
   settings env and into every watchdog unit; harness scripts (audit-room launcher,

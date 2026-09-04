@@ -394,7 +394,6 @@ Keep `CHANNEL_DAEMON_SELF_TEST_PREFIX` unset unless intentionally running bot-au
 | `CLAUDE_BIN` | `claude` | Path to Claude Code binary |
 | `CHANNEL_DAEMON_CLAUDE_EFFORT` | `ultracode` | Claude effort passed explicitly to CCM-launched sessions; set empty to inherit user settings |
 | `CHANNEL_DAEMON_WORKER_CLAUDE_MODEL` | `opus` | Default Claude model pin for worker rooms without an explicit per-room override |
-| `CLAUDE_CODE_SUBAGENT_MODEL` | `sonnet` | Model for Agent-tool subagents inside every spawned room; restated in the generated room settings so subagents never inherit the room's pinned model |
 | `CODEX_BIN` | `codex` | Codex CLI command prefix; may include deployment-specific CLI flags before CCM appends runtime args |
 | `CODEX_HOME` | `~/.codex` | Codex config/auth home used by the auto-attached remote TUI |
 | `CCM_CODEX_APP_SERVER_LISTEN` / `CHANNEL_DAEMON_CODEX_APP_SERVER_LISTEN` | `websocket` | Codex app-server transport; `websocket` enables native `codex --remote` TUI attachment, `stdio` is retained for tests/fallback |
