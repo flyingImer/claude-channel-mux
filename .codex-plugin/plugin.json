@@ -1,6 +1,6 @@
 {
   "name": "claude-channel-mux",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Multi-channel, multi-agent room multiplexer for Claude Code and Codex CLI over Slack/Telegram.",
   "author": {
     "name": "flyingImer",
