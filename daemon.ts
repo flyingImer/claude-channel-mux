@@ -821,6 +821,37 @@ function ensureHarnessWatchdogs(reason: string): void {
   }
 }
 
+// Version-bump notices: when the plugin's harness version is newer than what a harness dir
+// derived from, file ONE mechanical intake (EVENT) into that harness's ESCALATIONS.md so a
+// live orchestrator wakes and derives (G0 §Versioning step 3). Idempotent per version.
+function pluginHarnessVersion(): string | undefined {
+  try {
+    const m = fsReadSync(join(__dirname, 'harness', 'CHANGELOG-G.md'), 'utf8').match(/^## (v[0-9]+(?:\.[0-9]+)?)/m)
+    return m?.[1]
+  } catch { return undefined }
+}
+function ensureHarnessVersionNotices(): void {
+  const cur = pluginHarnessVersion()
+  if (!cur) return
+  let desired
+  try { desired = desiredHarnessWatchdogs(loadBindings(), harnessDirFor, () => true) } catch { return }
+  for (const d of desired) {
+    try {
+      const have = (() => { try { return fsReadSync(join(d.dir, 'generic-version'), 'utf8').trim().split(/\s+/)[0] } catch { return 'none' } })()
+      if (have === cur) continue
+      const marker = join(d.dir, `.generic-notice-${cur}`)
+      if (hExists(marker)) continue
+      const esc = join(d.dir, 'ESCALATIONS.md')
+      if (!hExists(esc)) continue
+      const ts = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+      hWrite(esc, `## ${ts} EVENT generic-harness ${cur} available (this harness derived from ${have}) — derive the delta per G0 §Versioning\nSource: ${join(__dirname, 'harness')} (CHANGELOG-G.md entries newer than ${have}). Derive ONLY the delta in this effort's conventions, then write '${cur} <commit>' to ${join(d.dir, 'generic-version')} and a derivation note. Filed automatically by the CCM daemon; idempotent per version.\n`, { flag: 'a' })
+      hWrite(marker, ts + '\n')
+      process.stderr.write(`daemon: harness version notice ${cur} filed for ${d.name} (${d.dir})\n`)
+      auditEvent({ event: 'harness_version_notice', harness: d.name, dir: d.dir, from: have, to: cur })
+    } catch (err) { process.stderr.write(`daemon: harness version notice failed for ${d.dir}: ${errorMessage(err)}\n`) }
+  }
+}
+
 function setRoomOrchestratorFlag(ck: string, enabled: boolean): void {
   const b = loadBindings()
   setBindingOrchestratorFlag(b, ck, enabled, DEFAULT_AGENT_RUNTIME)
@@ -7817,7 +7848,8 @@ try {
 migrateBindingsFile()
 backfillHarness()
 ensureHarnessWatchdogs('startup')
-setInterval(() => ensureHarnessWatchdogs('periodic'), 5 * 60_000).unref()
+ensureHarnessVersionNotices()
+setInterval(() => { ensureHarnessWatchdogs('periodic'); ensureHarnessVersionNotices() }, 5 * 60_000).unref()
 
 for (const adapter of activeAdapters) {
   adapter.onMessage(msg => {

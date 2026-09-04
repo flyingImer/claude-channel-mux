@@ -1,6 +1,9 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
 ## v2.3 — 2026-09-04
+- Daemon files the version-bump intake itself (ensureHarnessVersionNotices: per registered
+  harness dir, when generic-version is behind, append ONE EVENT to its ESCALATIONS.md,
+  idempotent marker). No human or scaffolding session in the refresh loop any more.
 - G2: row schema gains `class:` (code | spec | submission); class isolation rule (rooms load
   rows by class, mechanically); pass conditions never from author-authored text; taste-seeded
   submission rows are provisional until an audience receipt. G1 rule 3 and G9 updated.
