@@ -9,8 +9,10 @@
   bindings; daemon materializes STATE_DIR/harness/<session>.json for hooks; SessionStart +
   PreToolUse(Bash) hooks wired by the daemon for every room. 531/531 CCM tests pass.
 - Watchdog ownership: a watchdog spawned from a room dies with the room (observed 2026-09-04,
-  all three efforts). Now systemd --user units (harness/systemd/ template; tag/durable/overall
-  enabled). Next: daemon-owned per registered harness.
+  all three efforts). Now DAEMON-OWNED: the daemon computes one watchdog per harness dir referenced by any binding
+  and runs it as a systemd --user transient unit (Restart=always), reconciled at startup, after
+  /ccm harness, and every 5 min; retired harnesses are stopped; edited watchdog.sh restarts.
+  (harness/systemd/ template kept for non-daemon hosts.)
 - Blind audit rooms are harness-agnostic (they only see their room dir); the launcher copies
   charter excerpts in. Outbound gate fails open with a warning until the effort derives
   `outbound.json` (migration).
