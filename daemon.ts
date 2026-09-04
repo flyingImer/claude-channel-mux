@@ -3857,6 +3857,12 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean, expli
   })
   // Harness hooks locate their per-session file through the daemon's state dir.
   Object.assign(forwardedEnvSettings, { CCM_STATE_DIR: STATE_DIR })
+  // In-room Agent-tool subagents must not inherit the room's (expensive) pinned model: the
+  // launcher's own settings carried CLAUDE_CODE_SUBAGENT_MODEL, but this generated file
+  // replaces them, so restate it here (daemon env wins when set).
+  if (!forwardedEnvSettings.CLAUDE_CODE_SUBAGENT_MODEL) {
+    forwardedEnvSettings.CLAUDE_CODE_SUBAGENT_MODEL = process.env.CLAUDE_CODE_SUBAGENT_MODEL || 'sonnet'
+  }
   // On a room's first-ever spawn there is no uuid->ck binding yet for effectiveClaudeModel to
   // find (setBindingSession runs after spawn succeeds), so the caller passes ck explicitly when
   // it already has it (startNew does). Resume paths already bind before spawning and keep

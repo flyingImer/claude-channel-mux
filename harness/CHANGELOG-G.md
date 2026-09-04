@@ -1,5 +1,13 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.4 — 2026-09-04
+- G1 rule 7 + `launch-audit-room.sh`: audit rooms launch only with an explicit `--model`
+  (script refuses otherwise; model recorded in run-meta/launch.json). G9: HARD.
+- Daemon-generated room settings restate CLAUDE_CODE_SUBAGENT_MODEL (default sonnet) so
+  in-room Agent subagents do not inherit the room's pinned model.
+- Provenance: usage audit 2026-09-04 — three blind-audit revisions ran on the global default
+  tier because the launcher omitted --model; in-room subagents landed on the room's tier.
+
 ## v2.3 — 2026-09-04
 - Daemon files the version-bump intake itself (ensureHarnessVersionNotices: per registered
   harness dir, when generic-version is behind, append ONE EVENT to its ESCALATIONS.md,

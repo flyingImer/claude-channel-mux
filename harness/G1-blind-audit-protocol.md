@@ -41,6 +41,13 @@ audit stage a first-class design with independence guarantees.
 
 6. **No fixes.** Audit output is findings only; fixing is the author lane's job.
 
+7. **Model is pinned at launch, never inherited** (v2.4). An audit room is a one-shot `claude -p`
+   launched outside CCM, so nothing pins its model for it; an unpinned launch resolves to the
+   caller's global default, which in a fable-default environment is the most expensive tier.
+   Launch only through `harness/launch-audit-room.sh`, which refuses to start without
+   `--model` and records the model in `run-meta/launch.json`. The tier is the owner's choice
+   per artifact class (G9 lists it as HARD).
+
 ## Independence ladder (cheap -> expensive; climb only when the rung below leaks)
 
 L1 single fresh room under this protocol.

@@ -86,3 +86,9 @@ deferred stays CONTENT.
 - (v2.3) Charter class isolation: HARD — the audit-room launcher loads only rows whose
   `class:` equals the room's class and refuses rows without a class (script:
   hooks/charter-select.py; BOOT until it lands with the next audit room).
+
+- (v2.4) Audit-room model pin: HARD — `launch-audit-room.sh` exits 2 without `--model`; the
+  chosen model is written to run-meta/launch.json so the audit report's cost line can be
+  verified. Provenance: three blind-audit revisions ran unpinned on the global default.
+- (v2.4) Room settings carry CLAUDE_CODE_SUBAGENT_MODEL (daemon-generated settings restate it,
+  default sonnet) so in-room Agent subagents never inherit the room's pinned model.
