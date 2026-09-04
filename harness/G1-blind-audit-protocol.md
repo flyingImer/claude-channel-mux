@@ -25,7 +25,8 @@ audit stage a first-class design with independence guarantees.
    only as audit SUBJECTS under the claims-vs-code dimension. A claim is never evidence.
 
 3. **Charter-driven mandate.** The room's sweep list comes verbatim from the project's
-   G2 audit charter (generic dimension wording), plus one mandatory open adversarial
+   G2 audit charter, FILTERED TO THIS ROOM'S ARTIFACT CLASS (v2.3: the launcher selects rows
+   by `class:`; a room never receives another class's rows), plus one mandatory open adversarial
    residual pass ("anything else violating contract or internal consistency").
 
 4. **Receipts discipline.** Every finding: verdict CONFIRMED or PLAUSIBLE + receipt

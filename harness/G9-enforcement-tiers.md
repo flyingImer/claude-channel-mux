@@ -83,3 +83,6 @@ deferred stays CONTENT.
   on the seeding project's v12 audit flagged 8 of 15 "nit" findings as contract-cited
   (F6-F12, F20): the severity gap was systemic, not two items.
 - (v2.1) harness-sync.sh: BOOT — SessionStart in every effort; explicit via /harness-refresh.
+- (v2.3) Charter class isolation: HARD — the audit-room launcher loads only rows whose
+  `class:` equals the room's class and refuses rows without a class (script:
+  hooks/charter-select.py; BOOT until it lands with the next audit room).

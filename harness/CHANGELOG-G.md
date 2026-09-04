@@ -1,5 +1,13 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.3 — 2026-09-04
+- G2: row schema gains `class:` (code | spec | submission); class isolation rule (rooms load
+  rows by class, mechanically); pass conditions never from author-authored text; taste-seeded
+  submission rows are provisional until an audience receipt. G1 rule 3 and G9 updated.
+  Provenance: the seeding project's first submission-class derivation (four rows planned into
+  the code-conformance room; a code row accepting "named in PR body" as a pass) — doc gaps
+  per G0 ("systematic misses convict the doc"), fixed as rules.
+
 ## v2.2 — 2026-09-04
 - Moved into claude-channel-mux (`harness/` + `hooks/` + `skills/harness-refresh`); the standalone
   repo is now a symlink. Owner ruling: "this was always meant to be the CCM worker-room harness".

@@ -14,6 +14,8 @@ sedimentation target: audit capability compounds by row accretion, not by re-rev
 
 ```
 id:        short slug (stable)
+class:     artifact class this row sweeps: code | spec | submission (v2.3; a row without a
+           class is invalid and is never loaded into any room)
 dimension: generic wording of the sweep CLASS. Never names a specific past bug.
 scope:     enumeration rule — how the auditor derives the concrete sweep set from the
            artifact (e.g. "every endpoint the diff touches x every error case the
@@ -124,3 +126,28 @@ Ready), i.e. the conformance charter was complete and this class did not exist.
 - **Cadence**: once per submission candidate (before it becomes visible), not per
   revision. PORTABILITY: OSS PRs; community design docs; internal PRs to a repo with
   its own reviewers (audience = those reviewers, norms = that repo's guide).
+
+## Class isolation and pass-condition provenance (v2.3, 2026-09-04)
+
+Provenance: the seeding project's first derivation of the submission class placed its four
+rows in the shared charter file and planned to feed all rows to the next code-conformance
+blind room; one code-class row's pass condition accepted "named in the live PR body" as
+equivalent to "has a caller". Both are doc gaps, fixed here as rules, not as instructions:
+
+1. **Rows are loaded by class, mechanically.** A room is launched for exactly one artifact
+   class and receives only that class's rows (the launcher filters on `class:`; G9 HARD).
+   Rows of different classes may share a file; they never share a room. A code-conformance
+   room therefore never sees submission rows, and never receives cover text as material
+   (G1 allowlist) — cover text reaches it only as a claim under stated-claims-vs-code.
+2. **Pass conditions come from artifact, contract, or precedent — never from author-authored
+   text.** A cell may not be satisfied by a sentence in a PR body, commit body, plan, or
+   report; those are subjects of the claims rows. A legitimate exception (e.g. shipping an
+   interface ahead of its first caller) is a RULED-BEFORE disposition at reconciliation,
+   with a receipt, not a charter pass.
+3. **Taste-seeded rows are provisional by construction.** Seed-library rows for the
+   submission class that were authored from the owner's own writing rules (rows (c) and (d)
+   in the library above) carry `state: provisional` until an audience receipt exists (a real
+   reviewer comment on a precedent or on our own submission). Provisional rows are swept and
+   reported but their findings are NOT_A_DEFECT by default; the first audience receipt
+   activates the row (G4 correction event), absence after two audience reviews retires it.
+   The generic layer applies this to itself: this file's seed rows (c)/(d) are provisional.
