@@ -203,3 +203,20 @@ test('isAgentRuntimeKind accepts only supported runtimes', () => {
   expect(isAgentRuntimeKind('other')).toBe(false)
   expect(isAgentRuntimeKind(1)).toBe(false)
 })
+
+test('harness membership survives JSON round-trip, is inherited by worker rooms, and is settable', async () => {
+  const { bindingsFromJson, normalizeBinding, serializeBinding, setBindingWorkerRole, setBindingHarness } = await import('../bindings.js')
+  const raw = { 'slack:P': { orchestrator: true, cwd: '/w', harness: 'durable', sessions: { claude: 'u1' } } }
+  const parsed = bindingsFromJson(raw)
+  expect(parsed['slack:P']?.harness).toBe('durable')
+  const n = normalizeBinding(parsed['slack:P'], 'claude')
+  expect(n.harness).toBe('durable')
+  expect(serializeBinding(n, 'claude')?.harness).toBe('durable')
+  setBindingWorkerRole(parsed, 'slack:C', 'slack:P', 'claude')
+  expect(parsed['slack:C']?.harness).toBe('durable')
+  setBindingHarness(parsed, 'slack:C', 'overall', 'claude')
+  expect(parsed['slack:C']?.harness).toBe('overall')
+  setBindingHarness(parsed, 'slack:C', undefined, 'claude')
+  expect(parsed['slack:C']?.harness).toBeUndefined()
+  expect(parsed['slack:C']?.parentRoomId).toBe('slack:P')
+})

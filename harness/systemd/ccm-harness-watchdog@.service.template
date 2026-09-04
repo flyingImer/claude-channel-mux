@@ -1,0 +1,15 @@
+# Derive one unit per harness instance: ccm-harness-watchdog-<name>.service (G9 HARD tier).
+# Provenance (2026-09-04): watchdogs launched from inside CCM rooms are children of the room's
+# session and DIE when the daemon restarts or the room rotates (all three efforts lost theirs at
+# once). A watchdog must be owned by systemd --user (or later by the daemon), never by a room.
+[Unit]
+Description=CCM harness watchdog (<name>) — <harness-dir>
+After=ccm-daemon.service
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'exec /bin/bash <harness-dir>/watchdog.sh >> <harness-dir>/watchdog.log 2>&1'
+WorkingDirectory=<repo-root>
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=default.target

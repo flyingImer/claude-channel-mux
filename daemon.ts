@@ -40,6 +40,7 @@ import { SlackAdapter } from './adapters/slack.js'
 import { TelegramAdapter } from './adapters/telegram.js'
 import { closeTab, closeTabInSession, findPaneByTabName, findPaneByTabNameInSession, sendKeys, dumpScreen, dumpScreenAsync, dumpScreenInSession, dumpScreenInSessionAsync, sendKeysInSession, writeCharsInSession, listClientsInSession } from './escort.js'
 import { watch as fsWatch, readFileSync as fsReadSync } from 'fs'
+import { existsSync as hExists, readdirSync as hReaddir, realpathSync as hRealpath, mkdirSync as hMkdir, writeFileSync as hWrite, statSync as hStat } from 'fs'
 import { ClaudeChannelAgentDriver } from './agents/claude/channel-driver.js'
 import { CodexAppServerAgentDriver } from './agents/codex/app-server-driver.js'
 import { codexResolvedConfigFromEnv } from './agents/codex/config.js'
@@ -54,7 +55,7 @@ import { claudeBackendZellijSessionName, codexTuiZellijSessionName, exitedCcmZel
 import { DEFAULT_FORWARDED_AGENT_ENV, commandLine, forwardedEnvExports, forwardedEnvObject, shellArg } from './shell.js'
 import { safeWorktreeSlug } from './worktree.js'
 import { agentCommandBodyAfterPrefix, formatParsedAgentCommand, parseAgentCommandArgs, parseAgentCommandName } from './commands.js'
-import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingOrchestratorFlag, setBindingSuccessorRole, setBindingWorkerRole, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding, type OrchestratorSource } from './bindings.js'
+import { AGENT_RUNTIMES, bindingAuthorizedRoomsForSession, bindingSessionEntries, bindingsFromJson, isAgentRuntimeKind, keepAgentModelMeta, normalizeBinding as normalizeBindingValue, serializeBinding as serializeBindingValue, setBindingHarness, setBindingOrchestratorFlag, setBindingSuccessorRole, setBindingWorkerRole, type AgentSlotMeta, type ChannelBinding, type NormalizedBinding, type OrchestratorSource } from './bindings.js'
 import { codexPendingRequestsFromJson, persistedCodexPendingRequests, readJsonValueFile, stringRecord, transcriptDeliveriesFromJson, type StoredCodexPendingRequest, type StoredTranscriptDeliveries } from './state.js'
 import { channelMessageIdFromContent, extractTextFromContent, nestedRecord, textBlocksFromContent, transcriptRecordFromLine, transcriptString, transcriptTextBlocks, unwrapClaudeTurnText } from './transcript.js'
 import { compareTaskSnapshotItems, taskSnapshotItemFromJson, type TaskSnapshotItem, type TaskStatus } from './tasks.js'
@@ -714,6 +715,69 @@ function setRoomObservers(ck: string, observers: AgentRuntimeKind[]): void {
   if (serialized) b[ck] = serialized
   else delete b[ck]
   saveBindings(b)
+}
+
+
+// ---------------------------------------------------------------------------
+// Harness membership (generic worker-room harness). A room belongs to at most one
+// <cwd>/.ccm-harness/<name>; the name is recorded on the binding at creation (inherited from
+// the parent room, or the single candidate in cwd), changeable live via `/ccm harness <name>`,
+// and materialized per session as STATE_DIR/harness/<uuid>.json for hooks to read.
+// ---------------------------------------------------------------------------
+const HARNESS_ROOT_DIR = '.ccm-harness'
+type HarnessInfo = { name?: string; dir?: string; candidates: string[]; cwd?: string }
+function harnessCandidates(cwd: string | undefined): string[] {
+  if (!cwd) return []
+  try {
+    const root = join(hRealpath(cwd), HARNESS_ROOT_DIR)
+    return hReaddir(root).filter(n => { try { return hStat(join(root, n)).isDirectory() } catch { return false } }).sort()
+  } catch { return [] }
+}
+function harnessInfoForRoom(ck: string): HarnessInfo {
+  const b = normalizeBinding(loadBindings()[ck])
+  const candidates = harnessCandidates(b.cwd)
+  let dir: string | undefined
+  if (b.harness && b.cwd) { try { const d = join(hRealpath(b.cwd), HARNESS_ROOT_DIR, b.harness); if (hExists(d)) dir = d } catch { /* unresolved cwd */ } }
+  return { name: b.harness, dir, candidates, cwd: b.cwd }
+}
+function harnessSessionFile(uuid: string): string { return join(STATE_DIR, 'harness', `${uuid}.json`) }
+function writeHarnessSessionFile(uuid: string, ck: string): void {
+  try {
+    hMkdir(join(STATE_DIR, 'harness'), { recursive: true })
+    hWrite(harnessSessionFile(uuid), JSON.stringify({ room: ck, ...harnessInfoForRoom(ck), updated: new Date().toISOString() }, null, 2) + '\n', { mode: 0o600 })
+  } catch (err) { process.stderr.write(`daemon: harness session file for ${uuid.slice(0, 8)} failed: ${errorMessage(err)}\n`) }
+}
+function writeHarnessSessionFiles(ck: string): void {
+  const b = normalizeBinding(loadBindings()[ck])
+  for (const uuid of Object.values(b.sessions)) if (uuid) writeHarnessSessionFile(uuid, ck)
+}
+function channelKeyForClaudeUuid(uuid: string): string | undefined {
+  for (const [ck, raw] of Object.entries(loadBindings())) if (normalizeBinding(raw).sessions.claude === uuid) return ck
+  return undefined
+}
+function setRoomHarness(ck: string, name: string | undefined): void {
+  const b = loadBindings()
+  setBindingHarness(b, ck, name, DEFAULT_AGENT_RUNTIME)
+  saveBindings(b)
+  writeHarnessSessionFiles(ck)
+}
+// One-time backfill for bindings that predate the field: inherit from parent, else the single
+// candidate in cwd. Two or more candidates and no parent = left unset (the room's SessionStart
+// hint says so); never guessed.
+function backfillHarness(): void {
+  const b = loadBindings()
+  let changed = 0
+  for (let pass = 0; pass < 3; pass++) {
+    for (const [ck, raw] of Object.entries(b)) {
+      const nb = normalizeBinding(raw)
+      if (nb.harness) continue
+      const parent = nb.parentRoomId ? normalizeBinding(b[nb.parentRoomId]) : undefined
+      let name = parent?.harness
+      if (!name) { const c = harnessCandidates(nb.cwd); if (c.length === 1) name = c[0] }
+      if (name) { setBindingHarness(b, ck, name, DEFAULT_AGENT_RUNTIME); changed++; process.stderr.write(`daemon: harness backfill ${ck} -> ${name}\n`) }
+    }
+  }
+  if (changed) saveBindings(b)
 }
 
 function setRoomOrchestratorFlag(ck: string, enabled: boolean): void {
@@ -3697,6 +3761,10 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean, expli
   // Disable other channel plugins to prevent tool name collisions (#38098)
   // Write to temp file because JSON in shell args gets mangled by bash -c quoting
   const settingsFile = join(STATE_DIR, `settings-${uuid.slice(0, 8)}.json`)
+  const harnessCk = explicitChannelKey ?? channelKeyForClaudeUuid(uuid)
+  if (harnessCk) writeHarnessSessionFile(uuid, harnessCk)
+  const harnessBootScript = join(__dirname, 'hooks', 'harness-boot.py')
+  const outboundGateScript = join(__dirname, 'hooks', 'outbound-gate.py')
   // No Stop hook — the completed-text visibility problem is solved by the
   // daemon's transcript poll loop (forwards {type:"text"} assistant blocks
   // directly to the channel). CC doesn't need to be forced to call `reply`.
@@ -3710,6 +3778,8 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean, expli
   const forwardedEnvSettings = forwardedEnvObject(forwardList, process.env, name => {
     process.stderr.write(`daemon: ignoring invalid forwarded env name ${JSON.stringify(name)}\n`)
   })
+  // Harness hooks locate their per-session file through the daemon's state dir.
+  Object.assign(forwardedEnvSettings, { CCM_STATE_DIR: STATE_DIR })
   // On a room's first-ever spawn there is no uuid->ck binding yet for effectiveClaudeModel to
   // find (setBindingSession runs after spawn succeeds), so the caller passes ck explicitly when
   // it already has it (startNew does). Resume paths already bind before spawning and keep
@@ -3729,6 +3799,15 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean, expli
     hooks: {
       PreCompact: [
         { hooks: [{ type: 'command', command: `bun ${preCompactScript}` }] },
+      ],
+      // Generic worker-room harness (harness/ + hooks/): boot check + deferred-queue reminder,
+      // and the outbound gate. Both resolve the room's harness via STATE_DIR/harness/<uuid>.json
+      // and are silent no-ops for rooms without a harness.
+      SessionStart: [
+        { hooks: [{ type: 'command', command: `python3 ${harnessBootScript}` }] },
+      ],
+      PreToolUse: [
+        { matcher: 'Bash', hooks: [{ type: 'command', command: `python3 ${outboundGateScript}` }] },
       ],
     },
   }))
@@ -4564,6 +4643,7 @@ type Cmd =
   | { t: 'stop_id'; uuid: string; runtime?: AgentRuntimeKind }
   | { t: 'delete_room' }
   | { t: 'orchestrator'; action: 'on' | 'off' | 'status' }
+  | { t: 'harness'; action: 'set' | 'status'; name?: string }
   | { t: 'help' }
   | { t: 'find'; query: string; runtime?: AgentRuntimeKind }
   | { t: 'screen'; runtime?: AgentRuntimeKind }
@@ -4686,6 +4766,8 @@ function parseCmd(text: string): Cmd {
     if (/^collab\s+(?:done|complete)$/i.test(args)) return { t: 'collab_done' }
     const orchestratorM = args.match(/^(?:orchestrator|orch)(?:\s+(on|off|status))?$/i)
     if (orchestratorM) return { t: 'orchestrator', action: (orchestratorM[1]?.toLowerCase() as 'on' | 'off' | 'status' | undefined) ?? 'status' }
+    const harnessM = args.match(/^harness(?:\s+(?:status|set))?(?:\s+([A-Za-z0-9_.-]+))?$/i)
+    if (harnessM) return { t: 'harness', action: harnessM[1] ? 'set' : 'status', name: harnessM[1] }
     if (/^(?:delete|reset)\s+room$/i.test(args)) return { t: 'delete_room' }
     if (/^route$/i.test(args)) return { t: 'route' }
     if (/^default$/i.test(args) && runtime) return { t: 'default', runtime }
@@ -6235,6 +6317,7 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
         '`ccm agents` — Show agent slots and active sessions',
         '`ccm route` — Explain how the next plain message routes',
         '`ccm orchestrator on|off|status` / `ccm orch on|off|status` — Toggle or inspect Agent Control Path lifecycle permission for this room',
+        '`ccm harness [name]` — Show or set which <cwd>/.ccm-harness/<name> this room (and rooms it creates) belongs to',
         '`ccm new [agent]` / `ccm start [agent]` — Start a fresh agent slot session in this room',
         '`ccm resume [agent\\|id]` — Browse or resume agent sessions into this room',
         '`ccm stop [agent\\|id]` — Stop an agent slot session; if other rooms still reference it, unbind those rooms first',
@@ -6301,6 +6384,22 @@ async function onMessage(ck: string, msg: InboundMessage): Promise<void> {
       await sendChannelNotice(ck, binding.isOrchestrator
         ? `✅ ${roomOrchestratorStatusText(binding)} Lifecycle tools may create/archive worker rooms from this room.`
         : `⏸ ${roomOrchestratorStatusText(binding)} Lifecycle tools are denied from this room.`, undefined, 'orchestrator flag notice')
+      return
+    }
+    case 'harness': {
+      if (cmd.action === 'set' && cmd.name) {
+        const info = harnessInfoForRoom(ck)
+        if (!info.candidates.includes(cmd.name)) {
+          await sendChannelNotice(ck, `❌ No harness named \`${cmd.name}\` under ${info.cwd ?? '(no cwd)'}/${HARNESS_ROOT_DIR}. Candidates: ${info.candidates.length ? info.candidates.join(', ') : 'none'}.`, undefined, 'harness set rejected')
+          return
+        }
+        setRoomHarness(ck, cmd.name)
+        auditEvent({ event: 'harness_set', room_id: ck, harness: cmd.name })
+      }
+      const info = harnessInfoForRoom(ck)
+      await sendChannelNotice(ck, info.name
+        ? `✅ Harness: \`${info.name}\` (${info.dir ?? 'dir missing!'}). Rooms created from here inherit it; hooks read it live.`
+        : `⏸ No harness set for this room. Candidates under ${info.cwd ?? '(no cwd)'}/${HARNESS_ROOT_DIR}: ${info.candidates.length ? info.candidates.join(', ') : 'none'}. Set with \`/ccm harness <name>\`.`, undefined, 'harness notice')
       return
     }
     case 'default': {
@@ -7675,6 +7774,7 @@ try {
 // ---------------------------------------------------------------------------
 
 migrateBindingsFile()
+backfillHarness()
 
 for (const adapter of activeAdapters) {
   adapter.onMessage(msg => {

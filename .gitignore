@@ -10,3 +10,9 @@ zellij-plugin/target/
 # Runtime agent worktrees
 .claude/worktrees/
 .worktrees/
+
+# harness: deployment-private material never enters the public repo
+harness/DEVIATIONS-inbox.md
+harness/CCM-LANDING-PLAN.md
+harness/DAEMON-INJECTION-POINT.txt
+harness/*.private.md

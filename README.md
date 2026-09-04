@@ -482,3 +482,15 @@ cargo build --release --target wasm32-wasip1
 ## License
 
 Apache-2.0
+
+## Generic worker-room harness (`harness/`, `hooks/`)
+
+A room may belong to one harness instance: a directory `<cwd>/.ccm-harness/<name>/` holding that
+effort's orchestration state (escalations, deferred queue, charters, outbound manifest). The name is
+recorded on the room binding at creation (inherited from the parent room, or the single candidate in
+cwd), never inferred later; `/ccm harness [name]` shows or changes it live. The daemon materializes
+`~/.config/claude-channel-mux/harness/<session>.json` for hooks: `hooks/harness-boot.py`
+(SessionStart: version check + deferred-queue reminder, or the "no harness set" hint) and
+`hooks/outbound-gate.py` (PreToolUse on Bash: no public-facing push without a close-out record).
+Rules and provenance live in `harness/G0-G9` and `harness/CHANGELOG-G.md`; `/harness-refresh` re-runs
+the version check explicitly. `CCM_STATE_DIR` is passed to rooms for this purpose.

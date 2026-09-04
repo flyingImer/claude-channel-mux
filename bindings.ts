@@ -10,13 +10,14 @@ export type ChannelBinding = {
   active?: AgentRuntimeKind
   orchestrator?: boolean
   parentRoomId?: string
+  harness?: string
   observers?: AgentRuntimeKind[]
   sessions?: Partial<Record<AgentRuntimeKind, string>>
   cwd?: string
   agentMeta?: Partial<Record<AgentRuntimeKind, AgentSlotMeta>>
 }
 export type OrchestratorSource = 'explicit-enabled' | 'explicit-disabled' | 'worker-forced-disabled' | 'worker-enabled' | 'malformed-disabled' | 'ordinary-default-enabled'
-export type NormalizedBinding = { active: AgentRuntimeKind; isOrchestrator: boolean; orchestrator?: boolean; orchestratorSource: OrchestratorSource; parentRoomId?: string; observers: AgentRuntimeKind[]; sessions: Partial<Record<AgentRuntimeKind, string>>; cwd?: string; agentMeta: Partial<Record<AgentRuntimeKind, AgentSlotMeta>> }
+export type NormalizedBinding = { active: AgentRuntimeKind; isOrchestrator: boolean; orchestrator?: boolean; orchestratorSource: OrchestratorSource; parentRoomId?: string; harness?: string; observers: AgentRuntimeKind[]; sessions: Partial<Record<AgentRuntimeKind, string>>; cwd?: string; agentMeta: Partial<Record<AgentRuntimeKind, AgentSlotMeta>> }
 export type BindingSessionEntry = { runtime: AgentRuntimeKind; uuid: string; active: boolean }
 
 
@@ -111,15 +112,17 @@ export function bindingsFromJson(value: unknown): Record<string, ChannelBinding>
           ? binding.isOrchestrator
           : undefined
     const parentRoomId = stringValue(binding.parentRoomId)
+    const harness = stringValue(binding.harness)
     const observers = observerList(binding.observers, active)
     const sessions = sessionMap(binding.sessions)
     const cwd = cwdValue(binding.cwd)
     const agentMeta = agentMetaMap(binding.agentMeta)
-    if (!active && orchestrator === undefined && !parentRoomId && observers.length === 0 && Object.keys(sessions).length === 0 && !cwd && Object.keys(agentMeta).length === 0) continue
+    if (!active && orchestrator === undefined && !parentRoomId && !harness && observers.length === 0 && Object.keys(sessions).length === 0 && !cwd && Object.keys(agentMeta).length === 0) continue
     bindings[channelKey] = {
       ...(active ? { active } : {}),
       ...(orchestrator !== undefined ? { orchestrator } : {}),
       ...(parentRoomId ? { parentRoomId } : {}),
+      ...(harness ? { harness } : {}),
       ...(observers.length ? { observers } : {}),
       ...(Object.keys(sessions).length ? { sessions } : {}),
       ...(cwd ? { cwd } : {}),
@@ -162,7 +165,8 @@ export function normalizeBinding(value: ChannelBinding | undefined, defaultRunti
     : isOrchestrator
       ? (isWorker ? 'worker-enabled' : explicitOrchestrator === true ? 'explicit-enabled' : 'ordinary-default-enabled')
       : (isWorker ? 'worker-forced-disabled' : 'explicit-disabled')
-  return { active, isOrchestrator, ...(orchestrator !== undefined ? { orchestrator } : {}), orchestratorSource, ...(parentRoomId ? { parentRoomId } : {}), observers, sessions: { ...sessions }, cwd, agentMeta }
+  const harness = typeof value === 'object' ? stringValue(value?.harness) : undefined
+  return { active, isOrchestrator, ...(orchestrator !== undefined ? { orchestrator } : {}), orchestratorSource, ...(parentRoomId ? { parentRoomId } : {}), ...(harness ? { harness } : {}), observers, sessions: { ...sessions }, cwd, agentMeta }
 }
 
 export function bindingSessionEntries(binding: NormalizedBinding): BindingSessionEntry[] {
@@ -192,9 +196,9 @@ export function serializeBinding(binding: NormalizedBinding, defaultRuntime: Age
   }
   const sessionKeys = Object.keys(sessions)
   const observers = binding.observers.filter(runtime => runtime !== binding.active)
-  if (binding.orchestratorSource === 'ordinary-default-enabled' && sessionKeys.length === 0 && observers.length === 0 && !binding.cwd && binding.active === defaultRuntime && binding.orchestrator === undefined && !binding.parentRoomId) return undefined
+  if (binding.orchestratorSource === 'ordinary-default-enabled' && sessionKeys.length === 0 && observers.length === 0 && !binding.cwd && binding.active === defaultRuntime && binding.orchestrator === undefined && !binding.parentRoomId && !binding.harness) return undefined
   const active = binding.active
-  return { active, ...(binding.orchestrator !== undefined ? { orchestrator: binding.orchestrator } : {}), ...(binding.parentRoomId ? { parentRoomId: binding.parentRoomId } : {}), ...(observers.length ? { observers } : {}), sessions, ...(binding.cwd ? { cwd: binding.cwd } : {}), ...(Object.keys(agentMeta).length > 0 ? { agentMeta } : {}) }
+  return { active, ...(binding.orchestrator !== undefined ? { orchestrator: binding.orchestrator } : {}), ...(binding.parentRoomId ? { parentRoomId: binding.parentRoomId } : {}), ...(binding.harness ? { harness: binding.harness } : {}), ...(observers.length ? { observers } : {}), sessions, ...(binding.cwd ? { cwd: binding.cwd } : {}), ...(Object.keys(agentMeta).length > 0 ? { agentMeta } : {}) }
 }
 
 export function setBindingOrchestratorFlag(bindings: Record<string, ChannelBinding>, channelKey: string, enabled: boolean, defaultRuntime: AgentRuntimeKind): void {
@@ -217,6 +221,9 @@ export function setBindingWorkerRole(bindings: Record<string, ChannelBinding>, c
   binding.orchestrator = false
   binding.orchestratorSource = 'worker-forced-disabled'
   binding.parentRoomId = parentRoomId
+  // Harness lineage: a worker room inherits its parent's harness unless it already has one.
+  const parentHarness = stringValue(bindings[parentRoomId]?.harness)
+  if (!binding.harness && parentHarness) binding.harness = parentHarness
   const serialized = serializeBinding(binding, defaultRuntime)
   if (serialized) bindings[channelKey] = serialized
 }
@@ -246,4 +253,15 @@ export function keepAgentModelMeta(meta: AgentSlotMeta | undefined): AgentSlotMe
   if (meta?.model) kept.model = meta.model
   if (typeof meta?.desiredRunning === 'boolean') kept.desiredRunning = meta.desiredRunning
   return Object.keys(kept).length ? kept : undefined
+}
+
+/** Harness membership (which <cwd>/.ccm-harness/<name> this room belongs to). Set at creation
+ *  (inherited from the parent room, or the single candidate in cwd) or explicitly via
+ *  `/ccm harness <name>`; never inferred at read time. */
+export function setBindingHarness(bindings: Record<string, ChannelBinding>, channelKey: string, name: string | undefined, defaultRuntime: AgentRuntimeKind): void {
+  const binding = normalizeBinding(bindings[channelKey], defaultRuntime)
+  binding.harness = stringValue(name)
+  const serialized = serializeBinding(binding, defaultRuntime)
+  if (serialized) bindings[channelKey] = serialized
+  else delete bindings[channelKey]
 }
