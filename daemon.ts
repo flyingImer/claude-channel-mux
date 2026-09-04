@@ -40,6 +40,8 @@ import { SlackAdapter } from './adapters/slack.js'
 import { TelegramAdapter } from './adapters/telegram.js'
 import { closeTab, closeTabInSession, findPaneByTabName, findPaneByTabNameInSession, sendKeys, dumpScreen, dumpScreenAsync, dumpScreenInSession, dumpScreenInSessionAsync, sendKeysInSession, writeCharsInSession, listClientsInSession } from './escort.js'
 import { watch as fsWatch, readFileSync as fsReadSync } from 'fs'
+import { desiredHarnessWatchdogs, reconcileHarnessWatchdogs, HARNESS_WD_UNIT_PREFIX } from './harness-watchdogs.js'
+import { execFileSync as hExecFile } from 'child_process'
 import { existsSync as hExists, readdirSync as hReaddir, realpathSync as hRealpath, mkdirSync as hMkdir, writeFileSync as hWrite, statSync as hStat } from 'fs'
 import { ClaudeChannelAgentDriver } from './agents/claude/channel-driver.js'
 import { CodexAppServerAgentDriver } from './agents/codex/app-server-driver.js'
@@ -760,6 +762,7 @@ function setRoomHarness(ck: string, name: string | undefined): void {
   setBindingHarness(b, ck, name, DEFAULT_AGENT_RUNTIME)
   saveBindings(b)
   writeHarnessSessionFiles(ck)
+  ensureHarnessWatchdogs('harness set')
 }
 // One-time backfill for bindings that predate the field: inherit from parent, else the single
 // candidate in cwd. Two or more candidates and no parent = left unset (the room's SessionStart
@@ -778,6 +781,44 @@ function backfillHarness(): void {
     }
   }
   if (changed) saveBindings(b)
+}
+
+
+// Watchdog supervision: daemon decides, systemd --user supervises (transient units, Restart=always).
+// Runs at startup, after /ccm harness changes, and every 5 minutes. Fail-open when systemd is absent.
+const harnessWdMtimes = new Map<string, number>()
+let harnessWdUnavailableLogged = false
+function harnessDirFor(cwd: string, name: string): string | undefined {
+  try { const d = join(hRealpath(cwd), HARNESS_ROOT_DIR, name); return hExists(d) ? d : undefined } catch { return undefined }
+}
+function runningHarnessWdUnits(): Set<string> {
+  try {
+    const out = hExecFile('systemctl', ['--user', 'list-units', `${HARNESS_WD_UNIT_PREFIX}*`, '--no-legend', '--plain', '--all'], { encoding: 'utf8', timeout: 10_000 })
+    const set = new Set<string>()
+    for (const line of out.split('\n')) { const m = line.trim().match(/^(\S+)\.service\s+\S+\s+(\S+)/); if (m && m[2] === 'active') set.add(m[1]) }
+    return set
+  } catch { return new Set() }
+}
+function ensureHarnessWatchdogs(reason: string): void {
+  let desired
+  try {
+    desired = desiredHarnessWatchdogs(loadBindings(), harnessDirFor, dir => hExists(join(dir, 'watchdog.sh')))
+  } catch (err) { process.stderr.write(`daemon: harness watchdog desired-set failed: ${errorMessage(err)}\n`); return }
+  const running = runningHarnessWdUnits()
+  const actions = reconcileHarnessWatchdogs(desired, running, s => { try { return hStat(s).mtimeMs } catch { return undefined } }, harnessWdMtimes)
+  for (const a of actions) {
+    try {
+      if (a.op === 'start' && a.wd) {
+        hExecFile('systemd-run', ['--user', '--unit', a.unit, '--collect', '--quiet', '-p', 'Restart=always', '-p', 'RestartSec=10',
+          '--working-directory', hRealpath(a.wd.cwd), '/bin/bash', '-c', `exec /bin/bash ${shellArg(a.wd.script)} >> ${shellArg(a.wd.log)} 2>&1`], { timeout: 15_000 })
+      } else if (a.op === 'restart') hExecFile('systemctl', ['--user', 'restart', a.unit], { timeout: 15_000 })
+      else if (a.op === 'stop') hExecFile('systemctl', ['--user', 'stop', a.unit], { timeout: 15_000 })
+      process.stderr.write(`daemon: harness watchdog ${a.op} ${a.unit} (${a.reason}; trigger=${reason})\n`)
+      auditEvent({ event: 'harness_watchdog', op: a.op, unit: a.unit, reason: a.reason, trigger: reason })
+    } catch (err) {
+      if (!harnessWdUnavailableLogged) { harnessWdUnavailableLogged = true; process.stderr.write(`daemon: harness watchdog supervision unavailable (${a.op} ${a.unit}): ${errorMessage(err)}\n`) }
+    }
+  }
 }
 
 function setRoomOrchestratorFlag(ck: string, enabled: boolean): void {
@@ -7775,6 +7816,8 @@ try {
 
 migrateBindingsFile()
 backfillHarness()
+ensureHarnessWatchdogs('startup')
+setInterval(() => ensureHarnessWatchdogs('periodic'), 5 * 60_000).unref()
 
 for (const adapter of activeAdapters) {
   adapter.onMessage(msg => {
