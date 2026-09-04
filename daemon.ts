@@ -152,6 +152,17 @@ const INBOX_DIR = join(STATE_DIR, 'inbox')
 const DEFAULT_CWD = process.env.CHANNEL_DAEMON_CWD ?? homedir()
 const CLAUDE_BIN = process.env.CLAUDE_BIN ?? 'claude'
 const CLAUDE_EFFORT = (process.env.CHANNEL_DAEMON_CLAUDE_EFFORT ?? 'ultracode').trim()
+// CHANNEL_DAEMON_CLAUDE_DEBUG=1 launches every Claude room with --debug (CC writes ~/.claude/debug/<uuid>.txt,
+// which carries CC's own prompt-cache miss diagnosis: "tools changed", "system prompt changed", ...).
+// Meant for one restart cycle while investigating cache behaviour; the logs are large.
+const CLAUDE_DEBUG = process.env.CHANNEL_DAEMON_CLAUDE_DEBUG === '1'
+// First-turn grace: a room's first API call after (re)start races the connection of its other MCP
+// servers. A call sent before they settle carries a tool set / system prompt that differs from both
+// the pre-restart cache and the next call's, so the whole context is re-cached twice (measured
+// 2026-09-04: 2 x context per live room per daemon restart, 94% of that day's cache writes). The
+// daemon delivers the first turn only after the CCM MCP server registers (ipcConn); this holds it a
+// little longer so the rest of the servers connect first. 0 disables.
+const FIRST_TURN_GRACE_MS = Math.max(0, Number(process.env.CHANNEL_DAEMON_FIRST_TURN_GRACE_MS ?? '10000') || 0)
 const CODEX_CONFIG = codexResolvedConfigFromEnv(process.env)
 const CODEX_COMMAND = CODEX_CONFIG.command
 const CODEX_WORKTREE_MODE = CODEX_CONFIG.worktreeMode
@@ -1662,7 +1673,7 @@ cleanStaleBindings()
 // Live sessions
 // ---------------------------------------------------------------------------
 
-type Live = { runtime: AgentRuntimeKind; ipcConn: Socket | null; child: ChildProcess | null; primaryPid?: number }
+type Live = { runtime: AgentRuntimeKind; ipcConn: Socket | null; child: ChildProcess | null; primaryPid?: number; ipcAt?: number }
 const live = new Map<string, Live>()
 const socketToUuid = new Map<Socket, string>()
 const resumeInFlight = new Map<string, Promise<SpawnResult>>()
@@ -3838,6 +3849,7 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean, expli
   const channelArgs = ['--dangerously-load-development-channels', channelTag]
   const modeArgs = ['--dangerously-skip-permissions']
   const effortArgs = CLAUDE_EFFORT ? ['--effort', CLAUDE_EFFORT] : []
+  const debugArgs = CLAUDE_DEBUG ? ['--debug'] : []
   // Disable other channel plugins to prevent tool name collisions (#38098)
   // Write to temp file because JSON in shell args gets mangled by bash -c quoting
   const settingsFile = join(STATE_DIR, `settings-${uuid.slice(0, 8)}.json`)
@@ -3905,8 +3917,8 @@ async function spawnClaude(uuid: string, cwd: string, resumeMode: boolean, expli
   // writes it back ~0.7s later). The CLI flag outranks every settings layer, so the pin rides argv.
   const modelArgs = claudeModel.model ? ['--model', claudeModel.model] : []
   const args = resumeMode
-    ? ['--resume', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...effortArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
-    : ['--session-id', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...effortArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
+    ? ['--resume', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...effortArgs, ...debugArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
+    : ['--session-id', uuid, ...pluginArgs, ...channelArgs, ...modeArgs, ...effortArgs, ...debugArgs, ...settingsArgs, ...modelArgs, ...allowedToolsArgs]
 
   const env = {
     ...process.env,
@@ -5351,6 +5363,13 @@ async function deliverUserTurn(ck: string, msg: InboundMessage, text: string, ru
       ], turnNoticeOpts)
       return false
     }
+  }
+
+  // First-turn grace (see FIRST_TURN_GRACE_MS): only bites within the window right after the room's
+  // CCM MCP server registered, i.e. the first turn after a (re)start; steady-state turns pass through.
+  if (runtime === 'claude' && FIRST_TURN_GRACE_MS > 0) {
+    const sinceIpc = Date.now() - (live.get(uuid)?.ipcAt ?? 0)
+    if (sinceIpc < FIRST_TURN_GRACE_MS) await new Promise(r => setTimeout(r, FIRST_TURN_GRACE_MS - sinceIpc))
   }
 
   if (platformMessageId) {
@@ -7753,6 +7772,7 @@ const ipc: NetServer = createServer((conn: Socket) => {
           announcedReconnect.add(uuid)
 
           l.ipcConn = conn
+          l.ipcAt = Date.now()
           l.primaryPid = peerPid
           socketToUuid.set(conn, uuid)
           sendToLive(uuid, { type: 'registered', uuid, channels: routableChannelsForUuid(uuid) })
