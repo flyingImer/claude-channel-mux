@@ -53,6 +53,15 @@ after a port does not reach the copies by itself, so "inheritance" must be a mec
 5. Step 1 of the protocol is amended: on ANY intake the orchestrator enumerates ALL
    G-docs and states which ones the intake touches (provenance: tag orch derived only
    the G-docs an intake listed, so the audit-charter instance was never created).
+6. (v2.6) Derived files are never hand-edited. An effort's instance files (charter rows,
+   severity rubric, close-out template, lint scripts, launch recipes) are DERIVED
+   artifacts: a needed change is filed as a deviation (protocol step 3), lands in this
+   directory, and reaches every instance through re-derivation. An instance may carry a
+   provenance note pointing at the pending generic item, nothing more. An instance edit
+   whose provenance line cites no generic version or derivation note is a T1 deviation
+   (G9). Provenance: a boundary clause edited instance-side from one refutation
+   (2026-09-04) hardened a wrong rule the generic seed never saw; the next audit missed
+   the defect that clause excused (2026-09-06).
 
 ## Portability test (v2): what may enter the generic layer
 

@@ -33,6 +33,12 @@ audit stage a first-class design with independence guarantees.
    (file:line + contract clause). Precision is a duty equal to recall: borderline items
    are adjudicated explicitly as NOT_A_DEFECT with the reason, not silently dropped and
    not inflated into findings.
+   (v2.6) A claim about concurrent behavior, in code or in-tree docs ("atomic", "as if
+   one happened before the other", "cannot become a no-op"), is receipted only by the
+   MECHANISM that makes it true under the deployment default: the lock, isolation level,
+   compare-and-set, or uniqueness constraint. "Inside one transaction" is not a receipt.
+   Provenance: an audit read such a promise and used it for a different finding without
+   asking which mechanism honoured it; the promise was false under the default isolation.
 
 5. **Coverage proof, not vibes.** Each charter dimension's report must show the
    enumeration it swept (e.g. the endpoint x error-case table with per-cell outcome),
@@ -107,3 +113,20 @@ Rules:
    should-fix is an owner ruling, recorded in the decision store with its backflow item.
 3. Every disposition carries a receipt; a finding with no disposition line blocks the
    revision's close-out (G9: report validator).
+4. (v2.6) RULED-BEFORE names the ruling's PREMISE in one sentence and states whether
+   the finding attacks that premise. A finding that attacks the premise is
+   QUESTION-TO-OWNER, never RULED-BEFORE; the ruling's date does not outrank a
+   counterexample. The validator requires a `premise:` token on every RULED-BEFORE line.
+5. (v2.6) A NOT_A_DEFECT or REFUTED that rests on "serializable in some order" must
+   survive one observer: add a request issued after the competing writer returned. If no
+   single serial order consistent with the real-time order of completed requests explains
+   all outcomes, the finding stands. Provenance: a two-transaction refutation
+   (2026-09-04) was copied into an instance charter as a boundary clause; a third request
+   defeats it (2026-09-06).
+6. (v2.6) Project-standards lint slot. If the target repository publishes mechanical
+   standards (a contributor or agent guide with checkable rules), the effort derives a
+   lint from them and the close-out carries a `standards-lint:` line with the hit list or
+   "none declared". The validator requires the line. This rule names no assertion library
+   or naming style; those are the instance's nouns. Provenance: two published-guide
+   violations reached external reviewers while the close-out validator checked nothing of
+   the kind.

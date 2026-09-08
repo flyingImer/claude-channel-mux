@@ -39,6 +39,12 @@ state:     active | suspended (owner can flip anytime).
    class); T1/T2 stay in the auditor mandate. Graduation is recorded in `origin`.
 5. **Coverage is reportable.** A row is only "swept" when the auditor shows the
    enumeration table it produced under `scope` (G1 step 5).
+6. **Library-row inheritance** (v2.6). A row derived from the seed library carries the
+   library's state (active | provisional) mechanically, like `class:`; the owner nods
+   once, at the library, and the library records the state per seed row with its receipt.
+   Instances fill `scope` with their own nouns without a nod; only effort-original rows go
+   to the owner. Provenance: the same seed rows sat in three instance charters in three
+   states and the owner was asked three times for one decision (2026-09-04).
 
 ## Charters are per ARTIFACT CLASS, not only per project
 
@@ -80,11 +86,14 @@ own; a project row is promoted here only after it passes G0's portability test.
   artifact x one concurrent writer of the same identity; each cell = the loser's
   contract-facing outcome. Scope template: enumerate (write path, identity) pairs from
   the diff; per pair, the interleaving "both read empty/stale, both write". Receipt form:
-  a barrier/interleaving test or a line-level trace. Boundary (provenance, tag 08-28):
-  a one-way rw-antidependency that is serializable in a contract-sanctioned order is
-  NOT_A_DEFECT; the row asks for the loser's OUTCOME, never for a serializability
-  proof or a prescribed fix. PORTABILITY: durable record stores (commit-preempting
-  writers), HTTP create-or-replace, spec registries with last-writer rules. Tier T1.
+  a barrier/interleaving test or a line-level trace. Boundary (v2.6; provenance: a
+  seeding-project refutation of 08-28, defeated 09-06): a cell is NOT_A_DEFECT only if a
+  single serial order, consistent with the real-time order of completed requests,
+  explains the outcomes AND survives one observer request issued after the competing
+  writer returned (G1 reconciliation rule 5). The row asks for the loser's OUTCOME and
+  that observer check, never for a prescribed fix. PORTABILITY: durable record stores
+  (commit-preempting writers), HTTP create-or-replace, spec registries with last-writer
+  rules. Tier T1. State: active (owner 2026-09-04).
 - **precedent-shape-parity** — the artifact's structure, naming, layering and error
   handling compared to the DESIGNATED in-tree precedent for the same kind of feature;
   each finding cites precedent file:line as the counter-shape. Scope template: list the
@@ -94,10 +103,21 @@ own; a project row is promoted here only after it passes G0's portability test.
   findings defensible to the receiving reviewers). Replaces generic smell catalogs,
   which carry no citable ground truth. PORTABILITY: OSS feature PRs (precedent = prior
   feature), SPI tickets (precedent = sibling SPI), specs (precedent = sibling spec). T2.
-- **cross-layer-representability**, **stated-claims-vs-code**, **capability-gate-
-  outcome-surface**, **miss-identity-precedence**, **lifecycle-parity (create/purge)**:
-  already generic-worded in the seeding project's charter (tag audit-charter.md rows);
-  promote verbatim dimension + scope template when a second domain derives them.
+- **stated-claims-vs-code** (promoted v2.6; second domain: a second adopting effort derived
+  it 2026-09-04) — every promise the artifact makes about itself (commit body, cover
+  text, in-tree docs, interface docs) x the code that must honour it; each cell = the
+  evidence that it does, or the counter-shape. Scope template: enumerate promises from
+  the artifact's own text; per promise, the receipt kind: for behavioral promises a test
+  or code trace; for concurrency promises the MECHANISM (G1 rule 4 v2.6), never the
+  transaction boundary. PORTABILITY: OSS PRs, SPI tickets, specs with normative claims.
+  Tier T1. State: active (owner 2026-09-03, seeding project).
+- **cross-layer-representability**, **capability-gate-outcome-surface**,
+  **miss-identity-precedence**, **lifecycle-parity (create/purge)**: already
+  generic-worded in the seeding project's charter (tag audit-charter.md rows); promote
+  verbatim dimension + scope template when a second domain derives them (lifecycle-parity
+  has a second-domain signal from a second adopting effort, 2026-09-04; promotion pending
+  its scope template). Seed-row states (rule 6): precedent-shape-parity active (owner
+  2026-09-04).
 
 ## Artifact class: submission-to-an-audience (v2, 2026-09-04)
 
@@ -122,7 +142,16 @@ Ready), i.e. the conformance charter was complete and this class did not exist.
   the plan defers is stated in the cover text with its consequence; (c) problem-before-
   mechanism — the cover text states the problem and the observable change before
   module structure; (d) precedent-shaped structure — commit granularity, tests and docs
-  follow the audience's precedent submission.
+  follow the audience's precedent submission; (e) series-consistency (v2.6) — for an
+  artifact that is one of a published series, every statement in the earlier published
+  artifacts (schema text, spec, docs) that this artifact's behavior touches agrees with
+  it; receipt = per-claim diff, run once before the artifact leaves Draft. Provenance:
+  an earlier public schema's wording disagreed with a later PR's behavior and no row owned
+  the pair.
+  Seed-row states (rule 6, recorded 2026-09-04/09-08): (a) active (audience receipt on a
+  precedent submission); (b) active (owner ruling 2026-09-04); (c) provisional;
+  (d) provisional (rule 3 as written; an instance may flip it by owner ruling);
+  (e) provisional.
 - **Cadence**: once per submission candidate (before it becomes visible), not per
   revision. PORTABILITY: OSS PRs; community design docs; internal PRs to a repo with
   its own reviewers (audience = those reviewers, norms = that repo's guide).

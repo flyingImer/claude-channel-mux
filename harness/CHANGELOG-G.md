@@ -1,5 +1,28 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.6 — 2026-09-08
+- G0 step 6: derived files are never hand-edited; changes travel inbox -> generic -> re-derive.
+  G9 T1 flag on instance edits without generic provenance. Provenance: instance-side boundary
+  clause (2026-09-04) that the next audit's escape (2026-09-06) traced back to.
+- G1 rule 4: concurrency claims need a MECHANISM receipt (lock / isolation / CAS / uniqueness);
+  a transaction boundary is not one.
+- G1 reconciliation rules 4-6: RULED-BEFORE carries the ruling's premise and whether the
+  finding attacks it (else QUESTION-TO-OWNER); serializability refutations must survive an
+  observer request consistent with real-time order; project-standards lint slot with a
+  `standards-lint:` close-out line.
+- G2 rule 6: library-row inheritance (state travels with the seed; owner nods once at the
+  library). Seed-row states recorded. concurrent-same-identity-writers boundary clause
+  rewritten to the observer form. stated-claims-vs-code promoted to a full seed row
+  (second domain: a second adopting effort). Submission seed (e) series-consistency.
+- G9: directive delivery receipt (transcript presence; re-deliver once; kickoff verified
+  before rotate_orchestrator); generated artifacts validated before use.
+- hooks/audit-report-validator.py: `premise:` on RULED-BEFORE; `standards-lint:` line
+  required; `F-<n>` ids parse. Self-test: see hooks/README.md (v2.6 cases).
+- Provenance: external round on the seeding project's third PR (2026-09-06, one reviewer P1
+  the blind audit missed) + DEVIATIONS-inbox entries of 2026-09-04..08 (delivery drops, exam
+  regen, library-row states, validator id regex). Not in this bump (CCM lane or effort-side):
+  outbound-gate heredoc/ref false positives, watchdog glob-without-wake, unit PATH/SIGPIPE.
+
 ## v2.5 — 2026-09-04
 - G9: single launcher binary. Daemon forwards CLAUDE_BIN into room settings env and
   watchdog units; launch-audit-room.sh and all harness one-shots use `${CLAUDE_BIN:-claude}`.

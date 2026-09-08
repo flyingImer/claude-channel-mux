@@ -7,17 +7,18 @@ Modes:
   --closeout C --findings F   validate a reconciliation close-out against its findings
 Findings block format (G1): '## F<n>' then '- Verdict:', '- Receipt:', '- Severity:' lines.
 Contract citation marker in receipts: 'C:' (G1 receipt prefixes T:/P:/C:).
-Rules: (a) receipt has C: and severity nit -> violation; (b) verdict not in
+Rules (v2.6 adds e,f,g): (a) receipt has C: and severity nit -> violation; (b) verdict not in
 {CONFIRMED,PLAUSIBLE,NOT_A_DEFECT} -> violation; (c) close-out: every finding id has a
 disposition in {FIX,RULED-BEFORE,NOT_A_DEFECT,QUESTION-TO-OWNER}; (d) PLAUSIBLE+C: findings'
-disposition line must carry CONFIRMED or REFUTED. Exit 2 + reasons on stderr when violated.
+disposition line must carry CONFIRMED or REFUTED; (e) RULED-BEFORE lines carry 'premise:'; (f) the
+close-out has a 'standards-lint:' line; (g) ids may be F<n> or F-<n>. Exit 2 + reasons on stderr when violated.
 """
 import os, re, sys
 
 def parse(path):
     blocks, cur = {}, None
     for line in open(path, errors="ignore"):
-        m = re.match(r"^## (F\d+)\b", line)
+        m = re.match(r"^## (F-?\d+)\b", line)
         if m: cur = m.group(1); blocks[cur] = {}; continue
         if cur:
             for k in ("Verdict", "Receipt", "Severity"):
@@ -47,6 +48,10 @@ def check_closeout(C, F):
         if b.get("Verdict", "").startswith("PLAUSIBLE") and contract_cited(b.get("Receipt", "")) \
            and not re.search(r"\b(CONFIRMED|REFUTED)\b", line):
             bad.append(f"{fid}: PLAUSIBLE + contract-cited must be resolved CONFIRMED/REFUTED before disposition (G1 v2 reconciliation rule 1)")
+        if "RULED-BEFORE" in line and not re.search(r"\bpremise:", line, re.I):
+            bad.append(f"{fid}: RULED-BEFORE without a 'premise:' clause naming the ruling's premise and whether this finding attacks it (G1 v2.6 reconciliation rule 4)")
+    if not re.search(r"^\s*standards-lint:", text, re.M | re.I):
+        bad.append("close-out lacks a 'standards-lint:' line (hit list or 'none declared'; G1 v2.6 reconciliation rule 6)")
     return bad
 
 def main():

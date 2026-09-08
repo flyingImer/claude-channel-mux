@@ -101,3 +101,21 @@ deferred stays CONTENT.
   Rationale: the launcher wrapper is where proxy routing, model aliases and prompt-cache
   TTL live; a bare `claude` silently escapes all three. Provenance: a seeding project's
   watchdog one-shots ran outside the wrapper for three weeks.
+
+- (v2.6) Derived-files rule (G0 step 6): T1 — the daily REVIEW flags any instance harness
+  file whose latest change cites no generic version or derivation note in its provenance
+  line; the fix is a deviation entry plus re-derivation, never a local patch.
+- (v2.6) Validator additions (hooks/audit-report-validator.py): HARD — (a) RULED-BEFORE
+  lines without a `premise:` token are rejected (G1 reconciliation rule 4); (b) a
+  close-out without a `standards-lint:` line is rejected (rule 6); (c) finding ids of the
+  form `F-<n>` parse like `F<n>` (a seeding project's close-out had to be checked by hand).
+- (v2.6) Directive delivery receipt: BOOT — a directive or kickoff counts as delivered only
+  when the receiving room's transcript shows it as a user turn; the sender re-delivers
+  once verbatim if it is absent after a bounded wait and records a deviation. Before
+  rotate_orchestrator, the kickoff must be present in the successor's transcript.
+  Provenance: a prompt-blocking plugin hook dropped three worker directives and one
+  orchestrator kickoff without any error reaching the sender (2026-09-04..06).
+- (v2.6) Generated artifacts are validated before use: BOOT — a watchdog that regenerates a
+  file from a model call (exam, digest) checks the body for the expected shape and keeps
+  the previous file on failure. Provenance: an exam regeneration accepted a hook-error
+  body as a valid exam (2026-09-06).
