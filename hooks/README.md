@@ -40,6 +40,14 @@ report validator, mirror-freshness PreToolUse guard, push-time leak-scan guard.
 ## outbound-gate.py (v2, 2026-09-04) — G9 HARD: no public-facing action without a close-out record
 PreToolUse on Bash. Env: CLAUDE_OUTBOUND_MANIFEST=/abs/manifest.json (effort-derived: public
 command patterns, close-out dir, optional ref_cmd, owner override token path, correction log).
-Install in every room that can push/create PRs (orchestrator rooms included). Self-test: see
-CHANGELOG-G.md v2 (5 cases: non-public allow / public block / record allow / token allow+log /
-missing manifest block).
+Install in every room that can push/create PRs (orchestrator rooms included). Self-test:
+`hooks/outbound-gate-selftest.sh` (v3, 2026-09-08: heredoc/grep/commit-message mentions allow;
+push blocks with the full sha; `git -C` and `cd`-prefixed pushes match and resolve the nested
+repo; quoted refspecs match; a >= 12-char prefix record admits only its own repo) plus the
+original 5 cases in CHANGELOG-G.md v2.
+
+## expectation-sweep.sh (v2.7) — G9 BOOT: a satisfied expectation is an event
+Called by the effort watchdog after its ACT/TRIAGE passes:
+`expectation-sweep.sh STATUS_DIR STAMP EXPECTATIONS_TSV ACT_RE TRIAGE_RE` prints
+`<file>\t<expectation id>\t<note>` for each changed status file that matches an expectation
+glob but neither regex; the watchdog triages each line as it would a TRIAGE file.

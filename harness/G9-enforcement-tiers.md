@@ -119,3 +119,19 @@ deferred stays CONTENT.
   file from a model call (exam, digest) checks the body for the expected shape and keeps
   the previous file on failure. Provenance: an exam regeneration accepted a hook-error
   body as a valid exam (2026-09-06).
+
+- (v2.7) Outbound gate v3: HARD — patterns match the command surface (heredoc bodies removed,
+  whitespace-bearing quoted strings blanked, pipeline stages tested individually, text-only
+  stage heads never match, `git -C <dir>` normalized so nested pushes cannot bypass); the
+  outbound ref resolves in the repo the stage acts on (`git -C`, preceding `cd`, push
+  `<src>`); records may be named by a >= 12-char sha prefix and the block message prints the
+  full sha. Self-test hooks/outbound-gate-selftest.sh. Provenance: two false-positive shapes
+  blocked a kickoff file and a legitimate publication (2026-09-04/05); the message's 12-char
+  hint could never match; `git -C` pushes never matched at all.
+- (v2.7) Expectation sweep: BOOT — every effort watchdog runs hooks/expectation-sweep.sh
+  after its ACT/TRIAGE passes; a changed status file matching any expectation glob is an
+  EVENT (triaged like TRIAGE), whatever its name. Provenance: an expectation was satisfied
+  silently by a file whose name matched neither regex (2026-09-04).
+- (v2.7) Audit tiers default (G1 rule 7): BOOT — code class at the orchestrator tier,
+  submission class one tier below; effort launch recipes derive both; owner override per
+  effort. Trial ruling 2026-09-08.

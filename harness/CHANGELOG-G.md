@@ -1,5 +1,17 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.7 — 2026-09-08
+- hooks/outbound-gate.py v3: command-surface matching (heredoc bodies, whitespace-bearing
+  quotes, per-stage, text-only heads excluded, `git -C` normalized); ref resolved in the
+  acted-on repo and from the push `<src>`; sha-prefix records; full sha in the block message.
+  hooks/outbound-gate-selftest.sh (11 cases).
+- hooks/expectation-sweep.sh + G9 rule: a status file matching an expectation glob is an event
+  regardless of name (effort watchdogs wire the call on derivation).
+- G1 rule 7: default audit tiers (code = orchestrator tier, submission = one below); owner
+  trial ruling 2026-09-08.
+- G2: lifecycle-parity (create/purge) promoted to a full seed row with its scope template.
+- Provenance: DEVIATIONS-inbox entries 2026-09-04/05 (two efforts) and the v2.6 round record.
+
 ## v2.6 — 2026-09-08
 - G0 step 6: derived files are never hand-edited; changes travel inbox -> generic -> re-derive.
   G9 T1 flag on instance edits without generic provenance. Provenance: instance-side boundary

@@ -52,7 +52,10 @@ audit stage a first-class design with independence guarantees.
    caller's global default, which in a fable-default environment is the most expensive tier.
    Launch only through `harness/launch-audit-room.sh`, which refuses to start without
    `--model` and records the model in `run-meta/launch.json`. The tier is the owner's choice
-   per artifact class (G9 lists it as HARD).
+   per artifact class (G9 lists it as HARD). (v2.7, owner ruling 2026-09-08, trial) Default
+   tiers: the code class runs the effort's orchestrator tier; the submission class runs one
+   tier below it (it audits cover text, not code). An effort records both in its launch
+   recipe by derivation; an owner may override per effort.
 
 ## Independence ladder (cheap -> expensive; climb only when the rung below leaks)
 

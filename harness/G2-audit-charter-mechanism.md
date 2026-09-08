@@ -111,12 +111,20 @@ own; a project row is promoted here only after it passes G0's portability test.
   or code trace; for concurrency promises the MECHANISM (G1 rule 4 v2.6), never the
   transaction boundary. PORTABILITY: OSS PRs, SPI tickets, specs with normative claims.
   Tier T1. State: active (owner 2026-09-03, seeding project).
+- **lifecycle-parity (create/purge)** (promoted v2.7; second domain: a second adopting
+  effort derived it 2026-09-04) — every durable thing the artifact creates or attaches
+  (schema objects, store slices, cached projections, relationships, grants) x every
+  removal entry point that must mirror it (delete, detach, tenant/realm purge, cascade on
+  parent drop); each cell = the removal covers the created thing, or names the orphan it
+  leaves and who hides it. Scope template: enumerate creations from the diff; per creation,
+  list each removal entry point of each backend and the receipt (test or trace) that it
+  reaches the thing. PORTABILITY: OSS features with entities, SPI tickets adding state,
+  specs that define both create and delete. Tier T0/T1 (graduates to a scripted check where
+  purge paths are enumerable). State: active (owner 2026-09-03, seeding project).
 - **cross-layer-representability**, **capability-gate-outcome-surface**,
-  **miss-identity-precedence**, **lifecycle-parity (create/purge)**: already
-  generic-worded in the seeding project's charter (tag audit-charter.md rows); promote
-  verbatim dimension + scope template when a second domain derives them (lifecycle-parity
-  has a second-domain signal from a second adopting effort, 2026-09-04; promotion pending
-  its scope template). Seed-row states (rule 6): precedent-shape-parity active (owner
+  **miss-identity-precedence**: already generic-worded in the seeding project's charter
+  (tag audit-charter.md rows); promote verbatim dimension + scope template when a second
+  domain derives them. Seed-row states (rule 6): precedent-shape-parity active (owner
   2026-09-04).
 
 ## Artifact class: submission-to-an-audience (v2, 2026-09-04)
