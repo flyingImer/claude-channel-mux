@@ -1,6 +1,6 @@
 # G9 — Enforcement tiers (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v2.1, 2026-09-04 (v1 draft 2026-09-01). Layer: GENERIC.
+Status: v2.8, 2026-09-08 (v1 draft 2026-09-01; v2.1 2026-09-04). Layer: GENERIC.
 
 ## The problem (the owner's diagnosis, confirmed)
 
@@ -76,6 +76,14 @@ deferred stays CONTENT.
   audited base, the dispositioned findings, and the delta-only-fixes verification. An
   owner override token file allows the action and appends a correction event. The
   script is generic; the effort derives the manifest (patterns, record dir, token path).
+  (v2.8 correction) Since v2.3 the daemon composes this hook into every room and the
+  script resolves the manifest from the room's own harness dir (`<harness dir>/
+  outbound.json`); nothing is installed per room by hand, and v2.1-era wiring in a repo's
+  `.claude/settings.json` must be removed (it runs the hook twice). A repository hosting
+  two efforts needs no shared manifest: each room resolves its own. Only an owner session
+  outside any room falls back to `CLAUDE_OUTBOUND_MANIFEST`; set it to a union manifest or
+  leave it unset. Provenance: two efforts in one repo merged manifests for a constraint
+  that no longer existed (2026-09-04).
 - G0 inheritance: BOOT — a generic version bump lands in each effort's deferred queue
   via its intake channel; the SessionStart reminder surfaces it until derived.
 - (v2.1) hooks/audit-report-validator.py LANDED: Stop hook on audit rooms
@@ -83,6 +91,8 @@ deferred stays CONTENT.
   on the seeding project's v12 audit flagged 8 of 15 "nit" findings as contract-cited
   (F6-F12, F20): the severity gap was systemic, not two items.
 - (v2.1) harness-sync.sh: BOOT — SessionStart in every effort; explicit via /harness-refresh.
+  (v2.8 correction) Since v2.3 the daemon composes the SessionStart check into every room and
+  files version-bump intakes itself; repo-level wiring is only for owner sessions outside rooms.
 - (v2.3) Charter class isolation: HARD — the audit-room launcher loads only rows whose
   `class:` equals the room's class and refuses rows without a class (script:
   hooks/charter-select.py; BOOT until it lands with the next audit room).
@@ -135,3 +145,13 @@ deferred stays CONTENT.
 - (v2.7) Audit tiers default (G1 rule 7): BOOT — code class at the orchestrator tier,
   submission class one tier below; effort launch recipes derive both; owner override per
   effort. Trial ruling 2026-09-08.
+
+- (v2.8, trial) Watchdog template: BOOT — `harness/watchdog-template.sh` is the one Tier-0
+  watchdog; an effort's `watchdog.sh` becomes a two-line wrapper that execs the template
+  with the effort's `watchdog.conf` (see `harness/watchdog.conf.example`). Built in: the
+  expectation sweep (v2.7), exam-body validation before replacement (v2.6), a last-seen stamp
+  that persists across restarts (events during a daemon restart are no longer aged out), a
+  run lock, `${CLAUDE_BIN:-claude}` for every one-shot, no PATH shim (the unit carries PATH).
+  `WATCHDOG_ONCE=1` runs one cycle for derivation smoke checks. Provenance: three effort
+  copies of one script had diverged (66 and 53 differing lines) and every fix needed three
+  derivations; the v2.7 sweep was wired three different ways in one afternoon.

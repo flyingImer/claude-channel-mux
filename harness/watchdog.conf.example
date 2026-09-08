@@ -1,0 +1,12 @@
+# Effort watchdog conf (harness v2.8). Sourced by harness/watchdog-template.sh. The effort's watchdog.sh is:
+#   #!/usr/bin/env bash
+#   exec bash "$(dirname "$(readlink -f "$0")")/generic-harness/watchdog-template.sh" "$(dirname "$(readlink -f "$0")")/watchdog.conf"
+STATUS_DIR=/abs/path/to/effort/status            # where rooms write NN-STATE*.md files
+ORCH_DIR=/abs/path/to/effort/orch                # expectations.tsv, ESCALATIONS.md, digest.md, .checks/, metrics/ live here
+# EXP=$ORCH_DIR/expectations.tsv                 # default
+# MET=$ORCH_DIR/metrics/fleet-ctx.csv            # default
+EXAM_SOURCES=("map (tail)|/abs/path/map.md|80" "ledger (tail)|$ORCH_DIR/ledger.md|40" "orchestrator rules|/abs/path/orchestrator.md|")
+REVIEW_CMD="bash $ORCH_DIR/eval.sh"              # produces the daily scorecard; "true" if the effort has none yet
+SOFT_CTX=700000; HARD_CTX=850000                 # rotation lines (tokens)
+ROTATION_DOC="ROTATION.md"; REPLACE_DOC="room-procedures §2"   # names quoted in ROTATE escalations
+# ACT_RE / TRIAGE_RE may be overridden when the effort's status vocabulary differs from the seeding one.

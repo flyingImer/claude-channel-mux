@@ -1,5 +1,17 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.8 — 2026-09-08
+- harness/watchdog-template.sh + watchdog.conf.example + WATCHDOG-TEMPLATE.md (trial): one generic
+  Tier-0 watchdog; efforts keep a two-line watchdog.sh wrapper and a conf. Adds a restart-safe
+  last-seen stamp, exam-body validation (v2.6 rule), the expectation sweep (v2.7), a run lock,
+  WATCHDOG_ONCE for smoke checks. Tested: events, triage, sweep, context fold, deadline, check,
+  review, exam reject/accept (stub LLM).
+- G9 corrections: Status line to v2.8; outbound-gate and harness-sync entries now describe the
+  v2.3+ daemon composition (no per-room install, remove v2.1 repo wiring, no shared manifest for
+  two-effort repos; owner sessions outside rooms use CLAUDE_OUTBOUND_MANIFEST or nothing).
+- Provenance: DEVIATIONS-inbox 2026-09-04 (shared manifest; G9 text stale) and the three
+  diverging watchdog copies observed 2026-09-08.
+
 ## v2.7 — 2026-09-08
 - hooks/outbound-gate.py v3: command-surface matching (heredoc bodies, whitespace-bearing
   quotes, per-stage, text-only heads excluded, `git -C` normalized); ref resolved in the
