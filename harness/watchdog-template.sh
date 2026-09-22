@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generic Tier-0 watchdog (harness v2.9). One script for every effort; the effort supplies a conf file.
+# Generic Tier-0 watchdog (harness v2.11). One script for every effort; the effort supplies a conf file.
 # usage: watchdog-template.sh <watchdog.conf>          (the effort's watchdog.sh is a thin wrapper: exec this)
 #        WATCHDOG_ONCE=1 watchdog-template.sh <conf>   (single cycle, for tests and derivation smoke checks)
 # Contract: the effort's WATCHDOG.md. Passive status-file events + expectation sweep + deadlines + active checks
@@ -8,6 +8,9 @@
 # model haiku. (v2.9) Takeover-exam regeneration is REMOVED (G10 rule 7): the self-graded exam never caught a
 # divergence in its measured lifetime; the independent ground-truth re-derivation step it duplicated stays in the
 # rotation procedure itself, not in this script.
+# (v2.11) The orchestrator burn row in $MET is keyed on the coordinating room's own SESSION id
+# (the transcript's own filename), not on a role label like "orch" that spans every generation:
+# a label spanning generations makes every rotation's burn indistinguishable in the metrics file.
 set -u
 CONF="${1:?usage: watchdog-template.sh <watchdog.conf>}"; [ -f "$CONF" ] || { echo "watchdog: conf not found: $CONF" >&2; exit 2; }
 # ---- conf keys (defaults) ----
@@ -104,7 +107,12 @@ while true; do
   if [ -n "${OT:-}" ] && [ -f "$OT" ]; then
     CTX=$(ctxof "$OT")
     if [ -n "${CTX:-}" ]; then
-      [ $((CYCLE % 40)) -eq 1 ] && echo "$(date -u +%FT%TZ),orch,$CTX" >> "$MET"
+      # (v2.11) key the burn row on the coordinating room's own session id (its transcript's
+      # filename, sans extension) so it changes every rotation instead of reusing "orch" across
+      # every generation (G10 rule 3 provenance: a role label spanning generations made the
+      # metric unable to distinguish one generation's burn from the next's).
+      SID=$(basename "$OT"); SID=${SID%.*}
+      [ $((CYCLE % 40)) -eq 1 ] && echo "$(date -u +%FT%TZ),$SID,$CTX" >> "$MET"
       if [ "$CTX" -ge "$HARD_CTX" ] && ! grep -qxF HARD "$FL"; then esc ROTATE hard-line "orch context $CTX >= $HARD_CTX: no new waves, rotate now ($ROTATION_DOC)"; echo HARD >> "$FL"; fi
       if [ "$CTX" -ge "$SOFT_CTX" ] && ! grep -qxF SOFT "$FL"; then esc ROTATE soft-ceiling "orch context $CTX >= $SOFT_CTX: rotate at next wave boundary ($ROTATION_DOC)"; echo SOFT >> "$FL"; fi
     fi

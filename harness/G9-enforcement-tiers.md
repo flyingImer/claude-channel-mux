@@ -1,6 +1,7 @@
 # G9 — Enforcement tiers (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v2.10, 2026-09-22 (v2.9 2026-09-22; v1 draft 2026-09-01; v2.1 2026-09-04). Layer: GENERIC.
+Status: v2.11, 2026-09-22 (v2.10 2026-09-22; v2.9 2026-09-22; v1 draft 2026-09-01; v2.1
+2026-09-04). Layer: GENERIC.
 
 ## The problem (the owner's diagnosis, confirmed)
 
@@ -234,3 +235,72 @@ it, so a separate guard would have no measured target left.
   Provenance: the derivation-quality gap observed at the first intake of this harness's
   own previous bump (see CHANGELOG-G.md v2.10) — three hook-bearing items closed on
   disposition words and undated deferrals, none receipted.
+
+## v2.11 additions (2026-09-22)
+
+- (v2.11) Save-game prepend detection (G10 rule 6, refined): HARD/BOOT — unchanged tier;
+  `hooks/save-game-validator.py` now fails only when the last passing line 1 (or its
+  leading 200B) is found verbatim at a positive offset inside the new line 1 — old
+  content sitting BEHIND new text, the actual signature of a prepend. A whole rewrite
+  that is merely longer, with no old text reused deeper in the line, now passes. Self-test:
+  `hooks/save-game-validator-selftest.sh` (adds: a longer whole-rewrite passes; a true
+  prepend fails and names the offset; an identical line 1 still passes). Provenance: two
+  DEVIATIONS-inbox receipts (2026-09-22) — a legitimate longer rewrite rejected and
+  trimmed to pass once, and a second instance of the same false positive on a
+  whole-rewrite takeover line, on the same day.
+- (v2.11) Outbound gate v4 (generalized public-action detection): HARD — unchanged tier;
+  `hooks/outbound-gate.py` no longer relies on the effort's `public_patterns` alone to
+  recognize a public action. `git push`, `gh pr create|edit`, and `gt submit` are public
+  BY DEFAULT: for `gh pr create|edit`/`gt submit` unconditionally, for `git push` unless
+  the resolved remote is a local filesystem path (no `scheme://`, no `user@host:`)
+  and — even then — only when the manifest does not flag that specific remote private
+  via a new `private_remotes` key. `public_patterns` keeps working as an additional,
+  effort-declared match. Self-test: `hooks/outbound-gate-selftest.sh` (adds: a push to a
+  non-local https remote with a branch name absent from any manifest pattern still
+  gates; a push to a local filesystem path remote does not). Provenance: DEVIATIONS-inbox
+  (2026-09-22) — a manifest whose `public_patterns` only named known branch names let a
+  push on an unlisted branch through with no close-out record.
+- (v2.11, G10 rule 9, new) Shared host-resource isolation: BOOT — judged at directive
+  time, the same category as G10 rule 1 (arming a watch is a choice the room makes, not
+  something a hook can force); no generic hook exists yet that can tell a legitimate
+  resource-specific stop from a host-wide one across arbitrary resource types, so this
+  stays BOOT until a lease-file convention is standardized enough to gate on. Receipt: the
+  directive names the per-room isolation knob or the lease file for the shared resource it
+  assigns. Provenance: DEVIATIONS-inbox (2026-09-22) — one room's routine stop of a shared,
+  per-user build daemon killed a second room's running test gate three separate times.
+- (v2.11, G10 rule 10, new) Time-sensitive state travels with the transmission: BOOT —
+  directive-authoring procedure text; the property being enforced (absence of a
+  bounded-window claim from a file's own text) is not something a static analysis of the
+  file alone can certify, since the rule is about which channel carries the live value,
+  not about the file's contents in isolation. Receipt: the delivery transmission, not the
+  directive file, carries the live value of every time-sensitive fact at send time.
+  Provenance: a daily review's tuning proposal (2026-09-22) — a directive file said "run
+  nothing until gates free" while the transmission delivering it, sent later, said gates
+  were free as of send; the two disagreed and the receiving room had to notice and choose.
+- (v2.11) Successor boot tiering clarification (G10 rule 3): BOOT — unchanged tier; the
+  rule's existing receipt (context-at-checkpoint in the takeover row) is unchanged. Tier A
+  is now stated as exactly four file classes (save-game, head-state, kickoff, log tail);
+  contract/spec sections and older head-state items move to index-only, read at the FIRST
+  judgment that needs them, named in the kickoff with a "read when <trigger>" note.
+  Provenance: a daily review's tuning proposal (2026-09-22) — a successor's boot read
+  order opened the full contract/spec text and a large head-state backlog before the
+  day's first judgment needed any of it, tracking a multi-generation rise in boot cost at
+  a fixed early checkpoint.
+- (v2.11) Watchdog burn-row keying: BOOT — template composition, the same tier as the
+  v2.8 watchdog template itself; `harness/watchdog-template.sh` keys the `$MET` burn row
+  for the coordinating room on that room's own session id (its transcript's filename),
+  read live from the `#orch_transcript=` row every cycle, instead of a fixed "orch" label
+  that spans every generation. `WATCHDOG-TEMPLATE.md` and `watchdog.conf.example` also
+  now say an instance's own scorecard must drop any row reporting the takeover exam,
+  since that instrument carries no code path as of v2.9. Tested: `bash -n` clean, plus a
+  `WATCHDOG_ONCE=1` smoke cycle against a fixture transcript confirming the metrics row
+  is keyed by the transcript's own name, not the literal string "orch". Provenance: a
+  daily review's tuning proposal (2026-09-22) — a burn-row label spanning every
+  generation read as a flat, uninformative figure, and a scorecard kept reporting a row
+  for an instrument already removed.
+
+Not taken in this bump: a mechanical hook for G10 rule 9 (shared host-resource
+isolation) — no receipt yet exists for what a generic lease-file convention should look
+like across resource types (a build daemon and a port are not interchangeable), so
+writing a hook now would be guessing at a shape; revisit once an instance derives a
+concrete lease convention and the guess can be checked against it.

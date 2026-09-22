@@ -1,4 +1,4 @@
-# Watchdog template (harness v2.9)
+# Watchdog template (harness v2.11)
 
 One Tier-0 watchdog for every effort: `harness/watchdog-template.sh <watchdog.conf>`.
 
@@ -28,7 +28,15 @@ Monitors, eval scripts) keep working.
 result in most sampled rotations, was skipped in the rest, and never once caught a divergence in
 its measured lifetime. The independent ground-truth re-derivation step it duplicated (the
 successor re-verifies live state against the system of record) is NOT in this script — it belongs
-to the rotation procedure itself and stays there.
+to the rotation procedure itself and stays there. Since the instrument is gone, an effort's own
+scorecard (REVIEW_CMD's output) must not carry an EXAM-derived row either — a row for an
+instrument that no longer runs is dead and reads as if it were still measuring something.
+
+(v2.11) The `$MET` burn row for the coordinating room is keyed on that room's own SESSION id (its
+transcript's filename, no extension), read fresh from `#orch_transcript=` every cycle, never on a
+fixed role label such as "orch": a label spanning every generation makes one generation's burn
+indistinguishable from the next's in the metrics file. This is automatic (no conf key to set) —
+whatever session is currently named in the `#orch_transcript=` row is the id that lands in `$MET`.
 
 Not in the template: effort-specific one-shots (custom checks belong in `#check=` rows) and
 per-room hooks (the daemon composes those).

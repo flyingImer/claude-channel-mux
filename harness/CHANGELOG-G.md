@@ -1,5 +1,62 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.11 — 2026-09-22
+- **`hooks/save-game-validator.py` (G10 rule 6, refined).** Rule (a) no longer flags a
+  line 1 for merely being longer than the last passing one. It fails only when the last
+  passing line 1 (or its leading 200B) is found verbatim at a positive offset inside the
+  new line 1 — old content surviving BEHIND newly added text, the actual shape of a
+  prepend. A whole rewrite that adds a fact and is simply longer, with no old text reused
+  deeper in the line, now passes. Size cap (b) is unchanged. Self-test adds: a longer
+  whole-rewrite passes; a true prepend fails and names the offset; an identical line 1
+  still passes.
+- **`hooks/outbound-gate.py` v4 (generalized public-action detection).** Detection no
+  longer depends on an effort's own branch-name patterns. `git push`, `gh pr create|edit`,
+  and `gt submit` are public BY DEFAULT: unconditionally for the latter two, and for
+  `git push` whenever the resolved remote is not a local filesystem path (no `scheme://`,
+  no `user@host:`). A new manifest key `private_remotes` exempts a specific non-local
+  remote; the existing `public_patterns` keeps working as an additional, effort-declared
+  match. Self-test adds: a push to a non-local https remote on a branch name absent from
+  any manifest pattern still gates; a push to a local filesystem path remote does not.
+- **G10 rule 9 (new): shared host-resource isolation.** A host resource with cross-room
+  blast radius (a per-user build daemon, a shared cache, a port) is used only behind a
+  per-room isolation knob or a lease; a room never issues a host-wide stop/kill of a
+  resource it does not exclusively own. Receipt: the directive names the isolation knob
+  or lease file. Tier BOOT (no generic hook yet — see "not taken" below).
+- **G10 rule 10 (new): time-sensitive state travels with the transmission.** A
+  bounded-window fact (a gate is free, a lock is held, "run nothing until X") is stated
+  authoritatively only in the transmission that delivers a directive at send time, never
+  solely in the directive file's own text, since a file cannot know when it will be read.
+  Receipt: the delivery transmission carries the live value at send time. Tier BOOT.
+- **G10 rule 3 (successor boot tiering), clarified.** Tier A is stated as exactly four
+  file classes (save-game, head-state, kickoff, log tail); contract/spec sections and
+  older head-state items are index-only at boot, read at the first judgment that needs
+  them, and the kickoff names each by name with a "read when \<trigger\>" note. Receipt
+  unchanged (context-at-checkpoint in the takeover row).
+- **`harness/watchdog-template.sh`**: the `$MET` burn row for the coordinating room is
+  now keyed on that room's own session id (its transcript's filename, read live from
+  `#orch_transcript=`), never on a fixed role label spanning every generation.
+  `WATCHDOG-TEMPLATE.md` and `watchdog.conf.example` updated to match, and both now say
+  an instance's own scorecard must drop any row for the takeover exam (no code path since
+  v2.9). `bash -n` clean; `WATCHDOG_ONCE=1` smoke cycle against a fixture transcript
+  confirms the metrics row is keyed by the transcript's own name.
+- **G9**: v2.11 additions section maps all seven items above to tiers (two unchanged —
+  HARD for the two hook refinements — five newly declared: BOOT for both new G10 rules,
+  BOOT for the rule-3 clarification, BOOT for the watchdog burn-row change). One item
+  explicitly logged as NOT taken rather than silently dropped (a mechanical hook for
+  G10 rule 9 — see below).
+- Not taken in this bump: a mechanical hook for G10 rule 9 (shared host-resource
+  isolation) — no generic lease-file convention yet exists across resource types (a
+  build daemon and a port are not interchangeable), so a hook now would be guessing at a
+  shape; revisit once an instance derives a concrete convention to check against.
+- Provenance: three DEVIATIONS-inbox entries and one follow-up receipt (2026-09-22) — a
+  manifest whose public-action patterns only named known branch names let a push on an
+  unlisted branch through with no close-out record; a shared, per-user build daemon's
+  routine stop killed a second room's running test gate three times; a save-game
+  validator false-positive on a legitimate longer rewrite, observed twice the same day.
+  Plus a daily framework review's tuning proposals (2026-09-22): successor boot-tiering
+  granularity, directive time-sensitive state living in the transmission rather than the
+  file, and dropping/re-keying two dead or uninformative scorecard rows.
+
 ## v2.10 — 2026-09-22
 - **G0: derivation receipts.** An intake item that ships a hook/script/validator is
   derived only when the derivation note carries, for that instance, a receipt: the

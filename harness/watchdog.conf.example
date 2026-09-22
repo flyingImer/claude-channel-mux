@@ -1,4 +1,4 @@
-# Effort watchdog conf (harness v2.9). Sourced by harness/watchdog-template.sh. The effort's watchdog.sh is:
+# Effort watchdog conf (harness v2.11). Sourced by harness/watchdog-template.sh. The effort's watchdog.sh is:
 #   #!/usr/bin/env bash
 #   exec bash "$(dirname "$(readlink -f "$0")")/generic-harness/watchdog-template.sh" "$(dirname "$(readlink -f "$0")")/watchdog.conf"
 STATUS_DIR=/abs/path/to/effort/status            # where rooms write NN-STATE*.md files
@@ -18,4 +18,9 @@ DECISION_SLA_HOURS=24
 DEVIATIONS_INBOX=/abs/path/to/DEVIATIONS-inbox.md
 # (v2.9, G10 rule 7) Takeover-exam regeneration and EXAM_SOURCES/EXAM_MIN_* keys are REMOVED: the self-graded
 # exam never caught a divergence and is cut from this template. If an instance still has EXAM_SOURCES set from
-# a pre-v2.9 conf, it is now inert; delete the key on next derivation.
+# a pre-v2.9 conf, it is now inert; delete the key on next derivation. Since the instrument no longer runs,
+# REVIEW_CMD's own scorecard output must not carry an EXAM-derived row either -- drop it on next derivation.
+# (v2.11) No new key: the $MET burn row for the coordinating room is now keyed on the session id read live
+# from the #orch_transcript= row (its transcript's own filename), not on a fixed "orch" label. Nothing to set
+# here; an instance whose eval.sh/scorecard keys off the literal "orch" label in $MET should read by session
+# id instead on next derivation.

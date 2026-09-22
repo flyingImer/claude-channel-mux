@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-test for hooks/outbound-gate.py (v3). Creates throwaway repos under $TMPDIR; prints PASS/FAIL per case.
+# Self-test for hooks/outbound-gate.py (v4). Creates throwaway repos under $TMPDIR; prints PASS/FAIL per case.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"; gate="$here/outbound-gate.py"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
@@ -29,3 +29,12 @@ grep -q "$N" "$T/err" && echo "PASS quoted refspec resolved the nested ref" || e
 printf 'audited base: x\n' > "$T/closeouts/${N:0:12}-v1.md"
 run 0 "12-char prefix record admits the nested push"    "git -C nested push origin main"
 run 2 "prefix record for nested does not admit wrapper" "git push origin main"
+
+# (v4) generic detection: a push is public because its REMOTE is not a local path, never
+# because a branch name happened to be on some effort-specific list -- the manifest's
+# public_patterns above matches neither command (no literal "origin"), so only the
+# built-in remote-locality check can be gating/exempting here.
+run 2 "push to a non-local (https) remote is gated by default, whatever the branch" \
+  "git push https://example.com/fake/repo.git some-unrelated-topic-branch"
+run 0 "push to a local filesystem path remote is not gated" \
+  "git push $T/localremote some-unrelated-topic-branch"

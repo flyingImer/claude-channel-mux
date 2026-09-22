@@ -1,6 +1,6 @@
 # G10 — Orchestrator lifecycle discipline (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v1, 2026-09-22 (harness v2.9). Layer: GENERIC.
+Status: v2, 2026-09-22 (harness v2.11; v1 2026-09-22, harness v2.9). Layer: GENERIC.
 
 ## Problem this mechanism solves
 
@@ -82,12 +82,24 @@ at a fixed early checkpoint (e.g. +25 minutes) in its takeover record, against a
 stated relative to the static prefix (skills/CLAUDE.md/plugin boot cost), never as a
 bare absolute.
 
+**Clarification (v2).** Tier A — the material read IN FULL at boot — is exactly four
+file CLASSES: the save-game, the head-state file, the kickoff pointer, and a bounded
+tail of the durable decision/event log (the same four the rule above already names; this
+clarifies what does NOT belong in that set). Contract/spec sections and older head-state
+items are index-only at boot: the kickoff lists each of them BY NAME next to a "read
+when <trigger>" note, and the successor opens the named material only once a real
+judgment actually needs it, never earlier because it "might". This narrows a wider
+practice — reading contract/spec material before judging anything AGAINST it — to mean
+before that specific judgment, not before all work of any kind.
+
 **Receipt.** The takeover record's context-at-checkpoint line, present for every
 rotation, compared against the stated target.
 
 **Forbids.** A boot read order that opens index-only material in full "just in case";
 treating the tier boundary as advisory once a successor already has a large window —
-the point is boot COST, not boot capacity.
+the point is boot COST, not boot capacity; a kickoff that lists an index-only section
+without a "read when" trigger (an untriggered listing is read at boot by default, which
+defeats the tiering).
 
 **Origin.** Boot context at the fixed early checkpoint rose from a baseline to a
 substantially higher mean and an even higher peak across generations, before any actual
@@ -221,10 +233,74 @@ window.
 marker", not to any specific messaging surface; applies to any watchdog with a
 per-packet identifier, whatever the transport underneath it.
 
+## 9. Shared host-resource isolation
+
+**Rule.** A host resource with cross-room blast radius — a per-user build daemon, a
+shared cache, a port, anything one room's stop/reset/kill can affect for a room that
+never touched it — is used only behind a per-room isolation knob (a per-room home for
+the daemon, a separate cache path, a distinct port) or a lease (a file one room holds
+while using the resource, that a second room checks before touching it). A room never
+issues a host-wide stop/kill/reset of a resource it does not exclusively own; a
+directive that asks a room to use such a resource names the isolation knob or the lease
+file it must use, not just the resource.
+
+**Receipt.** The directive that assigns the resource to a room names, in text, either
+the per-room isolation knob (e.g. a per-room daemon home path) or the lease file path;
+a directive naming neither is incomplete, whatever else it says about the resource.
+
+**Forbids.** A room-side convention of "stop the shared daemon before I use it, start it
+after" with no isolation or lease, since a second room running the identical convention
+concurrently stops the first room's still-running use; a host-wide command (stop-all,
+kill-by-name) issued to free a resource for one room when the command's blast radius is
+not scoped to that room alone.
+
+**Origin.** One room's routine per-compile stop of a shared, per-user build daemon
+killed a second room's already-running test gate three separate times, because the
+daemon has host/user scope, not per-room scope, and no isolation or lease existed to
+keep one room's cleanup step from reaching into another room's in-flight work.
+
+**Overfit check.** Names no specific daemon, cache, or port; the mechanism (isolation
+knob OR lease, named in the directive, never a bare host-wide stop) applies to any
+shared host resource two concurrently running rooms could otherwise contend for.
+
+## 10. Time-sensitive state travels with the transmission, never the file alone
+
+**Rule.** A fact that is only true for a bounded window — a gate is free right now, a
+lock is held, "run nothing until X clears" — is stated authoritatively only in the
+transmission that DELIVERS a directive at send time (the message or pointer the sender
+fills in when handing the directive over), never solely in the directive file's own
+text. A directive file is read whenever its recipient gets to it, including much later
+than when it was written or after a second transmission has updated the same claim; a
+file cannot know when it will be read, so it cannot carry a claim whose truth depends on
+when reading happens. When a directive file states time-sensitive status at all, the
+transmission's own statement at delivery time is the one that governs if the two ever
+disagree.
+
+**Receipt.** The delivery transmission (not the directive file) contains the live
+value of every time-sensitive fact the directive depends on, timestamped at send time.
+
+**Forbids.** Writing "run nothing until <condition>" (or any other bounded-window claim)
+into a directive file's own text as its sole statement; treating a directive file's
+static claim as still authoritative once a later transmission has restated the same
+fact differently, instead of treating the later transmission as the current truth.
+
+**Origin.** A directive file's own text said to run nothing until a shared gate was
+free, while the transmission that delivered it — sent later than the file was written —
+said the gate was free as of the send. The two disagreed about the same fact; the
+receiving room had to notice the disagreement and resolve it by taking the later
+transmission over the file, which worked here only because that room happened to check
+both and flag the conflict.
+
+**Overfit check.** Names no specific gate, lock, or build tool; any handoff where a
+directive is authored once but delivered (or re-delivered) at a different, later moment
+applies this unchanged — the distinction is send-time transmission vs. static file, not
+any particular resource.
+
 ## Relationship to the rest of the harness
 
-Items 1-7 concern the coordinating room's own continuity; they compose with, but do not
-replace, G7 (deferred-work queue: work identified but not yet executed) and get their
-tier declarations from G9. Whether the harness's own learning loop is actually being fed
-— the second half of the measured problem behind item 8 — is a G4 (learning substrate)
-rule, not repeated here; see G4's inbox-touch check.
+Items 1-7, 9 and 10 concern the coordinating room's own continuity and its directives to
+other rooms; they compose with, but do not replace, G7 (deferred-work queue: work
+identified but not yet executed) and get their tier declarations from G9. Whether the
+harness's own learning loop is actually being fed — the second half of the measured
+problem behind item 8 — is a G4 (learning substrate) rule, not repeated here; see G4's
+inbox-touch check.
