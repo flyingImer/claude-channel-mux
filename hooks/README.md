@@ -75,3 +75,22 @@ Not separate hook scripts: both live in `harness/watchdog-template.sh` itself so
 every cycle unconditionally. See `harness/WATCHDOG-TEMPLATE.md` and
 `harness/watchdog.conf.example` (`DECISIONS_DIR`, `DECISION_SLA_HOURS`,
 `DEVIATIONS_INBOX`).
+
+## derivation-check.py (v2.10) — G9 T1: G0 derivation receipts
+`derivation-check.py NOTE VERSION [--changelog PATH]` parses the named CHANGELOG-G.md
+version section (default changelog: `harness/CHANGELOG-G.md` next to this dir) for items
+naming a `hooks/*.py`, `hooks/*.sh`, or `watchdog-template.sh` file, then checks NOTE for
+a matching line `receipt: <path> | <command> | rc=<n> | <quoted output>` per hook,
+matched by basename (the instance's wired path will usually differ from the generic
+`hooks/<name>` path the changelog names). It does not read disposition wording at all —
+"already covered", "already as policy", "in spirit", and "record item" carry no path and
+no run, so a receipt's absence is the only signal it checks. Exit 0 when every
+hook-bearing item in the section is receipted; exit 2 listing the missing ones with the
+changelog line that introduced each; exit 3 when NOTE or the version section cannot be
+read (fail loud, never a silent pass). Wired into the daily REVIEW's re-scan of every
+derivation note written since the previous review (G9 v2.10 additions). Self-test:
+`hooks/derivation-check-selftest.sh` (a receipted note passes; a note in the "already as
+policy" / "record item" shape with no receipts fails and names every missing hook; a
+partially-receipted note lists only the still-missing ones; a version section naming no
+hook passes trivially even against an empty note; a missing note or version section
+fails loud with exit 3).

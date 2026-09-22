@@ -1,6 +1,6 @@
 # G9 — Enforcement tiers (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v2.9, 2026-09-22 (v1 draft 2026-09-01; v2.1 2026-09-04). Layer: GENERIC.
+Status: v2.10, 2026-09-22 (v2.9 2026-09-22; v1 draft 2026-09-01; v2.1 2026-09-04). Layer: GENERIC.
 
 ## The problem (the owner's diagnosis, confirmed)
 
@@ -214,3 +214,23 @@ measured by any of the nine items above. A task-notification size guard — the
 measurement behind it turned out to be an artifact of the owner-wait watch duplication
 (item 1), not an independent problem; fixing item 1 removes the signal that motivated
 it, so a separate guard would have no measured target left.
+
+## v2.10 additions (2026-09-22) — G0: derivation receipts
+
+- (v2.10) Derivation-receipt rule: T1 — the daily REVIEW re-scans every derivation note
+  written since the previous review with `hooks/derivation-check.py NOTE VERSION`
+  against the CHANGELOG-G.md version section the note claims to derive. A note that
+  closes a hook-bearing item without a `receipt:` line for that hook (the script's path
+  as wired, the command run, its exit code, one quoted output line), or that carries an
+  undated deferral for one, or that restates a threshold/policy the generic rule under
+  derivation has superseded, is a T1 deviation. Fixed by a follow-up derivation note that
+  supplies the missing receipt, never by editing the flagged note in place (same
+  non-hand-edit discipline as the G0 step-6 mapping above). Script:
+  `hooks/derivation-check.py` (parses hook-bearing items out of a named CHANGELOG-G.md
+  section; exit 2 lists the missing receipts; exit 3 when the note or the section cannot
+  be read — fail loud, never a silent pass). Self-test:
+  `hooks/derivation-check-selftest.sh` (a receipted note passes; a note in the "already
+  as policy" / "record item" shape, with no receipt, fails and names the missing hook).
+  Provenance: the derivation-quality gap observed at the first intake of this harness's
+  own previous bump (see CHANGELOG-G.md v2.10) — three hook-bearing items closed on
+  disposition words and undated deferrals, none receipted.

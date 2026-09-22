@@ -1,7 +1,7 @@
 # G0 — Derivation protocol (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v2.1, 2026-09-04 (v1 draft 2026-09-01). Layer: GENERIC. This is the entry mechanism: how any
-project orchestrator adopts generic mechanisms without the generic layer coaching it.
+Status: v2.10, 2026-09-22 (v2.1 2026-09-04; v1 draft 2026-09-01). Layer: GENERIC. This is the entry
+mechanism: how any project orchestrator adopts generic mechanisms without the generic layer coaching it.
 
 ## Roles, sharply
 
@@ -102,3 +102,45 @@ generic layer must survive it. Therefore:
    is a branch in this repo proposing v(N+1) with per-change provenance and portability
    notes. The owner's nod merges and tags; the SessionStart check then propagates it to
    every effort. No standing "harness session" exists in this design.
+
+## Derivation receipts (v2.10, 2026-09-22)
+
+**Rule.** Protocol step 3 (record a derivation note) is amended for any intake item that
+ships a hook, script, or validator (a HOOK-BEARING item). Such an item is derived only
+when the note carries, for the deriving instance, a receipt: the script's path as wired
+into this instance, the exact command run, its exit code, and one quoted line of its
+output. "Already covered", "already as policy", "in spirit", and "record item" are not
+valid dispositions for a hook-bearing item — none of them names a wired path or a run,
+so none is evidence the mechanism actually exists in the instance. A deferral is valid
+only when it names a dated trigger (a specific future event, never "next gen" or
+"later"); it is re-checked against that trigger at the next daily REVIEW, not left open
+indefinitely. An item whose derived instance text contradicts the generic rule it claims
+to derive from — for example restating a threshold, policy, or exception the current
+G-doc has superseded — is NOT derived, receipt or not: a receipt proves a script ran, not
+that the note describing it is correct. Non-mechanical items (no script attached) keep
+today's step-3 rule as-is; this amendment narrows only the hook-bearing case.
+
+**Receipt.** The derivation note's own `receipt:` line(s), one per hook-bearing item; the
+daily REVIEW's re-scan result for every note written since the previous review.
+
+**Mechanical check.** `hooks/derivation-check.py NOTE VERSION [--changelog PATH]` parses
+the named CHANGELOG-G.md version section for items naming a `hooks/*.py`, `hooks/*.sh`,
+or `watchdog-template.sh` file, then checks the derivation note for a matching
+`receipt: <path> | <command> | rc=<n> | <quoted output>` line per hook. Exit 0 when every
+hook-bearing item in that section is receipted in the note; exit 2 listing the missing
+ones; exit 3 when the note or the version section cannot be read (fail loud, never a
+silent pass). Tier: HARD once wired as a gate at derivation-note-write time; BOOT (daily
+REVIEW re-scan) until then (G9).
+
+**Forbids.** Closing a hook-bearing item with any of the four invalid dispositions above;
+an undated deferral; instance text that restates a generic threshold or policy the rule
+under derivation no longer states.
+
+**Origin.** The mechanism this very rule amends was itself first derived without a
+receipt: an intake closed three hook-bearing items using a disposition word and an
+undated "record item" deferral apiece, none of the three naming a wired path or a run,
+and one disposition text restated a numeric threshold that the rule it was deriving from
+does not use.
+
+**Overfit check.** States no specific hook, G-rule, or adopting domain; applies to any
+G0 intake that ships a script, whatever the mechanism or the effort deriving it.

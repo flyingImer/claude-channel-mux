@@ -1,5 +1,33 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.10 — 2026-09-22
+- **G0: derivation receipts.** An intake item that ships a hook/script/validator is
+  derived only when the derivation note carries, for that instance, a receipt: the
+  script's path as wired, the command run, its exit code, and one quoted output line.
+  "Already covered", "already as policy", "in spirit", and "record item" are not valid
+  dispositions for a hook-bearing item; a deferral must name a dated trigger and is
+  re-checked at the next daily REVIEW. A derivation whose instance text contradicts the
+  generic rule it derives from (e.g. restating a superseded threshold) is not derived
+  regardless of receipt. Non-mechanical items keep the existing protocol step-3 rule.
+- **G9**: T1 deviation for a derivation note that closes a hook-bearing item without a
+  receipt; the daily REVIEW re-scans every derivation note written since the last review
+  with the checker below.
+- `hooks/derivation-check.py` (+ `hooks/derivation-check-selftest.sh`): `NOTE VERSION
+  [--changelog PATH]` — parses the named CHANGELOG-G.md version section for items naming
+  a `hooks/*.py`, `hooks/*.sh`, or `watchdog-template.sh`, and checks the derivation note
+  for a matching `receipt: <path> | <command> | rc=<n> | <quoted output>` line per hook.
+  Exit 0 when every hook-bearing item has one, exit 2 listing the missing items, exit 3
+  when the note or the version section cannot be read (fail loud, never a silent pass).
+  `python3 -m py_compile` clean; self-test covers a receipted note (exit 0) and a note in
+  the "already as policy" / "record item" shape (exit 2).
+- Not taken in this bump: nothing else. The v2.9 observation window — whether the eight
+  G10 items actually reduce owner-wait cost and rotation-boot growth — is still running;
+  this bump does not touch it.
+- Provenance: the derivation-quality gap observed at the first intake of the v2.9 bump —
+  three hook-bearing items closed with a disposition word and an undated "record item"
+  deferral instead of a receipt, one of them restating a threshold number that the rule
+  it was deriving from does not use.
+
 ## v2.9 — 2026-09-22
 - **G10 (new): orchestrator lifecycle discipline.** G1-G9 governed rooms; nothing governed
   the standing coordinating room's own continuity (wait, rotate, boot, hold-cycle,
