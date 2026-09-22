@@ -1,11 +1,12 @@
-# Watchdog template (harness v2.8, trial)
+# Watchdog template (harness v2.9)
 
 One Tier-0 watchdog for every effort: `harness/watchdog-template.sh <watchdog.conf>`.
 
-Derivation (the effort's delta on the v2.8 intake):
+Derivation (the effort's delta on the v2.9 intake):
 1. Write `<harness dir>/watchdog.conf` from `harness/watchdog.conf.example` (STATUS_DIR, ORCH_DIR,
-   EXAM_SOURCES, REVIEW_CMD, budgets, doc names; override ACT_RE/TRIAGE_RE only if the effort's
-   status vocabulary differs).
+   REVIEW_CMD, budgets, doc names, DECISIONS_DIR/DECISION_SLA_HOURS, DEVIATIONS_INBOX; override
+   ACT_RE/TRIAGE_RE only if the effort's status vocabulary differs). Drop any pre-v2.9
+   EXAM_SOURCES/EXAM_MIN_* keys — they are inert (G10 rule 7).
 2. Replace `<harness dir>/watchdog.sh` with the two-line wrapper shown in the example header. The
    daemon-owned unit keeps running `watchdog.sh`, so the entry point does not change; editing the
    file restarts the unit.
@@ -16,10 +17,18 @@ Derivation (the effort's delta on the v2.8 intake):
 What the template does per cycle: (1) terminal/ask status files -> ESCALATIONS; (2) confirmation
 files -> haiku triage against expectation rows; (3) expectation sweep (any other changed file
 matching an expectation glob is an event); (4) deadline sweep; (5) active checks from
-`#check=` rows; (6) context budgets + metrics; (7) exam regeneration, validated (size, Q-count,
-no error body) before it replaces EXAM.md; (8) daily REVIEW via REVIEW_CMD; (9) hourly GC with
-conservation checks. Escalation and digest line formats are unchanged from the seeding effort's
-watchdog, so existing readers (orchestrator Monitors, eval scripts) keep working.
+`#check=` rows; (6) context budgets + metrics; (7) decision-packet SLA (`#decision=` rows,
+G10 rule 8) — escalates once per id past DECISION_SLA_HOURS unless answered; (8) daily REVIEW via
+REVIEW_CMD, plus an inbox-touch check (G4) that escalates once if DEVIATIONS_INBOX's mtime has not
+advanced since the previous REVIEW; (9) hourly GC with conservation checks. Escalation and digest
+line formats are unchanged from the seeding effort's watchdog, so existing readers (orchestrator
+Monitors, eval scripts) keep working.
+
+(v2.9) Takeover-exam regeneration is REMOVED (G10 rule 7): the self-graded exam scored a perfect
+result in most sampled rotations, was skipped in the rest, and never once caught a divergence in
+its measured lifetime. The independent ground-truth re-derivation step it duplicated (the
+successor re-verifies live state against the system of record) is NOT in this script — it belongs
+to the rotation procedure itself and stays there.
 
 Not in the template: effort-specific one-shots (custom checks belong in `#check=` rows) and
 per-room hooks (the daemon composes those).

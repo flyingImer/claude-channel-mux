@@ -41,3 +41,32 @@ Undistilled events are never deleted.
 
 Intervention rate per class over time (feeds G5). The curve bending down is the entire
 point: review cost converts from repeated spend into compounding capital.
+
+## Inbox-touch check (v2, 2026-09-22)
+
+**Rule.** A daily-REVIEW step checks whether the correction-event inbox — this
+mechanism's own capture point, not any session's private memory file — was appended to
+since the previous review, whenever new lessons were in fact recorded during that
+window in ANY form outside this substrate (a private memory note, a chat log, anything
+not written here). A lesson that never reaches the inbox has not entered the learning
+loop, however well it is remembered elsewhere.
+
+**Receipt.** The REVIEW record states the inbox's last-modified time relative to the
+previous REVIEW's timestamp; when a lesson is independently known to exist outside the
+inbox, the record states whether a matching inbox entry exists.
+
+**Forbids.** Treating a private memory note or an ad-hoc log as equivalent to an inbox
+entry; a REVIEW record that reports the scorecard but is silent on inbox freshness.
+
+**Mechanical check.** `harness/watchdog-template.sh` (v2.9): the daily REVIEW step
+compares the configured inbox file's mtime against the previous REVIEW stamp and
+escalates once if it has not advanced. This is a freshness heuristic, not a proof that no
+lesson was missed — it catches the inbox going untouched across an entire review window,
+which is the measured failure.
+
+**Origin.** The inbox went untouched for twelve days while seven lessons were recorded
+elsewhere in that same window.
+
+**Overfit check.** Any project keeping BOTH a durable, shared correction log and a
+separate private per-session memory mechanism needs this cross-check; it says nothing
+about what either mechanism is named.

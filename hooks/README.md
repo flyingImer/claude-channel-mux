@@ -51,3 +51,27 @@ Called by the effort watchdog after its ACT/TRIAGE passes:
 `expectation-sweep.sh STATUS_DIR STAMP EXPECTATIONS_TSV ACT_RE TRIAGE_RE` prints
 `<file>\t<expectation id>\t<note>` for each changed status file that matches an expectation
 glob but neither regex; the watchdog triages each line as it would a TRIAGE file.
+
+## rotation-preflight.py (v2.9) — G9 HARD/BOOT: G10 rule 2, rotation floor
+`rotation-preflight.py TRANSCRIPT_JSONL --floor N [--exception FILE]` reads the
+coordinating room's own transcript, prints its current context, and exits non-zero below
+the floor unless an exception marker (created only after the owner's exception is
+recorded in the decision log) is present. The rotation procedure runs this and quotes the
+line; a missing/unreadable transcript fails loud (exit 3), never a silent pass. Self-test:
+`hooks/rotation-preflight-selftest.sh` (above-floor pass, below-floor fail, below-floor
+with exception marker warns-and-passes, unreadable transcript fails loud).
+
+## save-game-validator.py (v2.9) — G9 HARD/BOOT: G10 rule 6, save-game hygiene
+`save-game-validator.py SAVE_GAME STATE_FILE [--cap-bytes N]` fails a checkpoint when the
+save-game's first line grew since the last passing check (the signature of a
+predecessor's paragraph being prepended instead of archived) or the file exceeds its size
+cap (default 32768B). A rejected run leaves STATE_FILE at the last-good length. Self-test:
+`hooks/save-game-validator-selftest.sh` (first checkpoint passes, stable length passes,
+line-1 growth fails without corrupting state, oversize file fails, missing file is a
+no-op pass).
+
+## Decision-packet SLA + inbox-touch check (v2.9) — G10 rule 8 / G4, in the watchdog template
+Not separate hook scripts: both live in `harness/watchdog-template.sh` itself so they run
+every cycle unconditionally. See `harness/WATCHDOG-TEMPLATE.md` and
+`harness/watchdog.conf.example` (`DECISIONS_DIR`, `DECISION_SLA_HOURS`,
+`DEVIATIONS_INBOX`).

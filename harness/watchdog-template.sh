@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-# Generic Tier-0 watchdog (harness v2.8). One script for every effort; the effort supplies a conf file.
+# Generic Tier-0 watchdog (harness v2.9). One script for every effort; the effort supplies a conf file.
 # usage: watchdog-template.sh <watchdog.conf>          (the effort's watchdog.sh is a thin wrapper: exec this)
 #        WATCHDOG_ONCE=1 watchdog-template.sh <conf>   (single cycle, for tests and derivation smoke checks)
 # Contract: the effort's WATCHDOG.md. Passive status-file events + expectation sweep + deadlines + active checks
-# + context budgets + exam generation (validated before use) + daily REVIEW + GC. Escalations go to ESCALATIONS.md,
-# folds to digest.md. LLM one-shots run through ${CLAUDE_BIN:-claude} (G9 v2.5), model haiku.
+# + context budgets + decision-packet SLA (G10 rule 8) + daily REVIEW (+ inbox-touch check, G4) + GC.
+# Escalations go to ESCALATIONS.md, folds to digest.md. LLM one-shots run through ${CLAUDE_BIN:-claude} (G9 v2.5),
+# model haiku. (v2.9) Takeover-exam regeneration is REMOVED (G10 rule 7): the self-graded exam never caught a
+# divergence in its measured lifetime; the independent ground-truth re-derivation step it duplicated stays in the
+# rotation procedure itself, not in this script.
 set -u
 CONF="${1:?usage: watchdog-template.sh <watchdog.conf>}"; [ -f "$CONF" ] || { echo "watchdog: conf not found: $CONF" >&2; exit 2; }
 # ---- conf keys (defaults) ----
-STATUS_DIR=""; ORCH_DIR=""; EXP=""; MET=""; EXAM_SOURCES=(); REVIEW_CMD="true"; SOFT_CTX=700000; HARD_CTX=850000
-ROTATION_DOC="ROTATION.md"; REPLACE_DOC="room-procedures"; EXAM_MIN_BYTES=500; EXAM_MIN_QA=5; INTERVAL_DEFAULT=15
+STATUS_DIR=""; ORCH_DIR=""; EXP=""; MET=""; REVIEW_CMD="true"; SOFT_CTX=700000; HARD_CTX=850000
+ROTATION_DOC="ROTATION.md"; REPLACE_DOC="room-procedures"; INTERVAL_DEFAULT=15
+DECISIONS_DIR=""; DECISION_SLA_HOURS=24; DEVIATIONS_INBOX=""
 ACT_RE='.*/[0-9]+-(PLAN_READY|BLOCKED|NEED_RULING|NEED_EJ|DONE[^/]*|DESCRIPTION_READY|MOVEMENT)[^/]*\.md'
 TRIAGE_RE='.*/[0-9]+-(APPROVED_ACK|EXEC_STARTED)[^/]*\.md'
 # shellcheck disable=SC1090
@@ -29,6 +33,9 @@ esc() { printf -- '## %s %s %s\n%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" >> "$E
 fold() { printf -- '- %s %s %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >> "$DIG"; }
 ctxof() { tail -300 "$1" | jq -r 'select(.message.usage.cache_read_input_tokens != null) | (.message.usage.input_tokens + .message.usage.cache_read_input_tokens + .message.usage.cache_creation_input_tokens)' 2>/dev/null | tail -1; }
 llm() { "$CLAUDE" -p --model haiku 2>/dev/null | tail -1; }
+# decision_answered ID: an answered marker exists for this decision-packet id (G10 rule 8; the SLA is keyed to the
+# packet's own id/marker, never to generic "time since last owner turn")
+decision_answered() { [ -f "$DECISIONS_DIR/$1.answered" ]; }
 # triage_file FILE TAG: haiku triage of one changed status file against its expectation rows (also used by the sweep)
 triage_file() {
   local F="$1" TAG="$2" ROWS V
@@ -41,13 +48,6 @@ triage_file() {
     ESCALATE:*) esc EVENT "$F" "${TAG:+[$TAG] }${V#ESCALATE:}" ;;
     *) esc EVENT "$F" "${TAG:+[$TAG] }triage failed — fail-open" ;;
   esac
-}
-# exam_valid FILE: G9 v2.6 — a generated artifact is validated before use
-exam_valid() {
-  local f="$1"
-  [ "$(wc -c < "$f")" -ge "$EXAM_MIN_BYTES" ] || return 1
-  grep -qiE "hook error|unreachable|blocked by hook|rate.?limit|api error" "$f" && return 1
-  [ "$(grep -cE '^(\*\*|#+ *)?Q[0-9]+' "$f")" -ge "$EXAM_MIN_QA" ]
 }
 CYCLE=0
 while true; do
@@ -116,21 +116,31 @@ while true; do
     if [ "$CTX" -ge "$HARD_CTX" ] && ! grep -qxF "FLEET-$LBL-HARD" "$FL"; then esc ROTATE "worker-$LBL" "context $CTX >= $HARD_CTX: REPLACE room now from save-game ($REPLACE_DOC)"; echo "FLEET-$LBL-HARD" >> "$FL"; fi
     if [ "$CTX" -ge "$SOFT_CTX" ] && ! grep -qxF "FLEET-$LBL-SOFT" "$FL"; then esc ROTATE "worker-$LBL" "context $CTX >= $SOFT_CTX: plan replacement at next boundary ($REPLACE_DOC)"; echo "FLEET-$LBL-SOFT" >> "$FL"; fi
   done
-  # 7. exam generation (extraction-only), validated before it replaces the previous exam (G9 v2.6)
-  EIV=$(sed -n 's/^#exam_interval_seconds=\([0-9]\+\)$/\1/p' "$EXP" 2>/dev/null | head -1); EIV=${EIV:-86400}
-  ESP="$CK/exam.stamp"; ELAST=0; [ -f "$ESP" ] && ELAST=$(cat "$ESP")
-  if [ $((NOW-ELAST)) -ge "$EIV" ] && [ "${#EXAM_SOURCES[@]}" -gt 0 ]; then
-    echo "$NOW" > "$ESP"
-    { echo "You are generating a takeover exam for an orchestrator successor. EXTRACT ONLY, never invent. Produce 8-10 Q&A pairs in markdown, each question on a line starting with Q<n>. Each answer MUST cite its source file path and quote the exact line(s). Cover: current chain topology and refs, pending rulings and their rationale, in-flight expectations and deadlines, environment traps, identity/leak rules."
-      for src in "${EXAM_SOURCES[@]}"; do IFS='|' read -r LBL PTH TN <<< "$src"; [ -f "$PTH" ] || continue; echo "=== $LBL ==="; if [ -n "${TN:-}" ]; then tail -"$TN" "$PTH"; else cat "$PTH"; fi; done
-      echo "=== expectations ==="; cat "$EXP"; } | "$CLAUDE" -p --model haiku > "$ORCH_DIR/EXAM.md.tmp" 2>"$CK/exam.err"
-    if [ $? -eq 0 ] && exam_valid "$ORCH_DIR/EXAM.md.tmp"; then mv "$ORCH_DIR/EXAM.md.tmp" "$ORCH_DIR/EXAM.md"
-    else esc EXAM generation "regen rejected (size/shape/error-body check), previous EXAM.md kept; tmp+err preserved: $(head -c 150 "$ORCH_DIR/EXAM.md.tmp" 2>/dev/null | tr '\n' ' ')"; fi
+  # 7. decision-packet SLA (G10 rule 8): "#decision=<id>\t<posted_epoch>\t<note>" rows in $EXP; escalates once per
+  # id when unanswered past DECISION_SLA_HOURS. Keyed to the packet's own id/marker, never to generic owner-silence.
+  if [ -n "$DECISIONS_DIR" ]; then
+    sed -n 's/^#decision=\(.*\)$/\1/p' "$EXP" 2>/dev/null | while IFS=$'\t' read -r DID DPOSTED DNOTE; do
+      [ -z "$DID" ] && continue
+      decision_answered "$DID" && continue
+      grep -qxF "DECISION-$DID" "$FL" && continue
+      AGE_H=$(( (NOW - DPOSTED) / 3600 ))
+      if [ "$AGE_H" -ge "$DECISION_SLA_HOURS" ]; then
+        esc DECISION "$DID" "owner decision packet unanswered ${AGE_H}h (SLA ${DECISION_SLA_HOURS}h): $DNOTE"
+        echo "DECISION-$DID" >> "$FL"
+      fi
+    done
   fi
-  # 8. daily REVIEW
+  # 8. daily REVIEW (+ G4 inbox-touch check: the correction-event inbox must move when lessons were recorded,
+  # not just be remembered elsewhere)
   RIV=$(sed -n 's/^#review_interval_seconds=\([0-9]\+\)$/\1/p' "$EXP" 2>/dev/null | head -1); RIV=${RIV:-86400}
   RSP="$CK/review.stamp"; RLAST=0; [ -f "$RSP" ] && RLAST=$(cat "$RSP")
   if [ $((NOW-RLAST)) -ge "$RIV" ]; then
+    if [ -n "$DEVIATIONS_INBOX" ] && [ -f "$DEVIATIONS_INBOX" ]; then
+      IMT=$(stat -c %Y "$DEVIATIONS_INBOX" 2>/dev/null || echo 0)
+      if [ "$RLAST" -gt 0 ] && [ "$IMT" -le "$RLAST" ]; then
+        esc REVIEW inbox-stale "correction-event inbox not touched since the last REVIEW ($DEVIATIONS_INBOX): confirm no lessons were recorded elsewhere and left out of it (G4)"
+      fi
+    fi
     echo "$NOW" > "$RSP"; eval "$REVIEW_CMD" >/dev/null 2>&1
     esc REVIEW scorecard "daily framework review due: read the scorecard, attach takeaways + any tuning proposal to your next owner debrief"
   fi

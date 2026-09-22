@@ -1,5 +1,46 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.9 — 2026-09-22
+- **G10 (new): orchestrator lifecycle discipline.** G1-G9 governed rooms; nothing governed
+  the standing coordinating room's own continuity (wait, rotate, boot, hold-cycle,
+  restart, save-game). Eight rules, each with a receipt, a forbid, an origin and an
+  overfit check:
+  1. Owner-wait discipline — at most one merged watch while blocked; a wake only re-arms.
+  2. Rotation floor, enforced — ceiling AND quiet boundary, never boundary alone; owner
+     exception recorded before an under-floor rotation. `hooks/rotation-preflight.py`.
+  3. Successor boot tiering — save-game + head-state + kickoff + log-tail read in full;
+     everything else on demand; context-at-checkpoint recorded in the takeover row.
+  4. Hold-cycle duties — non-blocking owed items re-listed every hold cycle; pending
+     decisions re-fetched live, never inferred from a reply count.
+  5. Planned-restart hygiene — stop background watches before a KNOWN restart; unplanned
+     restarts are exempt.
+  6. Save-game hygiene — rewritten whole, never appended; predecessor's sign-off archived
+     as a log row, never prepended. `hooks/save-game-validator.py`.
+  7. Takeover exam removed — zero measured catches, cut from the rotation procedure and
+     the watchdog; the independent ground-truth re-derivation step is kept.
+  8. Decision-packet SLA — watchdog escalates an unanswered owner decision packet past a
+     configured hour count, keyed to the packet's own id.
+- **G4**: inbox-touch check — daily REVIEW escalates once if the correction-event inbox's
+  mtime has not advanced since the previous REVIEW (the second half of item 8's origin).
+- **G9**: v2.9 additions section maps all of the above to tiers; two items explicitly
+  logged as NOT taken (see G9) rather than silently dropped.
+- `harness/watchdog-template.sh`: exam-generation code path removed entirely (no
+  EXAM_SOURCES/EXAM_MIN_* keys, no `${CLAUDE_BIN:-claude}` exam call); decision-packet SLA
+  step added (`#decision=` rows); daily REVIEW gains the inbox-touch check.
+  `harness/watchdog.conf.example` and `WATCHDOG-TEMPLATE.md` updated to match.
+- New hooks (each `python3 -m py_compile` / `bash -n` clean, with its own self-test):
+  `hooks/rotation-preflight.py` + `hooks/rotation-preflight-selftest.sh`,
+  `hooks/save-game-validator.py` + `hooks/save-game-validator-selftest.sh`.
+- Not taken in this bump: daemon-side MCP trimming (out of this layer's scope; not
+  measured by any of the eight items); a task-notification size guard (the "+500k per
+  notification" figure behind it was a measurement artifact: per-call context deltas
+  computed across zero-usage resume entries; no oversized notifications were found).
+- Provenance: 19 orchestrator generations of one effort's own operating data (owner-wait
+  cost, rotation timing, boot-context trend, hold-cycle reports, restart failure mode,
+  save-game growth, exam hit rate, decision-SLA and inbox-freshness gaps); owner-approved
+  2026-09-22. No instance directory touched by this bump — G-docs and hooks/watchdog
+  template only; effort instances re-derive per G0.
+
 ## v2.8 — 2026-09-08
 - harness/watchdog-template.sh + watchdog.conf.example + WATCHDOG-TEMPLATE.md (trial): one generic
   Tier-0 watchdog; efforts keep a two-line watchdog.sh wrapper and a conf. Adds a restart-safe

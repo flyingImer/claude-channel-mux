@@ -1,6 +1,6 @@
 # G9 — Enforcement tiers (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v2.8, 2026-09-08 (v1 draft 2026-09-01; v2.1 2026-09-04). Layer: GENERIC.
+Status: v2.9, 2026-09-22 (v1 draft 2026-09-01; v2.1 2026-09-04). Layer: GENERIC.
 
 ## The problem (the owner's diagnosis, confirmed)
 
@@ -155,3 +155,62 @@ deferred stays CONTENT.
   `WATCHDOG_ONCE=1` runs one cycle for derivation smoke checks. Provenance: three effort
   copies of one script had diverged (66 and 53 differing lines) and every fix needed three
   derivations; the v2.7 sweep was wired three different ways in one afternoon.
+
+## v2.9 additions (2026-09-22) — G10 (new): orchestrator lifecycle discipline
+
+G1-G9 govern rooms; none of them governed the standing coordinating room's own
+continuity (wait, rotate, boot, hold, restart, save-game). G10 is that missing
+mechanism; this bump wires its rules:
+
+- (G10 rule 1) Owner-wait discipline: BOOT — injected into the coordinating room's
+  standing rules digest at boot/rotation. Not mechanically blockable (arming a watch is
+  a tool call the room itself chooses to make or not), the same category as G6 packing
+  quality: judged, not hooked. Provenance: 17h of owner silence cost 210/251 calls (77%
+  of weighted tokens) to three staggered 30-min watches.
+- (G10 rule 2) Rotation floor: HARD (mechanical) / BOOT (wiring) — `hooks/
+  rotation-preflight.py` reads the coordinating room's transcript, prints context, exits
+  non-zero below the soft ceiling unless an exception marker (created only after a
+  decision-log entry) is present. The rotation procedure must run it and quote the
+  output; until it is wired as a blocking gate on the rotation action itself, the
+  requirement to run + quote it is BOOT (procedure text). Self-test: hooks/
+  rotation-preflight-selftest.sh. Provenance: three rotations at ~70-80% of the ceiling,
+  each citing "quiet boundary" alone.
+- (G10 rule 3) Successor boot tiering: BOOT — kickoff file structure (tiered read order)
+  injected at every rotation; the successor's own context-at-checkpoint line in its
+  takeover record is the receipt, checked by the next REVIEW, not by a hook. Provenance:
+  boot context at a fixed early checkpoint trending up generation over generation before
+  any work began.
+- (G10 rule 4) Hold-cycle duties: BOOT — report-format rule (non-blocking owed items
+  re-listed; pending decisions re-fetched live, never inferred from a stale reply count).
+  Provenance: 17h of an unchanged "nothing to do" line beside five unmentioned owed
+  items, and a decision edited in place that a stale count called untouched.
+- (G10 rule 5) Planned-restart hygiene: BOOT — restart-checklist step (stop background
+  watches before a KNOWN restart). Provenance: the double-recache failure measured only
+  in rooms whose first post-restart turn was self-started.
+- (G10 rule 6) Save-game hygiene: HARD (mechanical) / BOOT (wiring) — `hooks/
+  save-game-validator.py` fails a checkpoint when the save-game's first line grew since
+  the last passing check or the file exceeds its size cap (default 32768B; propose per
+  instance from its own healthy/pathological numbers). A rejected checkpoint leaves the
+  validator's state at the last-good length. Self-test: hooks/
+  save-game-validator-selftest.sh. Provenance: line-1 accumulation of tens of KB per
+  rotation, one measured instance reaching 87KB on line 1 of a 112KB file (healthy
+  baseline ~10KB).
+- (G10 rule 7) Takeover exam removed: HARD by omission — `harness/watchdog-template.sh`
+  v2.9 carries no exam-generation code path; the rotation/kickoff procedure text carries
+  no exam-answering step. The independent ground-truth re-derivation step is unaffected
+  and stays in the rotation procedure. Provenance: the self-graded exam scored a perfect
+  result in most sampled rotations, was skipped in the rest, and never caught a
+  divergence in its measured lifetime.
+- (G10 rule 8 / G4 inbox-touch check) Decision-packet SLA + learning-loop check: BOOT —
+  `harness/watchdog-template.sh` v2.9 runs both unconditionally every cycle: `#decision=`
+  rows escalate once past `DECISION_SLA_HOURS` unless answered; the daily REVIEW step
+  escalates once if the configured correction-event inbox's mtime has not advanced since
+  the previous REVIEW. Provenance: a 17h unanswered decision with no escalation; an
+  inbox untouched 12 days while 7 lessons were recorded elsewhere.
+
+Not taken in this bump (recorded, not silently dropped): daemon-side MCP trimming — out
+of this layer's scope (daemon composition, not room/orchestrator procedure) and not
+measured by any of the nine items above. A task-notification size guard — the
+measurement behind it turned out to be an artifact of the owner-wait watch duplication
+(item 1), not an independent problem; fixing item 1 removes the signal that motivated
+it, so a separate guard would have no measured target left.
