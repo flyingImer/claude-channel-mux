@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generic Tier-0 watchdog (harness v2.11). One script for every effort; the effort supplies a conf file.
+# Generic Tier-0 watchdog (harness v2.12). One script for every effort; the effort supplies a conf file.
 # usage: watchdog-template.sh <watchdog.conf>          (the effort's watchdog.sh is a thin wrapper: exec this)
 #        WATCHDOG_ONCE=1 watchdog-template.sh <conf>   (single cycle, for tests and derivation smoke checks)
 # Contract: the effort's WATCHDOG.md. Passive status-file events + expectation sweep + deadlines + active checks
@@ -11,12 +11,21 @@
 # (v2.11) The orchestrator burn row in $MET is keyed on the coordinating room's own SESSION id
 # (the transcript's own filename), not on a role label like "orch" that spans every generation:
 # a label spanning generations makes every rotation's burn indistinguishable in the metrics file.
+# (v2.12) Three additions. (a) Timing is decided here, never by the triage one-shot: a status file whose
+# mtime precedes its expectation's deadline is ON TIME whatever the gap, and is never escalated for timing;
+# only a file missing at the deadline, or arriving after it, is a deadline fault. (b) Turn-death visibility
+# (G10 rule 11): per executing room's transcript, the count of assistant entries carrying an API-error text
+# is tracked and an increase is an event, because a turn that dies this way leaves the pane idle and every
+# liveness signal green. (c) Model-route liveness (G10 rule 12): each configured route is probed with a
+# minimal call every ROUTE_PROBE_SECONDS via hooks/route-probe.sh; the alive set is recorded and a change
+# in it is an event, because one route can stay up while every room on another route dies.
 set -u
 CONF="${1:?usage: watchdog-template.sh <watchdog.conf>}"; [ -f "$CONF" ] || { echo "watchdog: conf not found: $CONF" >&2; exit 2; }
 # ---- conf keys (defaults) ----
 STATUS_DIR=""; ORCH_DIR=""; EXP=""; MET=""; REVIEW_CMD="true"; SOFT_CTX=700000; HARD_CTX=850000
 ROTATION_DOC="ROTATION.md"; REPLACE_DOC="room-procedures"; INTERVAL_DEFAULT=15
 DECISIONS_DIR=""; DECISION_SLA_HOURS=24; DEVIATIONS_INBOX=""
+API_ERROR_RE='^API Error'; ROUTES_FILE=""; ROUTE_PROBE_SECONDS=900
 ACT_RE='.*/[0-9]+-(PLAN_READY|BLOCKED|NEED_RULING|NEED_EJ|DONE[^/]*|DESCRIPTION_READY|MOVEMENT)[^/]*\.md'
 TRIAGE_RE='.*/[0-9]+-(APPROVED_ACK|EXEC_STARTED)[^/]*\.md'
 # shellcheck disable=SC1090
@@ -26,6 +35,7 @@ EXP="${EXP:-$ORCH_DIR/expectations.tsv}"; ESC="$ORCH_DIR/ESCALATIONS.md"; DIG="$
 CK="$ORCH_DIR/.checks"; MET="${MET:-$ORCH_DIR/metrics/fleet-ctx.csv}"; ESCALATED="$ORCH_DIR/.deadline-escalated"
 WATCHDOG_LOG="${WATCHDOG_LOG:-$ORCH_DIR/watchdog.log}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"; SWEEP="$HERE/../hooks/expectation-sweep.sh"
+ROUTE_PROBE="$HERE/../hooks/route-probe.sh"
 CLAUDE="${CLAUDE_BIN:-claude}"
 mkdir -p "$CK" "$(dirname "$MET")"; touch "$ESC" "$DIG" "$ESCALATED"
 exec 9>"$ORCH_DIR/.watchdog.lock"; flock -n 9 || { echo "watchdog already running (lock $ORCH_DIR/.watchdog.lock)" >&2; exit 1; }
@@ -44,14 +54,33 @@ triage_file() {
   local F="$1" TAG="$2" ROWS V
   ROWS=$(grep -v '^#' "$EXP" 2>/dev/null | awk -F'\t' -v f="$F" '{r=$2; gsub(/\./,"\\.",r); gsub(/\*/,".*",r); if (f ~ "^"r"$") print $0}')
   if [ -z "$ROWS" ]; then esc EVENT "$F" "no matching expectation"; return; fi
+  # (v2.12) Timing is computed HERE from the file's mtime against each matching row's deadline and handed to
+  # the one-shot as an authoritative line; an on-time file is never escalated for timing, whatever reason the
+  # one-shot gives (a timing-worded ESCALATE on an on-time file is folded, tagged timing-ok).
+  local FMT TIMING="" LATE=0 RID RGLOB RDL RRG RNOTE DLE
+  FMT=$(stat -c %Y "$STATUS_DIR/$F" 2>/dev/null || echo 0)
+  while IFS=$'\t' read -r RID RGLOB RDL RRG RNOTE; do
+    [ -z "$RID" ] && continue; [ "$RDL" = "-" ] && { TIMING+="$RID: no deadline (timing satisfied)"$'\n'; continue; }
+    DLE=$(date -u -d "$RDL" +%s 2>/dev/null) || { TIMING+="$RID: unparseable deadline $RDL (timing not judged)"$'\n'; continue; }
+    if [ "$FMT" -le "$DLE" ]; then TIMING+="$RID: ON TIME, arrived $((DLE-FMT))s before deadline $RDL (early is never a fault)"$'\n'
+    else TIMING+="$RID: LATE by $((FMT-DLE))s past deadline $RDL"$'\n'; LATE=1; fi
+  done <<< "$ROWS"
   V=$( { echo "Changed status file: $F"; echo "--- file content ---"; cat "$STATUS_DIR/$F"; echo "--- matching expectation rows ---"; echo "$ROWS"; \
+        echo "--- timing (computed by the watchdog; authoritative, do not re-derive) ---"; printf '%s' "$TIMING"; \
+        echo 'Timing is decided above: an ON TIME file is never escalated for timing, whatever the gap; a LATE file may be. Judge the CONTENT against the expectation.'; \
         echo 'Answer FOLD only if the file content plainly satisfies the expectation. Otherwise ESCALATE. Output exactly one line: FOLD: <reason> or ESCALATE: <reason>'; } | llm )
   case "$V" in
     FOLD:*) fold EVENT "$F ${TAG:+[$TAG] }${V#FOLD:}" ;;
-    ESCALATE:*) esc EVENT "$F" "${TAG:+[$TAG] }${V#ESCALATE:}" ;;
+    ESCALATE:*)
+      if [ "$LATE" -eq 0 ] && printf '%s' "${V#ESCALATE:}" | grep -Eiq '(early|precede|ahead of|drift|premature|too soon|before (the |its )?(deadline|expectation|row))'; then
+        fold EVENT "$F ${TAG:+[$TAG] }[timing-ok] on-time file; timing-worded escalation folded: ${V#ESCALATE:}"
+      else esc EVENT "$F" "${TAG:+[$TAG] }${V#ESCALATE:}"; fi ;;
     *) esc EVENT "$F" "${TAG:+[$TAG] }triage failed — fail-open" ;;
   esac
 }
+# (v2.12, G10 rule 11) api_errors TRANSCRIPT: count assistant entries whose text matches API_ERROR_RE.
+api_errors() { jq -r --arg re "$API_ERROR_RE" 'select(.type=="assistant") | (.message.content | if type=="string" then . else ([.[]? | select(.type=="text") | .text] | join(" ")) end) | select(test($re))' "$1" 2>/dev/null | wc -l; }
+api_error_last() { jq -r --arg re "$API_ERROR_RE" 'select(.type=="assistant") | (.message.content | if type=="string" then . else ([.[]? | select(.type=="text") | .text] | join(" ")) end) | select(test($re))' "$1" 2>/dev/null | tail -1 | head -c 60; }
 CYCLE=0
 while true; do
   CYCLE=$((CYCLE+1))
@@ -124,6 +153,33 @@ while true; do
     if [ "$CTX" -ge "$HARD_CTX" ] && ! grep -qxF "FLEET-$LBL-HARD" "$FL"; then esc ROTATE "worker-$LBL" "context $CTX >= $HARD_CTX: REPLACE room now from save-game ($REPLACE_DOC)"; echo "FLEET-$LBL-HARD" >> "$FL"; fi
     if [ "$CTX" -ge "$SOFT_CTX" ] && ! grep -qxF "FLEET-$LBL-SOFT" "$FL"; then esc ROTATE "worker-$LBL" "context $CTX >= $SOFT_CTX: plan replacement at next boundary ($REPLACE_DOC)"; echo "FLEET-$LBL-SOFT" >> "$FL"; fi
   done
+  # 6b. turn-death visibility (G10 rule 11): an API-error assistant entry ends a turn with the pane idle and
+  # every liveness signal green; the count per executing room's transcript is the only signal, so an increase
+  # is an EVENT. First sight of a transcript captures the baseline silently.
+  sed -n 's/^#fleet_transcript=\(.*\)$/\1/p' "$EXP" 2>/dev/null | while IFS== read -r LBL PTH; do
+    [ -f "$PTH" ] || continue
+    CUR=$(api_errors "$PTH"); AS="$CK/apierr-$LBL.count"
+    if [ ! -f "$AS" ]; then echo "$CUR" > "$AS"; [ "$CUR" -gt 0 ] && fold TURNDEATH "worker-$LBL baseline $CUR API-error entries"; continue; fi
+    PREVN=$(cat "$AS")
+    if [ "$CUR" -gt "$PREVN" ]; then
+      esc TURNDEATH "worker-$LBL" "API-error assistant entries $PREVN -> $CUR; last: $(api_error_last "$PTH" | tr '\n' ' '); pane idle + liveness green is not evidence the turn lives; send a CONTINUE directive (G10 rule 11)"
+      echo "$CUR" > "$AS"
+    fi
+  done
+  # 6c. model-route liveness (G10 rule 12): probe each configured route with a minimal call every
+  # ROUTE_PROBE_SECONDS; the alive set is recorded in $CK/routes.alive and a change in it is an EVENT.
+  if [ -n "$ROUTES_FILE" ] && [ -f "$ROUTES_FILE" ] && [ -f "$ROUTE_PROBE" ]; then
+    RPS="$CK/routes.stamp"; RPL=0; [ -f "$RPS" ] && RPL=$(cat "$RPS")
+    if [ $((NOW-RPL)) -ge "$ROUTE_PROBE_SECONDS" ]; then
+      echo "$NOW" > "$RPS"; RPREV=$(cat "$CK/routes.alive" 2>/dev/null | tr '\n' ' ')
+      ROUT=$(bash "$ROUTE_PROBE" "$ROUTES_FILE" "$CK/routes.alive" 2>&1); RRC=$?
+      RCUR=$(cat "$CK/routes.alive" 2>/dev/null | tr '\n' ' ')
+      if [ "$RCUR" != "$RPREV" ]; then
+        if [ "$RRC" -eq 0 ]; then fold ROUTE "alive set now [$RCUR] (was [$RPREV])"
+        else esc ROUTE alive-set "alive set changed: [$RPREV] -> [$RCUR] (rc=$RRC): re-pin every executing room and every verify spawn to a route in the alive set (G10 rule 12); probe: $(printf '%s' "$ROUT" | tr '\n' ' ' | head -c 300)"; fi
+      fi
+    fi
+  fi
   # 7. decision-packet SLA (G10 rule 8): "#decision=<id>\t<posted_epoch>\t<note>" rows in $EXP; escalates once per
   # id when unanswered past DECISION_SLA_HOURS. Keyed to the packet's own id/marker, never to generic owner-silence.
   if [ -n "$DECISIONS_DIR" ]; then

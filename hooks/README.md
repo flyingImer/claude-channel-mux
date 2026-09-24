@@ -94,3 +94,25 @@ policy" / "record item" shape with no receipts fails and names every missing hoo
 partially-receipted note lists only the still-missing ones; a version section naming no
 hook passes trivially even against an empty note; a missing note or version section
 fails loud with exit 3).
+
+## outbound-gate.py v5 (v2.12) — acting-cwd resolution
+A relative `cd <dir>` stage resolves against the acting cwd, in order: the hook input's `cwd`
+field, `CLAUDE_ROOM_CWD`, the manifest key `room_cwd`, the daemon session file's `cwd`, the
+hook process cwd. A resolved directory that is not a git work tree is refused with "could not
+resolve the acting repository" naming the path, never with the close-out message. Self-test
+adds three cases (input-cwd resolution from an unrelated process cwd, env fallback,
+unresolvable-repo message text).
+
+## route-probe.sh (v2.12) — G10 rule 12, model-route liveness
+`route-probe.sh ROUTES_FILE ALIVE_FILE` probes each route listed (one per line, `#` comments)
+with a minimal `-p --model <route>` call through `${CLAUDE_BIN:-claude}` under
+`ROUTE_PROBE_TIMEOUT` (default 60s), prints `<route>\t<alive|dead>\trc=<n>`, rewrites
+ALIVE_FILE with the alive set, and exits 0 (all alive), 1 (any dead) or 3 (no routes or file
+missing: fail loud). The watchdog template runs it every `ROUTE_PROBE_SECONDS`; the boot and
+hold checklists run it directly. Self-test: `hooks/route-probe-selftest.sh`.
+
+## watchdog-template-selftest.sh (v2.12) — WATCHDOG_ONCE smoke
+Two single cycles of `harness/watchdog-template.sh` against a stub launcher: an on-time status
+file is folded `[timing-ok]` and never escalated while a late one is; an API-error entry is a
+silent baseline and a second one escalates TURNDEATH with its text; a dead route escalates
+ROUTE once and is absent from the alive set.

@@ -1,5 +1,61 @@
 # Generic-harness changelog (versions apply to the whole directory; per-doc Status lines match)
 
+## v2.12 — 2026-09-24
+- **G10 rule 11 (new): turn-death visibility.** A turn that dies on an API error leaves an
+  assistant entry with the error text and stop reason stop_sequence, an idle pane, and every
+  liveness signal green. `harness/watchdog-template.sh` step 6b counts such entries per
+  `#fleet_transcript=` row (conf `API_ERROR_RE`, default `^API Error`) and escalates
+  TURNDEATH on increase, quoting the last text's first 60 chars; the hold-cycle checklist
+  (G10 rule 4, v3) prints per executing room the last stop_reason + first 60 chars, never
+  the mtime alone; G10 carries a standard CONTINUE directive shape (on-disk state: dirty
+  files, last status file, backup ref; the one step in flight; retry the same step on a
+  repeat error, never redo completed steps).
+- **G10 rule 12 (new): model-route liveness.** One route can stay up while the workers'
+  routes fail. `hooks/route-probe.sh ROUTES_FILE ALIVE_FILE` (+ `hooks/route-probe-
+  selftest.sh`) probes each configured route with a minimal call, rewrites the alive set,
+  exits 0/1/3 (all alive / any dead / none configured, fail loud). The watchdog runs it
+  every `ROUTE_PROBE_SECONDS` when `ROUTES_FILE` is set and escalates ROUTE once per change
+  of the set. Rule text: boot and hold probe the routes; a verify/subagent spawn names its
+  route from the alive set, never the default; owner-side publish/patch scripts run from
+  the coordinating room without a worker room (absolute paths, no room-side state).
+- **`hooks/outbound-gate.py` v5 (acting-cwd resolution).** A relative `cd <dir>` stage now
+  resolves against the acting cwd — the hook input's `cwd`, else `CLAUDE_ROOM_CWD`, else
+  the manifest key `room_cwd`, else the daemon session file's `cwd`, else the hook process
+  cwd — instead of the hook process cwd alone. When the resolved directory is not a git
+  work tree the gate refuses with "could not resolve the acting repository" and names the
+  path, never with the close-out message. Self-test adds three cases (relative cd from an
+  unrelated process cwd resolves the nested ref via the input cwd; env fallback; the
+  unresolvable-repo message text, and that the record message is absent).
+- **Watchdog timing verdict (`harness/watchdog-template.sh`).** `triage_file` computes ON
+  TIME / LATE per matching row from the file's mtime against the row's deadline, hands it
+  to the one-shot as an authoritative line, and folds (tag `[timing-ok]`) any ESCALATE
+  worded on timing for an on-time file. Only a file missing at the deadline or arriving
+  after it is a deadline fault. `hooks/expectation-sweep.sh` is unchanged: it never judged
+  timing, and its hits flow through the same function. New
+  `hooks/watchdog-template-selftest.sh` (WATCHDOG_ONCE smoke with a stub launcher, 9
+  cases: timing, turn-death counter, route alive set).
+- **G10 rule 13 (new): re-chain verified only at the new base.** "Conflicts: none" is not a
+  receipt; the re-chained tree must compile and the affected tests run at the new base
+  ref, before formatting or amend; the compile/test line at that ref is the receipt.
+- **G10 rule 4, clarified.** "Re-fetch the cited thread by id" includes the reactions
+  endpoint; an owner reaction on the cited comment counts as an answer.
+- **G10 rule 1, clarified.** An expiry wake appends NO ledger row; the ledger records state
+  changes, and the watch's own re-arm is the wake's only side effect.
+- **G9**: v2.12 additions section maps all seven items to tiers (HARD unchanged for the
+  gate; BOOT/HARD for the three watchdog-borne mechanisms; BOOT for the three rule texts).
+- `WATCHDOG-TEMPLATE.md`, `watchdog.conf.example` (new keys `API_ERROR_RE`, `ROUTES_FILE`,
+  `ROUTE_PROBE_SECONDS`), `hooks/README.md` updated. `bash -n` clean on the template and
+  both new scripts; `python3 -m py_compile` clean; every `hooks/*-selftest.sh` passes.
+- Not taken: none.
+- Provenance: DEVIATIONS-inbox entries dated 2026-09-23 (a watchdog sweep escalating early
+  files; a zero-conflict re-chain that did not compile and the re-chain belt as a
+  first-class verification stage; the outbound gate joining a relative cd onto the hook
+  cwd in a worktree room; API-error turn death invisible to every liveness signal; a
+  model-route outage killing every worker while the coordinator lived), plus the oversight
+  seat's observation ticks of 2026-09-23..24 (a decision re-asked after an owner reaction;
+  84 near-identical expiry-wake ledger rows in two days; a second partial route outage
+  during this draft). Owner-approved 2026-09-24. No instance directory touched.
+
 ## v2.11 — 2026-09-22
 - **`hooks/save-game-validator.py` (G10 rule 6, refined).** Rule (a) no longer flags a
   line 1 for merely being longer than the last passing one. It fails only when the last

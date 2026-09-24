@@ -35,6 +35,17 @@ to a local filesystem path, i.e. no `scheme://` and no `user@host:` syntax. An e
 mark a specific local-looking remote as public via `public_patterns`, or a specific non-local
 remote as exempt via `private_remotes` (matched against both the remote's name/token and its
 resolved URL). `public_patterns` from v3 keeps working as an ADDITIONAL match, checked first.
+v5 (2026-09-24): a relative `cd <dir>` stage is resolved against the ACTING cwd, never the
+hook process cwd. Rooms run in a per-room worktree while the shell the command runs in keeps
+its own persisted cwd, so joining a relative `cd` onto the hook process cwd resolved the
+wrong repo, HEAD read "?", and a valid close-out could not match: a public action was
+refused for a path reason with a message that read like a missing audit record. The base
+is now, in order: the hook input's own `cwd` field when present, the bound room cwd
+(env `CLAUDE_ROOM_CWD`, the manifest key `room_cwd`, or the daemon session file's `cwd`),
+and only then the hook process cwd. When the resolved directory is not a git work tree the
+gate refuses with "could not resolve the acting repository" and names the path, never
+with the close-out message: a path failure and a missing audit record are different
+faults and must read differently.
 Self-test: hooks/outbound-gate-selftest.sh.
 """
 import glob, json, os, re, subprocess, sys, datetime
@@ -98,10 +109,32 @@ def resolve_remote(stage, repo_dir):
         url = token
     return token, url
 
-def public_stage(cmd, m):
+def acting_base(data, m, info):
+    """(v5) The cwd a relative `cd` in the command is resolved against: the hook input's own
+    cwd (the shell's persisted cwd, when the host carries it), else the bound room cwd
+    (env, manifest, daemon session file), else the hook process cwd."""
+    for cand in (data.get("cwd"), os.environ.get("CLAUDE_ROOM_CWD"), (m or {}).get("room_cwd"),
+                 (info or {}).get("cwd")):
+        if cand and os.path.isdir(os.path.expanduser(cand)):
+            return os.path.expanduser(cand)
+    return os.getcwd()
+
+def repo_toplevel(d):
+    """The git work tree containing `d`, or "" when `d` is missing or not inside one."""
+    if not os.path.isdir(d):
+        return ""
+    try:
+        return subprocess.check_output("git rev-parse --show-toplevel", shell=True, text=True,
+                                       stderr=subprocess.DEVNULL, cwd=d).strip()
+    except Exception:
+        return ""
+
+def public_stage(cmd, m, base=None):
     """Return (stage, index, all_stages) for the first stage that counts as a public-facing
     action, else None. `m` is the effort's manifest dict (public_patterns / private_remotes
-    default to []); an empty dict {} exercises the built-in generic detection alone."""
+    default to []); an empty dict {} exercises the built-in generic detection alone.
+    `base` is the acting cwd relative `cd` stages resolve against (v5)."""
+    base = base or os.getcwd()
     pats = m.get("public_patterns", [])
     private_pats = m.get("private_remotes", [])
     st = stages(surface(cmd))
@@ -111,7 +144,7 @@ def public_stage(cmd, m):
         if any(re.search(p, norm) for p in pats):
             return stage, i, st
         if GIT_PUSH_RE.search(stage):
-            repo_dir = resolve_dir(stage, i, st, os.getcwd())
+            repo_dir = resolve_dir(stage, i, st, base)
             token, url = resolve_remote(stage, repo_dir)
             if (
                 token is not None
@@ -151,6 +184,7 @@ def main():
         sys.exit(0)
     cmd = (data.get("tool_input") or {}).get("command", "") or ""
     mpath = os.environ.get("CLAUDE_OUTBOUND_MANIFEST")
+    info = {}
     if not mpath:
         # CCM room: resolve the room's harness dir via the daemon-written session file.
         sid = data.get("session_id")
@@ -163,21 +197,28 @@ def main():
             sys.exit(0)  # harness pending/unset: gate inactive (SessionStart hint covers it)
         mpath = os.path.join(info["dir"], "outbound.json")
         if not os.path.exists(mpath):
-            if public_stage(cmd, {}):
+            if public_stage(cmd, {}, acting_base(data, {}, info)):
                 print(f"outbound gate: harness `{info.get('name')}` has no outbound.json yet; gate inactive "
                       f"(migration). Derive {mpath} per G9 to arm it.", file=sys.stderr)
             sys.exit(0)
     elif not os.path.exists(mpath):
-        if public_stage(cmd, {}):
+        if public_stage(cmd, {}, acting_base(data, {}, info)):
             print("BLOCKED by outbound gate: CLAUDE_OUTBOUND_MANIFEST is set but the file is missing.", file=sys.stderr)
             sys.exit(2)
         sys.exit(0)
     m = json.load(open(mpath))
-    hit = public_stage(cmd, m)
+    base = acting_base(data, m, info)
+    hit = public_stage(cmd, m, base)
     if not hit:
         sys.exit(0)  # not a public-facing action per the built-in rule + the effort's own declaration
     stage, idx, st = hit
-    repo_dir = resolve_dir(stage, idx, st, os.getcwd())
+    repo_dir = resolve_dir(stage, idx, st, base)
+    if not repo_toplevel(repo_dir):
+        # (v5) a path fault, stated as one: never phrased as a missing close-out record.
+        print(f"BLOCKED by outbound gate: could not resolve the acting repository for '{stage[:80]}': "
+              f"{repo_dir} is not a git work tree (resolved against acting cwd {base}). Use one command "
+              f"whose first stage is an absolute `cd`, or `git -C <abs dir>`.", file=sys.stderr)
+        sys.exit(2)
     sha = resolve_sha(stage, repo_dir, m.get("ref_cmd", "git rev-parse HEAD"))
     cdir = m.get("closeout_dir", "")
     recs = records_for(cdir, sha) if sha and cdir else []

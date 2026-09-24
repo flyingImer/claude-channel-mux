@@ -1,6 +1,6 @@
 # G10 — Orchestrator lifecycle discipline (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v2, 2026-09-22 (harness v2.11; v1 2026-09-22, harness v2.9). Layer: GENERIC.
+Status: v3, 2026-09-24 (harness v2.12; v2 2026-09-22, harness v2.11; v1 2026-09-22, harness v2.9). Layer: GENERIC.
 
 ## Problem this mechanism solves
 
@@ -26,16 +26,24 @@ NOTHING except re-arm the same merged watch and, only if content actually change
 off to the normal event path. The room never separately polls a signal its own periodic
 background process (the watchdog) already checks on its own cycle.
 
+**Clarification (v3).** An expiry wake appends NO row to the durable ledger. The ledger
+records state changes; a wake whose content check found nothing changed is not a state
+change, and its only side effect is the watch's own re-arm. A row is written only when
+the wake hands off to the event path because something did change.
+
 **Receipt.** At any point while blocked, exactly one active watch mechanism exists for
 this room; its wake handler's only actions are "re-arm" or "hand off to the event path".
+(v3) The ledger carries no row whose only content is "watch expired, re-armed"; two
+consecutive ledger rows never differ only in their timestamp.
 
 **Forbids.** Staggered or parallel watches on overlapping sources; a wake that writes to
-durable state on its own; re-implementing inside the coordinating room a check the
-watchdog already performs on a cycle.
+durable state on its own, including a ledger row for the expiry itself; re-implementing
+inside the coordinating room a check the watchdog already performs on a cycle.
 
 **Origin.** 17 hours of owner silence cost 210 of 251 tool calls and 77% of a
 generation's weighted token spend, produced by three staggered 30-minute watches each
-re-arming and re-reading independently.
+re-arming and re-reading independently. (v3) 84 near-identical ledger rows in two days,
+each recording nothing but an expiry wake and its re-arm.
 
 **Overfit check.** States no channel (chat, PR comments, a shared doc) and no file
 naming convention; any coordinating role that waits on an external decision-maker while
@@ -118,20 +126,38 @@ any decision as still pending, the room re-fetches the cited comment/thread by i
 a reply count is never used as evidence of an answer or its absence, since an editor can
 change a thread's content in place without changing that count.
 
+**Clarification (v3).** "Re-fetch the cited thread by its id" includes the thread's
+reactions endpoint, wherever the surface has one. An owner reaction on the cited comment
+counts as an answer: a reviewer who accepts with a one-click acknowledgement has
+answered, and re-asking the question is a second ask of a decided item. The re-fetch
+reads the comment body, its updated-at time, AND its reactions before asserting
+"pending".
+
+**Hold-cycle checklist (v3, per executing room).** Beyond the owed-item list, every
+hold-cycle report prints, for each executing room: the transcript's last assistant
+stop_reason and the first 60 characters of that entry's text, not only the transcript's
+mtime. A fresh mtime with an idle pane says nothing about whether the last turn ended
+normally; the stop_reason and text do (see rule 11).
+
 **Receipt.** The hold-cycle report names each non-blocking owed item by id, and asserts
-the pending item's status only after a live, timestamped re-fetch of its own thread.
+the pending item's status only after a live, timestamped re-fetch of its own thread,
+reactions included; the report carries one stop_reason + text line per executing room.
 
 **Forbids.** Repeating an identical "nothing to do" line across multiple hold cycles
 while other owed items sit unmentioned; inferring an answer (or its absence) from a
-stale cached read.
+stale cached read; calling a decision pending on a body-only re-fetch that never read
+the reactions; a per-room liveness line that reports only a transcript mtime.
 
 **Origin.** 17 hours with the same "nothing to do" line while five non-blocking
 owner-owed items sat unmentioned, and a decision the owner had in fact edited in place
-was miscounted as untouched because its reply count had not moved.
+was miscounted as untouched because its reply count had not moved. (v3) A decision was
+re-asked after the owner had already answered it with a reaction on the cited comment;
+and a room's dead turn sat behind a fresh mtime for 7 minutes (rule 11).
 
 **Overfit check.** "Owner-owed item" and "pending decision" name no specific tracker or
 channel; the live-re-fetch rule applies to any system where a reviewer can edit feedback
-in place without changing a naive reply-count signal.
+in place without changing a naive reply-count signal, or acknowledge it through a
+reaction-like side channel that a body read never sees.
 
 ## 5. Planned-restart hygiene
 
@@ -296,9 +322,110 @@ directive is authored once but delivered (or re-delivered) at a different, later
 applies this unchanged — the distinction is send-time transmission vs. static file, not
 any particular resource.
 
+## 11. Turn-death visibility
+
+**Rule.** A worker's turn can end on an API error: the transcript gains an assistant
+entry carrying the error text (stop reason stop_sequence), the pane returns to an idle
+prompt, and every liveness signal the fleet reads (process alive, transport connected,
+transcript recently touched) stays green. Nothing the room owns fires, because the room
+never reached the point of writing a status file. Therefore: (a) the fleet watch (the
+watchdog template, or a hook the coordinating room arms) counts API-error assistant
+entries per executing room's transcript and emits an event on any increase; (b) the
+hold-cycle checklist prints, per executing room, the last assistant stop_reason and the
+first 60 characters of its text (rule 4, v3), never the transcript mtime alone; (c) the
+response to such an event is a standard CONTINUE directive, sent to the same room, with
+this shape:
+
+```
+CONTINUE — your last turn ended on an API error at <time>; nothing you completed is lost.
+On-disk state as I read it now:
+  dirty files: <list, or none>
+  last status file you wrote: <name + time>
+  backup ref: <the ref or tag taken before your work began>
+Next plan step: <the one step that was in flight, stated from the plan, not from memory>
+Rules: on a repeat API error, retry the SAME step; never redo a step listed as completed;
+never end a turn with a half-applied edit — finish or revert it first.
+```
+
+**Receipt.** The watchdog's TURNDEATH event naming the room, the old and new counts, and
+the first 60 characters of the last error text (`harness/watchdog-template.sh` v2.12,
+`API_ERROR_RE`); the hold-cycle report's per-room stop_reason line; the CONTINUE
+directive's on-disk-state block, filled from a live read, in the room's transcript.
+
+**Forbids.** Calling a room live on the strength of a running process, a connected
+transport, an idle prompt, or a recent mtime; a CONTINUE that restates the whole plan
+instead of the one step in flight; a CONTINUE written without reading the room's disk
+state first.
+
+**Origin.** Two rooms, 7 minutes and 37 minutes of lost work respectively, each found
+only by a hold-cycle read of the transcript tail, each with every liveness signal green
+throughout.
+
+**Overfit check.** Names no transport, host, or model route: any fleet whose workers
+write a per-session transcript with a stop reason applies the counter, the checklist
+line and the CONTINUE shape unchanged.
+
+## 12. Model-route liveness
+
+**Rule.** A model route can fail independently of the others: the coordinating room's
+own route stays up while the routes its workers and verify subagents are pinned to
+return auth or server errors, so every worker dies (or cannot spawn) while the
+coordinator lives and sees nothing wrong with itself. Therefore: (a) the boot checklist
+and every hold cycle probe each configured route with a minimal call and record the
+alive set (`hooks/route-probe.sh`; the watchdog re-probes every `ROUTE_PROBE_SECONDS`
+and escalates on a change in the set); (b) a verify or subagent spawn names its model
+route explicitly, chosen from the current alive set, never inherited from the harness or
+host default; (c) every owner-side publish/patch script the coordinating room may need
+(push, description patch, comment post) is runnable by the coordinating room itself
+without a worker room: absolute paths, no state that lives only inside a room.
+
+**Receipt.** The alive-set file (`<checks dir>/routes.alive`) with a probe time no
+older than one hold cycle; the spawn command or directive naming its route; the
+publish/patch script running from the coordinating room's own cwd in the outage record.
+
+**Forbids.** Spawning a verify subagent on an unnamed (default) route; treating the
+coordinator's own successful calls as evidence the workers' routes are up; a publish
+script that reads room-side state (a relative cd, a room-local file) and so cannot run
+when the rooms are dead.
+
+**Origin.** One outage in which the owner re-pinned every room by hand while the
+coordinator kept running on the one live route, and the verify subagent died on the
+default route; a second, partial outage of the same shape while this rule was being
+drafted.
+
+**Overfit check.** "Route" names no vendor, model, or gateway; any deployment where
+rooms and coordinator can sit on different model endpoints, each with its own failure
+mode, applies the probe, the explicit-route spawn and the room-free scripts unchanged.
+
+## 13. Re-chain verified only at the new base
+
+**Rule.** A re-chain or rebase that reports "conflicts: none" is not verified. It is
+verified only when the re-chained tree compiles at the new base and the affected tests
+run there, in that order, before any formatting pass or amend. An upstream change can
+merge with zero conflicts and still break the build: a signature or helper change lands
+in regions the downstream commit never touched, so git has nothing to report while every
+downstream call site is now wrong. The directive that orders a re-chain names the
+compile and test commands; the room's report quotes their result at the new base ref.
+
+**Receipt.** The compile/test line at the new base ref (ref, command, exit code, one
+output line) in the room's report; a conflict count is context, never the receipt.
+
+**Forbids.** Closing a re-chain on "conflicts: none" or on a structural heuristic (a
+paren counter, a duplicate-declaration grep) in place of a compile; running the
+formatter or amending before the compile at the new base; attributing a failure that
+appears only after re-chaining to the downstream commit without first isolating at the
+new base without it.
+
+**Origin.** An upstream signature change rebased cleanly and did not compile; a second,
+earlier zero-conflict duplicate-declaration case of the same class.
+
+**Overfit check.** Names no language, build tool or forge; any stacked-change workflow
+where a base moves underneath a commit applies "compiles and tests at the new base"
+as the only receipt.
+
 ## Relationship to the rest of the harness
 
-Items 1-7, 9 and 10 concern the coordinating room's own continuity and its directives to
+Items 1-7 and 9-13 concern the coordinating room's own continuity and its directives to
 other rooms; they compose with, but do not replace, G7 (deferred-work queue: work
 identified but not yet executed) and get their tier declarations from G9. Whether the
 harness's own learning loop is actually being fed — the second half of the measured

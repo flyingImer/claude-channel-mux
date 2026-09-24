@@ -1,7 +1,7 @@
 # G9 — Enforcement tiers (generic worker-room harness mechanism, DRAFT for the owner)
 
-Status: v2.11, 2026-09-22 (v2.10 2026-09-22; v2.9 2026-09-22; v1 draft 2026-09-01; v2.1
-2026-09-04). Layer: GENERIC.
+Status: v2.12, 2026-09-24 (v2.11 2026-09-22; v2.10 2026-09-22; v2.9 2026-09-22; v1 draft
+2026-09-01; v2.1 2026-09-04). Layer: GENERIC.
 
 ## The problem (the owner's diagnosis, confirmed)
 
@@ -304,3 +304,69 @@ isolation) — no receipt yet exists for what a generic lease-file convention sh
 like across resource types (a build daemon and a port are not interchangeable), so
 writing a hook now would be guessing at a shape; revisit once an instance derives a
 concrete lease convention and the guess can be checked against it.
+
+## v2.12 additions (2026-09-24)
+
+- (v2.12, G10 rule 11, new) Turn-death visibility: BOOT/HARD — `harness/watchdog-template.sh`
+  step 6b counts assistant entries matching `API_ERROR_RE` (default `^API Error`) in every
+  `#fleet_transcript=` row's transcript on every cycle, unconditionally, and escalates
+  TURNDEATH on any increase with the last error text's first 60 characters (first sight
+  captures a silent baseline). The hold-cycle per-room stop_reason line and the CONTINUE
+  directive shape are procedure text (BOOT). Receipt: the TURNDEATH event; the report's
+  per-room line; the CONTINUE block in the room's transcript. Self-test:
+  `hooks/watchdog-template-selftest.sh` (baseline silent; an added error entry escalates
+  with its text). Provenance: DEVIATIONS-inbox (2026-09-23) — a turn died on an API error
+  5 minutes into execution with every liveness signal green, found 7 minutes later by a
+  transcript-tail read; an earlier instance lost 37 minutes the same way.
+- (v2.12, G10 rule 12, new) Model-route liveness: BOOT/HARD — `hooks/route-probe.sh
+  ROUTES_FILE ALIVE_FILE` probes each configured route with a minimal call and rewrites
+  the alive set (exit 0 all alive, 1 any dead, 3 none configured: fail loud); the watchdog
+  runs it every `ROUTE_PROBE_SECONDS` when `ROUTES_FILE` is set and escalates ROUTE once
+  per change of the alive set. The boot/hold checklist step, the explicit-route spawn rule
+  and the room-free publish/patch script rule are procedure text (BOOT): a spawn is a call
+  the room makes, and a hook cannot see which route a default would have resolved to.
+  Self-tests: `hooks/route-probe-selftest.sh` (one dead route exits 1 and is named; alive
+  file holds exactly the alive set; empty or missing routes file exits 3) and
+  `hooks/watchdog-template-selftest.sh` (a dead route escalates once and is absent from
+  the alive file; an unchanged set does not re-escalate). Provenance: DEVIATIONS-inbox
+  (2026-09-23) — one route stayed up while the workers' routes returned auth errors; every
+  worker and the verify subagent died, the owner re-pinned rooms by hand; a second partial
+  outage of the same shape during this draft.
+- (v2.12) Outbound gate v5 (acting-cwd resolution): HARD — unchanged tier;
+  `hooks/outbound-gate.py` resolves a relative `cd <dir>` stage against the acting cwd
+  (the hook input's `cwd`, else `CLAUDE_ROOM_CWD`, else the manifest's `room_cwd`, else
+  the daemon session file's `cwd`, else the hook process cwd), and when the resolved
+  directory is not a git work tree refuses with "could not resolve the acting repository"
+  naming the path, never with the close-out message. Self-test:
+  `hooks/outbound-gate-selftest.sh` (adds: a relative cd from an unrelated process cwd
+  resolves the nested ref via the input cwd; the env fallback does the same; an
+  unresolvable dir yields the path message and not the record message). Provenance:
+  DEVIATIONS-inbox (2026-09-23) — a room's relative cd, correct in its own persistent
+  shell, was joined onto the per-room worktree the hook ran from; HEAD read "?" and a
+  valid close-out did not match, refused with a message that read like a missing audit.
+- (v2.12) Watchdog timing verdict: BOOT/HARD — `harness/watchdog-template.sh` computes,
+  in `triage_file`, each matching row's ON TIME / LATE verdict from the file's mtime
+  against the row's deadline and hands it to the triage one-shot as an authoritative
+  line; an ESCALATE worded on timing for an on-time file is folded, tagged `[timing-ok]`.
+  A deadline is an upper bound: only a file missing at the deadline (step 4) or arriving
+  after it is a deadline fault. `hooks/expectation-sweep.sh` is unchanged (it never
+  judged timing; its hits flow through the same `triage_file`). Self-test:
+  `hooks/watchdog-template-selftest.sh` (on-time file folded with timing-ok and never
+  escalated; late file still escalated). Provenance: DEVIATIONS-inbox (2026-09-23) —
+  three escalations in one hour on confirmation files that had simply landed early.
+- (v2.12, G10 rule 13, new) Re-chain verified only at the new base: BOOT — directive and
+  report procedure text; the receipt is the compile/test line at the new base ref, and
+  "conflicts: none" is context, never the receipt. No hook: which compile and test
+  commands apply is an instance fact the directive names. Provenance: DEVIATIONS-inbox
+  (2026-09-23) — an upstream signature change rebased with zero conflicts and did not
+  compile; a downstream-only test disagreement surfaced only at the new base.
+- (v2.12, G10 rule 4 clarification) Reactions count as answers: BOOT — the live re-fetch
+  reads the reactions endpoint as well as the body; an owner reaction on the cited comment
+  is an answer. Provenance: DEVIATIONS-inbox and the oversight seat's observation
+  (2026-09-23) — a decision was re-asked after the owner had answered with a reaction.
+- (v2.12, G10 rule 1 clarification) Expiry wakes write no ledger row: BOOT — the ledger
+  records state changes; a re-arm is not one. Receipt: no two consecutive ledger rows
+  differing only in timestamp. Provenance: the oversight seat's observation (2026-09-23) —
+  84 near-identical rows in two days.
+
+Not taken in this bump: none.

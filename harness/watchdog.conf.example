@@ -1,4 +1,4 @@
-# Effort watchdog conf (harness v2.11). Sourced by harness/watchdog-template.sh. The effort's watchdog.sh is:
+# Effort watchdog conf (harness v2.12). Sourced by harness/watchdog-template.sh. The effort's watchdog.sh is:
 #   #!/usr/bin/env bash
 #   exec bash "$(dirname "$(readlink -f "$0")")/generic-harness/watchdog-template.sh" "$(dirname "$(readlink -f "$0")")/watchdog.conf"
 STATUS_DIR=/abs/path/to/effort/status            # where rooms write NN-STATE*.md files
@@ -24,3 +24,12 @@ DEVIATIONS_INBOX=/abs/path/to/DEVIATIONS-inbox.md
 # from the #orch_transcript= row (its transcript's own filename), not on a fixed "orch" label. Nothing to set
 # here; an instance whose eval.sh/scorecard keys off the literal "orch" label in $MET should read by session
 # id instead on next derivation.
+# (v2.12, G10 rule 11) Turn-death visibility: per #fleet_transcript= row, assistant entries whose text matches
+# API_ERROR_RE are counted every cycle; an increase escalates TURNDEATH. Override only if the host's error
+# text differs from the default.
+# API_ERROR_RE='^API Error'
+# (v2.12, G10 rule 12) Model-route liveness: one route name per line in ROUTES_FILE (as passed to --model);
+# hooks/route-probe.sh probes each with a minimal call every ROUTE_PROBE_SECONDS, rewrites
+# $ORCH_DIR/.checks/routes.alive, and a change of the alive set escalates ROUTE once. Unset = step skipped.
+ROUTES_FILE=$ORCH_DIR/routes.txt
+ROUTE_PROBE_SECONDS=900

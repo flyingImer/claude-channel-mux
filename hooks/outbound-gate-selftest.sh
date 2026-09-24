@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Self-test for hooks/outbound-gate.py (v4). Creates throwaway repos under $TMPDIR; prints PASS/FAIL per case.
+# Self-test for hooks/outbound-gate.py (v5). Creates throwaway repos under $TMPDIR; prints PASS/FAIL per case.
 set -u
 here="$(cd "$(dirname "$0")" && pwd)"; gate="$here/outbound-gate.py"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
@@ -38,3 +38,23 @@ run 2 "push to a non-local (https) remote is gated by default, whatever the bran
   "git push https://example.com/fake/repo.git some-unrelated-topic-branch"
 run 0 "push to a local filesystem path remote is not gated" \
   "git push $T/localremote some-unrelated-topic-branch"
+
+# (v5) a relative `cd` resolves against the ACTING cwd carried by the hook input, never the
+# hook process cwd: the process runs from an unrelated per-room worktree dir here, the input
+# says the shell's cwd is the wrapper repo, so `cd nested` must land on wrapper/nested.
+mkdir -p "$T/worktree-elsewhere"
+run_from() { # run_from <expected-exit> <label> <hook-cwd-field> <command>   (process cwd = worktree-elsewhere)
+  local want="$1" label="$2" hcwd="$3" cmd="$4" got
+  python3 -c 'import json,sys;print(json.dumps({"tool_name":"Bash","cwd":sys.argv[1],"tool_input":{"command":sys.argv[2]}}))' "$hcwd" "$cmd" \
+    | (cd "$T/worktree-elsewhere" && python3 "$gate" 2>"$T/err"); got=$?
+  if [ "$got" = "$want" ]; then echo "PASS $label"; else echo "FAIL $label (exit $got, want $want): $(head -c 200 "$T/err")"; fi
+}
+rm -f "$T/closeouts/${N:0:12}-v1.md"
+run_from 2 "relative cd from a worktree process cwd resolves against the input cwd" "$T/wrapper" "cd nested && git push origin main"
+grep -q "$N" "$T/err" && echo "PASS relative cd resolved the nested ref via the input cwd" || echo "FAIL relative cd did not reach the nested repo: $(head -c 200 "$T/err")"
+run_from 2 "unresolvable acting repo refuses on the path, not the record" "$T/wrapper" "cd no-such-dir && git push origin main"
+grep -q "could not resolve the acting repository" "$T/err" && ! grep -q "no close-out record" "$T/err" \
+  && echo "PASS unresolvable-repo message names the path fault only" || echo "FAIL unresolvable-repo message: $(head -c 200 "$T/err")"
+# the bound room cwd (env) is the fallback when the input carries no cwd
+CLAUDE_ROOM_CWD="$T/wrapper" run_from 2 "relative cd falls back to the bound room cwd (env)" "" "cd nested && git push origin main"
+grep -q "$N" "$T/err" && echo "PASS bound room cwd resolved the nested ref" || echo "FAIL bound room cwd fallback: $(head -c 200 "$T/err")"
